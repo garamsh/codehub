@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 adapter-http = { path = "../adapter-http" }
+adapter-introspection = { path = "../adapter-introspection" }
 adapter-oidc = { path = "../adapter-oidc" }
 adapter-postgres = { path = "../adapter-postgres" }
 adapter-s3 = { path = "../adapter-s3" }

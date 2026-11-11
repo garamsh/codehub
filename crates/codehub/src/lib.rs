@@ -6,22 +6,34 @@ use std::io::Write;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use adapter_introspection::IntrospectionIdentityVerification;
 use adapter_oidc::OidcIdentityVerification;
 use adapter_postgres::{
     Database, DatabaseError, PostgresAuthorisationDecision, PostgresChangesetLog,
     PostgresDerivedData, PostgresDraftStore, PostgresMembership, PostgresRepositoryDirectory,
 };
 use adapter_s3::S3ObjectStore;
-use app::port::driven::identity_verification::IdentityError;
+use app::domain::credential::Credential;
+use app::domain::principal::Principal;
+use app::port::driven::identity_verification::{IdentityError, IdentityVerification};
 use app::port::driven::object_store::ObjectStoreError;
 use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
 use app::use_case::members::MembersService;
 use app::use_case::repositories::RepositoriesService;
 use app::use_case::source_control::SourceControlService;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
+
+/// How the server verifies the token a caller presents.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
+pub enum Identity {
+    /// An OpenID Connect JWT, verified offline against the issuer's keys.
+    Oidc,
+    /// RFC 7662 introspection, asking the issuer on every request.
+    Introspection,
+}
 
 /// The server's settings. Each is a flag and has an environment variable of the same name,
 /// upper-cased, with the prefix `CODEHUB_`.
@@ -58,15 +70,41 @@ pub struct Config {
     /// How long an upload or download grant lasts, in seconds.
     #[arg(long, env = "CODEHUB_GRANT_EXPIRY_SECONDS", default_value_t = 900)]
     pub grant_expiry_seconds: u64,
-    /// The issuer of the tokens the server accepts.
+    /// How callers are verified: an OIDC JWT offline, or RFC 7662 introspection.
+    #[arg(long, env = "CODEHUB_IDENTITY", value_enum, default_value_t = Identity::Oidc)]
+    pub identity: Identity,
+    /// The issuer of the tokens the server accepts; required with `--identity oidc`.
     #[arg(long, env = "CODEHUB_OIDC_ISSUER")]
-    pub oidc_issuer: String,
-    /// The audience the accepted tokens are issued for.
+    pub oidc_issuer: Option<String>,
+    /// The audience the accepted tokens are issued for; required with `--identity oidc`.
     #[arg(long, env = "CODEHUB_OIDC_AUDIENCE")]
-    pub oidc_audience: String,
+    pub oidc_audience: Option<String>,
     /// The shortest time between two fetches of the issuer's key set, in seconds.
     #[arg(long, env = "CODEHUB_JWKS_MIN_REFETCH_SECONDS", default_value_t = 60)]
     pub jwks_min_refetch_seconds: u64,
+    /// The introspection endpoint of the issuer; required with `--identity introspection`.
+    #[arg(long, env = "CODEHUB_INTROSPECTION_ENDPOINT")]
+    pub introspection_endpoint: Option<String>,
+    /// The client id the server authenticates to the introspection endpoint with; required with
+    /// `--identity introspection`.
+    #[arg(long, env = "CODEHUB_INTROSPECTION_CLIENT_ID")]
+    pub introspection_client_id: Option<String>,
+    /// The client secret the server authenticates to the introspection endpoint with; required
+    /// with `--identity introspection`.
+    #[arg(
+        long,
+        env = "CODEHUB_INTROSPECTION_CLIENT_SECRET",
+        hide_env_values = true
+    )]
+    pub introspection_client_secret: Option<String>,
+    /// The issuer named where an introspection response has no `iss`; required with
+    /// `--identity introspection`.
+    #[arg(long, env = "CODEHUB_INTROSPECTION_ISSUER")]
+    pub introspection_issuer: Option<String>,
+    /// The audience the accepted tokens are issued for; required with
+    /// `--identity introspection`.
+    #[arg(long, env = "CODEHUB_INTROSPECTION_AUDIENCE")]
+    pub introspection_audience: Option<String>,
 }
 
 /// Prints every field but the secrets, which print as `<redacted>`. The impl destructures
@@ -85,9 +123,15 @@ impl fmt::Debug for Config {
             s3_secret_key: _,
             max_object_size,
             grant_expiry_seconds,
+            identity,
             oidc_issuer,
             oidc_audience,
             jwks_min_refetch_seconds,
+            introspection_endpoint,
+            introspection_client_id,
+            introspection_client_secret,
+            introspection_issuer,
+            introspection_audience,
         } = self;
         f.debug_struct("Config")
             .field("listen", listen)
@@ -100,9 +144,18 @@ impl fmt::Debug for Config {
             .field("s3_secret_key", &REDACTED)
             .field("max_object_size", max_object_size)
             .field("grant_expiry_seconds", grant_expiry_seconds)
+            .field("identity", identity)
             .field("oidc_issuer", oidc_issuer)
             .field("oidc_audience", oidc_audience)
             .field("jwks_min_refetch_seconds", jwks_min_refetch_seconds)
+            .field("introspection_endpoint", introspection_endpoint)
+            .field("introspection_client_id", introspection_client_id)
+            .field(
+                "introspection_client_secret",
+                &introspection_client_secret.as_ref().map(|_| REDACTED),
+            )
+            .field("introspection_issuer", introspection_issuer)
+            .field("introspection_audience", introspection_audience)
             .finish()
     }
 }
@@ -169,6 +222,8 @@ pub enum Error {
     ObjectStore(ObjectStoreError),
     /// Identity verification could not be configured.
     Identity(IdentityError),
+    /// A setting the selected identity mode needs is missing; carries its flag and variable.
+    MissingSetting(&'static str),
     /// The listening address could not be bound.
     Bind(SocketAddr, std::io::Error),
     /// Signal handlers could not be installed, the address read or the server run.
@@ -182,6 +237,9 @@ impl fmt::Display for Error {
             Self::ObjectStore(error) => write!(f, "configuring the object store failed: {error}"),
             Self::Identity(error) => {
                 write!(f, "configuring identity verification failed: {error}")
+            }
+            Self::MissingSetting(setting) => {
+                write!(f, "the selected identity mode needs {setting}")
             }
             Self::Bind(address, error) => write!(f, "binding {address} failed: {error}"),
             Self::Serve(error) => write!(f, "serving failed: {error}"),
@@ -200,7 +258,65 @@ struct Adapters {
     directory: PostgresRepositoryDirectory,
     membership: PostgresMembership,
     authorisation: PostgresAuthorisationDecision,
-    identity: OidcIdentityVerification,
+    identity: Verifier,
+}
+
+/// The identity verification the configuration selected.
+enum Verifier {
+    Oidc(Box<OidcIdentityVerification>),
+    Introspection(IntrospectionIdentityVerification),
+}
+
+impl IdentityVerification for Verifier {
+    async fn verify(&self, credential: &Credential) -> Result<Principal, IdentityError> {
+        match self {
+            Self::Oidc(verifier) => verifier.verify(credential).await,
+            Self::Introspection(verifier) => verifier.verify(credential).await,
+        }
+    }
+}
+
+/// Builds the identity verification `config` selects.
+fn verifier(config: &Config) -> Result<Verifier, Error> {
+    match config.identity {
+        Identity::Oidc => OidcIdentityVerification::new(
+            require(&config.oidc_issuer, "--oidc-issuer (CODEHUB_OIDC_ISSUER)")?,
+            require(
+                &config.oidc_audience,
+                "--oidc-audience (CODEHUB_OIDC_AUDIENCE)",
+            )?,
+            Duration::from_secs(config.jwks_min_refetch_seconds),
+        )
+        .map(|verifier| Verifier::Oidc(Box::new(verifier))),
+        Identity::Introspection => IntrospectionIdentityVerification::new(
+            require(
+                &config.introspection_endpoint,
+                "--introspection-endpoint (CODEHUB_INTROSPECTION_ENDPOINT)",
+            )?,
+            require(
+                &config.introspection_client_id,
+                "--introspection-client-id (CODEHUB_INTROSPECTION_CLIENT_ID)",
+            )?,
+            require(
+                &config.introspection_client_secret,
+                "--introspection-client-secret (CODEHUB_INTROSPECTION_CLIENT_SECRET)",
+            )?,
+            require(
+                &config.introspection_issuer,
+                "--introspection-issuer (CODEHUB_INTROSPECTION_ISSUER)",
+            )?,
+            require(
+                &config.introspection_audience,
+                "--introspection-audience (CODEHUB_INTROSPECTION_AUDIENCE)",
+            )?,
+        )
+        .map(Verifier::Introspection),
+    }
+    .map_err(Error::Identity)
+}
+
+fn require<'a>(value: &'a Option<String>, setting: &'static str) -> Result<&'a str, Error> {
+    value.as_deref().ok_or(Error::MissingSetting(setting))
 }
 
 /// Connects, migrates, binds and serves until SIGTERM or SIGINT, then finishes the requests in
@@ -210,6 +326,7 @@ struct Adapters {
 ///
 /// An [`Error`] naming the step that failed.
 pub async fn run(config: Config) -> Result<(), Error> {
+    let identity = verifier(&config)?;
     let database = Database::connect(&config.postgres_url, config.postgres_pool_size)
         .await
         .map_err(Error::Database)?;
@@ -224,12 +341,6 @@ pub async fn run(config: Config) -> Result<(), Error> {
     )
     .map_err(Error::ObjectStore)?
     .with_expiry(Duration::from_secs(config.grant_expiry_seconds));
-    let identity = OidcIdentityVerification::new(
-        &config.oidc_issuer,
-        &config.oidc_audience,
-        Duration::from_secs(config.jwks_min_refetch_seconds),
-    )
-    .map_err(Error::Identity)?;
     // The use cases borrow the adapters and the router holds its ports for `'static`; the
     // adapters live as long as the process.
     let adapters: &'static Adapters = Box::leak(Box::new(Adapters {
@@ -302,9 +413,15 @@ mod tests {
             s3_secret_key: "s3-secret-value".to_owned(),
             max_object_size: 1,
             grant_expiry_seconds: 1,
-            oidc_issuer: "http://issuer.example".to_owned(),
-            oidc_audience: "audience-visible".to_owned(),
+            identity: Identity::Introspection,
+            oidc_issuer: Some("http://issuer.example".to_owned()),
+            oidc_audience: Some("audience-visible".to_owned()),
             jwks_min_refetch_seconds: 1,
+            introspection_endpoint: Some("http://issuer.example/introspect".to_owned()),
+            introspection_client_id: Some("introspection-client-visible".to_owned()),
+            introspection_client_secret: Some("introspection-secret-value".to_owned()),
+            introspection_issuer: Some("http://issuer.example".to_owned()),
+            introspection_audience: Some("introspection-audience-visible".to_owned()),
         }
     }
 
@@ -316,6 +433,8 @@ mod tests {
         );
         assert!(!shown.contains("s3-secret-value"), "{shown}");
         assert!(!shown.contains("pg-secret-value"), "{shown}");
+        assert!(!shown.contains("introspection-secret-value"), "{shown}");
+        assert!(shown.contains("introspection-client-visible"), "{shown}");
         assert!(shown.contains("bucket-visible"), "{shown}");
         assert!(shown.contains("access-visible"), "{shown}");
         assert!(

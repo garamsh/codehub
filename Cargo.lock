@@ -355,6 +355,7 @@ name = "codehub"
 version = "0.0.0"
 dependencies = [
  "adapter-http",
+ "adapter-introspection",
  "adapter-oidc",
  "adapter-postgres",
  "adapter-s3",
