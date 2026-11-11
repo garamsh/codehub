@@ -97,6 +97,19 @@ impl Prefix {
         Self(Vec::new())
     }
 
+    /// The prefix made of `components`, from the root down; no components is the whole
+    /// repository.
+    #[must_use]
+    pub const fn new(components: Vec<Component>) -> Self {
+        Self(components)
+    }
+
+    /// The prefix's components, from the root down; empty for the whole repository.
+    #[must_use]
+    pub fn components(&self) -> &[Component] {
+        &self.0
+    }
+
     /// Whether `path` is this prefix or lies under it; components match whole, so `src` covers
     /// `src/a` and not `srcx/a`.
     #[must_use]
@@ -166,6 +179,16 @@ mod tests {
         assert!(!src.covers(&parse("srcx/a")));
         assert!(!src.covers(&parse("docs/src")));
         assert!(Prefix::whole().covers(&parse("docs/b")));
+    }
+
+    #[test]
+    fn a_prefix_is_rebuilt_from_its_components() {
+        let parse = |s: &str| s.parse::<Path>().unwrap();
+        let src = Prefix::from(parse("src/a"));
+        assert_eq!(src.components(), parse("src/a").components());
+        assert_eq!(Prefix::new(src.components().to_vec()), src);
+        assert!(Prefix::whole().components().is_empty());
+        assert_eq!(Prefix::new(Vec::new()), Prefix::whole());
     }
 
     #[test]
