@@ -1,31 +1,31 @@
-//! The landing merge: rebasing a landing's delta onto what `main` changed since its base (ADR 0012, ADR 0017).
+//! The landing merge: rebasing a landing's delta onto what `main` changed since its base (ADR 0012, ADR 0017, ADR 0019).
 
 mod file;
 
 use std::collections::BTreeMap;
 use std::fmt;
 
-pub use file::{FileConflict, merge_file};
+pub use file::{FileConflict, FileVersion, merge_file};
 
 /// What a delta records for one path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
-    /// The path holds this content.
-    Write(Vec<u8>),
+    /// The path holds this version.
+    Write(FileVersion),
     /// The path is removed.
     Delete,
 }
 
 impl Change {
-    fn content(&self) -> Option<&[u8]> {
+    fn version(&self) -> Option<&FileVersion> {
         match self {
-            Self::Write(content) => Some(content),
+            Self::Write(version) => Some(version),
             Self::Delete => None,
         }
     }
 
-    fn from_content(content: Option<Vec<u8>>) -> Self {
-        content.map_or(Self::Delete, Self::Write)
+    fn from_version(version: Option<FileVersion>) -> Self {
+        version.map_or(Self::Delete, Self::Write)
     }
 }
 
@@ -37,7 +37,7 @@ pub enum Rebase<P> {
     Reparent,
     /// Paths overlapped and merged cleanly; this is the landing's delta
     /// against the current `main`. A path whose merge equals `main`'s
-    /// content is not in it.
+    /// version is not in it.
     Merge(BTreeMap<P, Change>),
 }
 
@@ -63,7 +63,7 @@ impl<P: fmt::Debug> std::error::Error for Conflicts<P> {}
 /// Rebases the `landing` delta onto the `main` delta, both taken against the
 /// same base.
 ///
-/// `base` holds the base content of every path both deltas change; a path it
+/// `base` holds the base version of every path both deltas change; a path it
 /// lacks did not exist at the base. Paths only one delta changes are kept as
 /// that delta has them.
 ///
@@ -71,7 +71,7 @@ impl<P: fmt::Debug> std::error::Error for Conflicts<P> {}
 ///
 /// Returns every path whose merge conflicts, with its [`FileConflict`].
 pub fn rebase<P: Ord + Clone>(
-    base: &BTreeMap<P, Vec<u8>>,
+    base: &BTreeMap<P, FileVersion>,
     main: &BTreeMap<P, Change>,
     landing: &BTreeMap<P, Change>,
 ) -> Result<Rebase<P>, Conflicts<P>> {
@@ -86,11 +86,10 @@ pub fn rebase<P: Ord + Clone>(
             merged.insert(path.clone(), theirs.clone());
             continue;
         };
-        let base = base.get(path).map(Vec::as_slice);
-        match merge_file(base, ours.content(), theirs.content()) {
-            Ok(content) if content.as_deref() == ours.content() => {}
-            Ok(content) => {
-                merged.insert(path.clone(), Change::from_content(content));
+        match merge_file(base.get(path), ours.version(), theirs.version()) {
+            Ok(version) if version.as_ref() == ours.version() => {}
+            Ok(version) => {
+                merged.insert(path.clone(), Change::from_version(version));
             }
             Err(conflict) => {
                 conflicts.insert(path.clone(), conflict);
@@ -108,19 +107,34 @@ pub fn rebase<P: Ord + Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::file::FileKind;
+
+    fn file(text: &str) -> FileVersion {
+        FileVersion {
+            kind: FileKind::Regular,
+            content: text.as_bytes().to_vec(),
+        }
+    }
 
     fn write(text: &str) -> Change {
-        Change::Write(text.as_bytes().to_vec())
+        Change::Write(file(text))
+    }
+
+    fn write_executable(text: &str) -> Change {
+        Change::Write(FileVersion {
+            kind: FileKind::Executable,
+            content: text.as_bytes().to_vec(),
+        })
     }
 
     fn delta(changes: &[(&'static str, Change)]) -> BTreeMap<&'static str, Change> {
         changes.iter().cloned().collect()
     }
 
-    fn base(files: &[(&'static str, &str)]) -> BTreeMap<&'static str, Vec<u8>> {
+    fn base(files: &[(&'static str, &str)]) -> BTreeMap<&'static str, FileVersion> {
         files
             .iter()
-            .map(|(path, text)| (*path, text.as_bytes().to_vec()))
+            .map(|(path, text)| (*path, file(text)))
             .collect()
     }
 
@@ -157,18 +171,31 @@ mod tests {
     }
 
     #[test]
+    fn keeps_a_landing_kind_change_on_a_path_main_edited() {
+        let base = base(&[("f", "a\n")]);
+        let main = delta(&[("f", write("b\n"))]);
+        let landing = delta(&[("f", write_executable("a\n"))]);
+        assert_eq!(
+            rebase(&base, &main, &landing),
+            Ok(Rebase::Merge(delta(&[("f", write_executable("b\n"))])))
+        );
+    }
+
+    #[test]
     fn returns_every_conflicting_path_and_only_those() {
         let base = base(&[("lines", "a\n"), ("deleted", "d\n"), ("clean", "a\nb\nc\n")]);
         let main = delta(&[
             ("lines", write("x\n")),
             ("deleted", Change::Delete),
             ("added", write("1\n")),
+            ("kind", write("k\n")),
             ("clean", write("A\nb\nc\n")),
         ]);
         let landing = delta(&[
             ("lines", write("y\n")),
             ("deleted", write("D\n")),
             ("added", write("2\n")),
+            ("kind", write_executable("k\n")),
             ("clean", write("a\nb\nC\n")),
         ]);
         assert_eq!(
@@ -176,6 +203,7 @@ mod tests {
             Err(BTreeMap::from([
                 ("added", FileConflict::AddAdd),
                 ("deleted", FileConflict::DeleteModify),
+                ("kind", FileConflict::Kind),
                 ("lines", FileConflict::Lines),
             ]))
         );

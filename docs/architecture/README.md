@@ -32,6 +32,7 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0011-source-control-data-model.md` — ADR 0011, objects are SHA-256 addressed, changesets are deltas, and trees and file history are derived
 - `adr/0012-refs-and-landing-merge.md` — ADR 0012, a workspace has named refs moved by compare-and-swap, and landing merges at line level
 - `adr/0017-landing-merge-details.md` — ADR 0017, the landing merge diffs lines by histogram, tells binary by content, and detects no renames
+- `adr/0019-file-kind-and-file-against-directory.md` — ADR 0019, the landing merge merges the file kind apart from content, and a file against a directory conflicts where a delta is applied to a tree
 - `adr/0013-metadata-storage.md` — ADR 0013, PostgreSQL holds the metadata, the changeset log and the refs, and blobs stay in the object store
 - `adr/0016-object-encoding-and-changeset-identifier.md` — ADR 0016, objects use a project-defined binary encoding, and a changeset is identified by its address
 - `workspace.md` — tenancy (organisation, workspace, base layer) and workspace export, backup and import
