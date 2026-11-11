@@ -38,7 +38,10 @@ for name in \
     CODEHUB_TEST_KEYCLOAK_UPSTREAM_CLIENT_ID CODEHUB_TEST_KEYCLOAK_UPSTREAM_CLIENT_SECRET \
     CODEHUB_TEST_KEYCLOAK_EXCHANGE_CLIENT_ID CODEHUB_TEST_KEYCLOAK_EXCHANGE_CLIENT_SECRET \
     CODEHUB_TEST_KEYCLOAK_PASSWORD_ALICE CODEHUB_TEST_KEYCLOAK_PASSWORD_BOB \
-    CODEHUB_TEST_KEYCLOAK_PASSWORD_CAROL; do
+    CODEHUB_TEST_KEYCLOAK_PASSWORD_CAROL \
+    CODEHUB_TEST_AUTHZEN_URL CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_ID \
+    CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_SECRET \
+    CODEHUB_TEST_KEYCLOAK_SUBJECT_ALICE CODEHUB_TEST_KEYCLOAK_SUBJECT_BOB; do
     eval "value=\${$name:-}"
     [ -n "$value" ] || fail "$name is unset"
 done
@@ -184,3 +187,23 @@ kc_answer=$(kc_introspect "$kc_exchanged") || fail "keycloak refused the introsp
 echo "$kc_answer" | jq -e --arg aud "$CODEHUB_TEST_KEYCLOAK_AUDIENCE" '.active == true and (.aud | index($aud))' >/dev/null ||
     fail "introspection did not name the exchanged token active for $CODEHUB_TEST_KEYCLOAK_AUDIENCE: $kc_answer"
 echo "check-services: keycloak discovery served; introspection named a token active for $CODEHUB_TEST_KEYCLOAK_AUDIENCE and a revoked one inactive; an exchanged token was active for it"
+
+# AuthZEN: the adapter's client obtains a token by client credentials, then the decision point
+# answers one allow and one deny over its Access Evaluation API: alice may create organisation
+# acme and may not create organisation beta.
+authzen_token=$(curl -sf -u "$CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_ID:$CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_SECRET" \
+    "$kc_token_endpoint" -d grant_type=client_credentials | jq -r '.access_token // empty') ||
+    fail "keycloak refused the client credentials of $CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_ID"
+[ -n "$authzen_token" ] || fail "the client credentials grant yielded no access token"
+# The decision for alice taking action $1 on organisation $2.
+authzen_decision() {
+    body=$(jq -n --arg id "$CODEHUB_TEST_KEYCLOAK_SUBJECT_ALICE" --arg iss "$kc_issuer" --arg action "$1" --arg org "$2" \
+        '{subject: {type: "principal", id: $id, properties: {issuer: $iss}}, action: {name: $action}, resource: {type: "organisation", id: $org}}')
+    curl -sf -H "Authorization: Bearer $authzen_token" -H 'Content-Type: application/json' \
+        "$CODEHUB_TEST_AUTHZEN_URL/access/v1/evaluation" -d "$body" | jq -r '.decision'
+}
+[ "$(authzen_decision create_organisation acme)" = "true" ] ||
+    fail "the decision point did not allow alice to create organisation acme"
+[ "$(authzen_decision create_organisation beta)" = "false" ] ||
+    fail "the decision point did not deny alice creating organisation beta"
+echo "check-services: authzen decision point allowed alice create_organisation on acme and denied it on beta"

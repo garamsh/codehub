@@ -1,0 +1,44 @@
+# Who may read and write a repository, or a path in it. The resource id is `<organisation>/<name>`;
+# the path, where the request names one, is the `path` attribute. A prefix matches by whole
+# components: `docs` covers `docs` and `docs/x`, and not `docsx/y`.
+---
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: repository
+  variables:
+    import:
+      - principals
+    local:
+      in_docs: '"path" in R.attr && (R.attr.path == "docs" || R.attr.path.startsWith("docs/"))'
+  rules:
+    # alice: everything in acme.
+    - actions: [read, write]
+      effect: EFFECT_ALLOW
+      roles: ["*"]
+      condition:
+        match:
+          all:
+            of:
+              - expr: V.is_alice
+              - expr: R.attr.organisation == "acme"
+    # bob: read acme/app, and write under docs/ in it.
+    - actions: [read]
+      effect: EFFECT_ALLOW
+      roles: ["*"]
+      condition:
+        match:
+          all:
+            of:
+              - expr: V.is_bob
+              - expr: R.id == "acme/app"
+    - actions: [write]
+      effect: EFFECT_ALLOW
+      roles: ["*"]
+      condition:
+        match:
+          all:
+            of:
+              - expr: V.is_bob
+              - expr: R.id == "acme/app"
+              - expr: V.in_docs

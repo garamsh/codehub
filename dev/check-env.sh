@@ -42,3 +42,12 @@ CODEHUB_TEST_KEYCLOAK_EXCHANGE_CLIENT_SECRET=codehub-exchange-secret
 CODEHUB_TEST_KEYCLOAK_PASSWORD_ALICE=alice-check-password
 CODEHUB_TEST_KEYCLOAK_PASSWORD_BOB=bob-check-password
 CODEHUB_TEST_KEYCLOAK_PASSWORD_CAROL=carol-check-password
+
+# AuthZEN 1.0 decision point (Cerbos, policy in dev/cerbos/policies). The adapter obtains its bearer
+# token from Keycloak by client credentials as the client below. The policy names alice and bob by
+# the realm user ids below and by the issuer above, written there as literals.
+CODEHUB_TEST_AUTHZEN_URL=http://127.0.0.1:18082
+CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_ID=codehub-authzen
+CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_SECRET=codehub-authzen-secret
+CODEHUB_TEST_KEYCLOAK_SUBJECT_ALICE=00000000-0000-4000-8000-00000000a11c
+CODEHUB_TEST_KEYCLOAK_SUBJECT_BOB=00000000-0000-4000-8000-0000000000b0
