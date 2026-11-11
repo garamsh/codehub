@@ -18,7 +18,7 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sig
 reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio"] }
-tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "time"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true
