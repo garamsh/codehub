@@ -2,9 +2,10 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::state::RepositoryRef;
+use crate::token::{ClientCredentials, Exchange, Secret, Source};
 
 const EXIT_CODES: &str = "\
 Exit codes:
@@ -17,14 +18,135 @@ Exit codes:
 
 /// The `ch` command line.
 #[derive(Debug, Parser)]
-#[command(name = "ch", version, about, after_help = EXIT_CODES, arg_required_else_help = true)]
+#[command(
+    name = "ch",
+    version,
+    about,
+    after_help = EXIT_CODES,
+    arg_required_else_help = true
+)]
 pub struct Cli {
     /// Print JSON instead of text.
     #[arg(long, global = true)]
     pub json: bool,
+    /// Where the token and the server come from, other than `ch login`.
+    #[command(flatten)]
+    pub credentials: Credentials,
     /// The verb.
     #[command(subcommand)]
     pub command: Command,
+}
+
+/// Where `ch` takes its token and server from instead of `ch login` (ADR 0031). With a token
+/// source `ch` reads the token on every invocation, does no login, and neither reads nor writes
+/// the token in its state file.
+#[derive(Clone, Debug, Args)]
+pub struct Credentials {
+    /// Read the token from this file; surrounding whitespace is trimmed.
+    #[arg(
+        long,
+        global = true,
+        env = "CH_TOKEN_FILE",
+        value_name = "PATH",
+        conflicts_with = "token_env"
+    )]
+    pub token_file: Option<PathBuf>,
+    /// Read the token from the environment variable of this name.
+    #[arg(long, global = true, env = "CH_TOKEN_ENV", value_name = "NAME")]
+    pub token_env: Option<String>,
+    /// The server's base URL, instead of the one `ch login` stored.
+    #[arg(long = "server", global = true, env = "CH_SERVER", value_name = "URL")]
+    pub server_url: Option<String>,
+    /// Exchange the token at this token endpoint (RFC 8693); needs a token source and
+    /// `--exchange-audience`. The exchanged token is held in memory only.
+    #[arg(
+        long,
+        global = true,
+        env = "CH_EXCHANGE_ENDPOINT",
+        value_name = "URL",
+        requires = "exchange_audience"
+    )]
+    pub exchange_endpoint: Option<String>,
+    /// The audience of the exchanged token.
+    #[arg(
+        long,
+        global = true,
+        env = "CH_EXCHANGE_AUDIENCE",
+        value_name = "AUDIENCE",
+        requires = "exchange_endpoint"
+    )]
+    pub exchange_audience: Option<String>,
+    /// The client identifier to authenticate as at the token endpoint, by HTTP Basic.
+    #[arg(
+        long,
+        global = true,
+        env = "CH_EXCHANGE_CLIENT_ID",
+        value_name = "ID",
+        requires_all = ["exchange_client_secret", "exchange_endpoint"]
+    )]
+    pub exchange_client_id: Option<String>,
+    /// The client secret to authenticate with at the token endpoint.
+    #[arg(
+        long,
+        global = true,
+        env = "CH_EXCHANGE_CLIENT_SECRET",
+        hide_env_values = true,
+        value_name = "SECRET",
+        requires = "exchange_client_id"
+    )]
+    pub exchange_client_secret: Option<Secret>,
+}
+
+impl Cli {
+    /// Parses `args`, and refuses an exchange without a token source: clap cannot require one of
+    /// two global options.
+    ///
+    /// # Errors
+    ///
+    /// The usage error, where the arguments do not parse or an exchange has no token source.
+    pub fn try_parse_checked<I: IntoIterator<Item = std::ffi::OsString>>(
+        args: I,
+    ) -> Result<Self, clap::Error> {
+        let cli = Self::try_parse_from(args)?;
+        if cli.credentials.exchange_endpoint.is_some() && cli.credentials.source().is_none() {
+            return Err(Self::command().error(
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "--exchange-endpoint needs a token source: --token-file or --token-env",
+            ));
+        }
+        Ok(cli)
+    }
+}
+
+impl Credentials {
+    /// The token source, where one is given.
+    #[must_use]
+    pub fn source(&self) -> Option<Source> {
+        match (&self.token_file, &self.token_env) {
+            (Some(path), _) => Some(Source::File(path.clone())),
+            (None, Some(name)) => Some(Source::Variable(name.clone())),
+            (None, None) => None,
+        }
+    }
+
+    /// The exchange, where an endpoint and an audience are given.
+    #[must_use]
+    pub fn exchange(&self) -> Option<Exchange> {
+        let endpoint = self.exchange_endpoint.clone()?;
+        let audience = self.exchange_audience.clone()?;
+        let client = match (&self.exchange_client_id, &self.exchange_client_secret) {
+            (Some(id), Some(secret)) => Some(ClientCredentials {
+                id: id.clone(),
+                secret: secret.clone(),
+            }),
+            (Some(_), None) | (None, Some(_)) | (None, None) => None,
+        };
+        Some(Exchange {
+            endpoint,
+            audience,
+            client,
+        })
+    }
 }
 
 /// A verb.

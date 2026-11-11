@@ -6,6 +6,8 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+reqwest = { workspace = true, features = ["form", "json"] }
+serde_json.workspace = true
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio"] }
 tokio = { workspace = true, features = ["process", "rt", "time"] }
 

@@ -17,7 +17,8 @@ The ways clients reach the system, which are the `ch` CLI and the HTTP API behin
 - **The OpenAPI document is committed in `crates/adapter-http`** and served at `/v1/openapi.json`; a test asserts they are equal. Landing is a synchronous request in M2.
 - **No operation of the API takes a request body on DELETE** (ADR 0032). What identifies the target goes in the path or the query, with the field names the body would have had, and a missing or malformed query parameter is a 400 problem detail.
 - **The server binary is `codehub`**, bound to `127.0.0.1` unless configured otherwise (ADR 0024).
-- **`ch` takes its token from a file path or an environment variable naming it, and may exchange it by RFC 8693** at a configured token endpoint for a configured audience; the exchanged token is held in memory only. Device-grant login stays for standalone mode (ADR 0031).
+- **`ch` takes its token from a file path or an environment variable naming it, and may exchange it by RFC 8693** at a configured token endpoint for a configured audience; the exchanged token is held in memory only. With a source `ch` reads the token on every invocation, does no login, and neither reads nor writes a token in its state file; `--server` (`CH_SERVER`) overrides the stored server. Device-grant login stays for standalone mode (ADR 0031).
+- **`ch` authenticates at the token endpoint of its exchange as a client, by HTTP Basic, where given a client identifier and secret.** Both are optional and go together. Keycloak, the first issuer the exchange ran against, refuses an exchange from an unauthenticated caller, so a subject token alone is not enough there; an issuer that wants none is served by giving none.
 - **Credentials are not decided here.** What the server accepts is in `access.md`; interfaces carry what it defines.
 
 ## Rationale

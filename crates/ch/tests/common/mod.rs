@@ -5,6 +5,7 @@
 
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use base64::Engine;
 
@@ -12,8 +13,10 @@ use adapter_memory::{
     MemoryAuthorisationDecision, MemoryChangesetLog, MemoryDerivedData, MemoryDraftStore,
     MemoryIdentityVerification, MemoryMembership, MemoryRepositoryDirectory,
 };
+use adapter_oidc::OidcIdentityVerification;
 use adapter_s3::S3ObjectStore;
 use app::domain::principal::Principal;
+use app::port::driven::identity_verification::IdentityVerification;
 use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
 use app::use_case::members::MembersService;
@@ -76,8 +79,31 @@ pub struct Server {
 ///
 /// Panics when the S3 variables are not set, or the socket cannot be bound.
 pub async fn serve() -> Server {
+    let stores = leak_stores();
+    bind(stores, &stores.identity).await
+}
+
+/// Serves the API as [`serve`] does, but verifying credentials with the real OIDC adapter against
+/// the test Keycloak, for the audience `codehub`.
+///
+/// # Panics
+///
+/// Panics when the Keycloak or S3 variables are not set, or the socket cannot be bound.
+pub async fn serve_oidc() -> Server {
+    let oidc: &'static OidcIdentityVerification = Box::leak(Box::new(
+        OidcIdentityVerification::new(
+            &env("CODEHUB_TEST_KEYCLOAK_ISSUER"),
+            "codehub",
+            Duration::from_secs(1),
+        )
+        .unwrap(),
+    ));
+    bind(leak_stores(), oidc).await
+}
+
+fn leak_stores() -> &'static Stores {
     let membership = MemoryMembership::default();
-    let stores: &'static Stores = Box::leak(Box::new(Stores {
+    Box::leak(Box::new(Stores {
         objects: S3ObjectStore::new(
             &env("CODEHUB_TEST_S3_ENDPOINT"),
             &env("CODEHUB_TEST_S3_REGION"),
@@ -94,9 +120,15 @@ pub async fn serve() -> Server {
         identity: MemoryIdentityVerification::default(),
         authorisation: membership.authorisation_decision(),
         membership,
-    }));
+    }))
+}
+
+async fn bind<I: IdentityVerification + Send + Sync + 'static>(
+    stores: &'static Stores,
+    identity: &'static I,
+) -> Server {
     let router = adapter_http::router(
-        AuthenticationService::new(&stores.identity),
+        AuthenticationService::new(identity),
         RepositoriesService::new(
             &stores.directory,
             &stores.authorisation,

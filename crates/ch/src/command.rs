@@ -11,7 +11,8 @@ use sha2::{Digest, Sha256};
 
 use crate::api::{Api, transfer};
 use crate::cli::{
-    Cli, Command, Land, Login, MemberCommand, OrgCommand, Put, RepoCommand, Role as CliRole,
+    Cli, Command, Credentials, Land, Login, MemberCommand, OrgCommand, Put, RepoCommand,
+    Role as CliRole,
 };
 use crate::failure::Failure;
 use crate::login;
@@ -24,6 +25,8 @@ pub struct Context {
     pub http: Client,
     /// The state file.
     pub state: StateFile,
+    /// The token source, server and exchange the command line or the environment gave.
+    pub credentials: Credentials,
 }
 
 /// Runs the verb of `cli`. `err` is where a prompt goes, `out` where the result does.
@@ -55,27 +58,66 @@ pub async fn execute(
     }
 }
 
-/// The state and what it selects.
+/// The server to call, the token to call it with and the repository selected.
 struct Session {
-    state: State,
+    server: String,
+    token: String,
+    repository: Option<RepositoryRef>,
 }
 
 impl Session {
-    fn open(context: &Context) -> Result<Self, Failure> {
+    /// The session of the stored login, or of the token source: the token is read, and exchanged
+    /// where an exchange is configured, and the server is the one given or else the stored one.
+    async fn open(context: &Context) -> Result<Self, Failure> {
+        let credentials = &context.credentials;
+        let given = credentials.server_url.as_deref().map(trim_server);
+        let Some(source) = credentials.source() else {
+            let state = context.state.require()?;
+            let token = state.token.ok_or_else(not_logged_in)?;
+            return Ok(Self {
+                server: given.unwrap_or(state.server),
+                token,
+                repository: state.repository,
+            });
+        };
+        let mut token = source.read()?;
+        if let Some(exchange) = credentials.exchange() {
+            token = exchange.exchange(&context.http, &token).await?;
+        }
+        let stored = context.state.load()?;
+        let server = match (given, &stored) {
+            (Some(server), _) => server,
+            (None, Some(state)) => state.server.clone(),
+            (None, None) => return Err(no_server()),
+        };
         Ok(Self {
-            state: context.state.require()?,
+            server,
+            token,
+            repository: stored.and_then(|state| state.repository),
         })
     }
 
     fn api<'a>(&'a self, context: &'a Context) -> Api<'a> {
-        Api::new(&context.http, &self.state.server, &self.state.token)
+        Api::new(&context.http, &self.server, &self.token)
     }
 
     fn repository(&self) -> Result<&RepositoryRef, Failure> {
-        self.state.repository.as_ref().ok_or_else(|| {
+        self.repository.as_ref().ok_or_else(|| {
             Failure::Other("no repository selected; run `ch use <org>/<repo>`".to_owned())
         })
     }
+}
+
+fn not_logged_in() -> Failure {
+    Failure::NotLoggedIn("not logged in; run `ch login`".to_owned())
+}
+
+fn no_server() -> Failure {
+    Failure::NotLoggedIn("no server; pass --server, set CH_SERVER or run `ch use`".to_owned())
+}
+
+fn trim_server(server: &str) -> String {
+    server.trim_end_matches('/').to_owned()
 }
 
 fn print_json(out: &mut impl Write, value: &impl Serialize) -> Result<(), Failure> {
@@ -92,6 +134,11 @@ async fn log_in(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<(), Failure> {
+    if context.credentials.source().is_some() {
+        return Err(Failure::Other(
+            "login is not used with a token source; drop --token-file and --token-env".to_owned(),
+        ));
+    }
     let flow = login::start(&context.http, &arguments.issuer, &arguments.client_id).await?;
     writeln!(err, "{}", flow.prompt())?;
     let token = flow.poll(&context.http).await?;
@@ -106,7 +153,7 @@ async fn log_in(
         .and_then(|state| state.repository);
     context.state.save(&State {
         server,
-        token,
+        token: Some(token),
         repository,
     })?;
     if json {
@@ -121,8 +168,24 @@ async fn log_in(
     }
 }
 
+/// Records `repository`. Without a state, a token source and `--server` give it a state of its
+/// own, which holds no token.
 fn select(context: &Context, repository: RepositoryRef) -> Result<(), Failure> {
-    let mut state = context.state.require()?;
+    let credentials = &context.credentials;
+    let mut state = match (
+        context.state.load()?,
+        credentials.source(),
+        &credentials.server_url,
+    ) {
+        (Some(state), _, _) => state,
+        (None, Some(_), Some(server)) => State {
+            server: trim_server(server),
+            token: None,
+            repository: None,
+        },
+        (None, Some(_), None) => return Err(no_server()),
+        (None, None, _) => return Err(not_logged_in()),
+    };
     state.repository = Some(repository);
     context.state.save(&state)
 }
@@ -138,7 +201,7 @@ fn address(bytes: &[u8]) -> String {
 }
 
 async fn put(context: &Context, arguments: &Put) -> Result<(), Failure> {
-    let session = Session::open(context)?;
+    let session = Session::open(context).await?;
     let repository = session.repository()?;
     let api = session.api(context);
     match (arguments.delete, &arguments.file) {
@@ -178,7 +241,7 @@ async fn land(
     json: bool,
     out: &mut impl Write,
 ) -> Result<(), Failure> {
-    let session = Session::open(context)?;
+    let session = Session::open(context).await?;
     let landed = session
         .api(context)
         .land(session.repository()?, &arguments.draft, &arguments.message)
@@ -197,7 +260,7 @@ async fn log(
     json: bool,
     out: &mut impl Write,
 ) -> Result<(), Failure> {
-    let session = Session::open(context)?;
+    let session = Session::open(context).await?;
     let history = session
         .api(context)
         .history(session.repository()?, path)
@@ -234,7 +297,7 @@ async fn read(
     json: bool,
     out: &mut impl Write,
 ) -> Result<(), Failure> {
-    let session = Session::open(context)?;
+    let session = Session::open(context).await?;
     let file = session
         .api(context)
         .file(session.repository()?, path)
@@ -264,7 +327,7 @@ async fn create_organisation(
     json: bool,
     out: &mut impl Write,
 ) -> Result<(), Failure> {
-    let session = Session::open(context)?;
+    let session = Session::open(context).await?;
     let created = session
         .api(context)
         .create_organisation(organisation)
@@ -283,7 +346,7 @@ async fn create_repository(
     json: bool,
     out: &mut impl Write,
 ) -> Result<(), Failure> {
-    let session = Session::open(context)?;
+    let session = Session::open(context).await?;
     let created = session.api(context).create_repository(repository).await?;
     if json {
         print_json(out, &created)
@@ -297,11 +360,11 @@ async fn create_repository(
     }
 }
 
-/// The issuer `--issuer` names, or else the stored token's.
-fn issuer(given: Option<String>, state: &State) -> Result<String, Failure> {
+/// The issuer `--issuer` names, or else the token's.
+fn issuer(given: Option<String>, token: &str) -> Result<String, Failure> {
     match given {
         Some(issuer) => Ok(issuer),
-        None => Ok(login::principal(&state.token)?.issuer),
+        None => Ok(login::principal(token)?.issuer),
     }
 }
 
@@ -321,7 +384,7 @@ fn grants(principal: &Principal, read: Vec<String>, write: Vec<String>) -> Vec<G
 }
 
 async fn member(context: &Context, command: MemberCommand) -> Result<(), Failure> {
-    let session = Session::open(context)?;
+    let session = Session::open(context).await?;
     let repository = session.repository()?;
     let api = session.api(context);
     match command {
@@ -333,7 +396,7 @@ async fn member(context: &Context, command: MemberCommand) -> Result<(), Failure
             write,
         } => {
             let principal = Principal {
-                issuer: issuer(given, &session.state)?,
+                issuer: issuer(given, &session.token)?,
                 subject,
             };
             let member = Member {
@@ -357,7 +420,7 @@ async fn member(context: &Context, command: MemberCommand) -> Result<(), Failure
             write,
         } => {
             let principal = Principal {
-                issuer: issuer(given, &session.state)?,
+                issuer: issuer(given, &session.token)?,
                 subject,
             };
             if read.is_empty() && write.is_empty() {

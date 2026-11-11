@@ -9,16 +9,12 @@ use adapter_introspection::IntrospectionIdentityVerification;
 use app::domain::credential::Credential;
 use app::port::driven::identity_verification::{IdentityError, IdentityVerification};
 use serde_json::{Value, json};
+use test_support::{env, keycloak_token};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 /// The subject of alice's tokens, which `dev/keycloak/codehub-realm.json` fixes.
 const ALICE: &str = "00000000-0000-4000-8000-00000000a11c";
-
-#[cfg(test)]
-fn env(name: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set; run through `make test`"))
-}
 
 #[cfg(test)]
 fn credential(token: &str) -> Credential {
@@ -31,7 +27,6 @@ struct Provider {
     issuer: String,
     introspection: String,
     revocation: String,
-    token: String,
 }
 
 #[cfg(test)]
@@ -48,7 +43,6 @@ impl Provider {
         Self {
             introspection: endpoint("introspection_endpoint"),
             revocation: endpoint("revocation_endpoint"),
-            token: endpoint("token_endpoint"),
             issuer,
         }
     }
@@ -66,37 +60,6 @@ impl Provider {
             &env("CODEHUB_TEST_KEYCLOAK_AUDIENCE"),
         )
         .unwrap()
-    }
-
-    /// An access token for `user` from the password grant of the client `client`
-    /// (`TEST`, `OTHER` or `SHORT`).
-    async fn token(&self, client: &str, user: &str) -> String {
-        let password = env(&format!(
-            "CODEHUB_TEST_KEYCLOAK_PASSWORD_{}",
-            user.to_uppercase()
-        ));
-        let response = reqwest::Client::new()
-            .post(&self.token)
-            .basic_auth(
-                env(&format!("CODEHUB_TEST_KEYCLOAK_{client}_CLIENT_ID")),
-                Some(env(&format!(
-                    "CODEHUB_TEST_KEYCLOAK_{client}_CLIENT_SECRET"
-                ))),
-            )
-            .form(&[
-                ("grant_type", "password"),
-                ("username", user),
-                ("password", &password),
-            ])
-            .send()
-            .await
-            .unwrap();
-        assert!(
-            response.status().is_success(),
-            "Keycloak refused {user}'s token request"
-        );
-        let answer: Value = response.json().await.unwrap();
-        answer["access_token"].as_str().unwrap().to_owned()
     }
 
     /// What the introspection endpoint answers the adapter's client for `token`.
@@ -123,11 +86,11 @@ async fn verifies_a_token_for_codehubs_audience_to_the_principal_of_its_user() {
     let verifier = provider.verifier();
 
     let alice = verifier
-        .verify(&credential(&provider.token("TEST", "alice").await))
+        .verify(&credential(&keycloak_token("TEST", "alice").await))
         .await
         .unwrap();
     let bob = verifier
-        .verify(&credential(&provider.token("TEST", "bob").await))
+        .verify(&credential(&keycloak_token("TEST", "bob").await))
         .await
         .unwrap();
 
@@ -140,8 +103,8 @@ async fn verifies_a_token_for_codehubs_audience_to_the_principal_of_its_user() {
 async fn rejects_a_token_for_another_audience() {
     let provider = Provider::discover().await;
     let verifier = provider.verifier();
-    let accepted = provider.token("TEST", "alice").await;
-    let other = provider.token("OTHER", "alice").await;
+    let accepted = keycloak_token("TEST", "alice").await;
+    let other = keycloak_token("OTHER", "alice").await;
 
     // The control: the provider calls the other token active, so the audience is what refuses it.
     let introspected = provider.introspect(&other).await;
@@ -163,7 +126,7 @@ async fn rejects_a_token_for_another_audience() {
 async fn rejects_an_expired_token() {
     let provider = Provider::discover().await;
     let verifier = provider.verifier();
-    let token = provider.token("SHORT", "alice").await;
+    let token = keycloak_token("SHORT", "alice").await;
     assert!(verifier.verify(&credential(&token)).await.is_ok());
 
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -178,7 +141,7 @@ async fn rejects_an_expired_token() {
 async fn rejects_a_revoked_token() {
     let provider = Provider::discover().await;
     let verifier = provider.verifier();
-    let token = provider.token("TEST", "alice").await;
+    let token = keycloak_token("TEST", "alice").await;
     assert!(verifier.verify(&credential(&token)).await.is_ok());
 
     let revoked = reqwest::Client::new()
@@ -212,7 +175,7 @@ async fn rejects_a_token_the_provider_does_not_know() {
 #[tokio::test]
 async fn fails_where_the_provider_refuses_the_clients_credentials() {
     let provider = Provider::discover().await;
-    let token = provider.token("TEST", "alice").await;
+    let token = keycloak_token("TEST", "alice").await;
 
     let refused = provider
         .verifier_with_secret("wrong-secret")
