@@ -11,7 +11,7 @@ How the system is divided into organisations and repositories, and how a reposit
 - **An organisation holds a base layer** that its repositories share.
 - **Target scale** is hundreds of concurrent agents.
 - **Tenancy scopes every port that reaches stored data**: a request names its repository and, through it, its organisation.
-- **Organisation roles and path grants** are decided in ADR 0021 and described in `docs/architecture/access.md`. codehub owns organisations and repositories as tenancy containers; an outside service depends on codehub, not the reverse.
+- **Organisation roles and path grants** are decided in ADR 0021 and described in `docs/architecture/access.md`. codehub owns organisations and repositories as tenancy containers; codehub depends on the standards and on no outside service's model (ADR 0028).
 - **Organisation names are shared with an outside layer with no mapping table** (ADR 0028). The name is the key on both sides, so an organisation is not renamed on one side alone.
 - **In external authorisation mode an organisation is created on first use** when the decision point allows `CreateOrganisation`, and is not created when it denies; no admin grant is written (ADR 0030). Organisation and repository creation and deletion are reported through the directory-change port (`docs/architecture/access.md`).
 - **The directory and the metadata are in one shared PostgreSQL schema** with a repository identifier on every row (ADR 0022).

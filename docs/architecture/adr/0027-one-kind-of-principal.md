@@ -23,7 +23,7 @@ Alternatives not taken:
 
 ## Consequences
 
-- The identity port returns a principal and the scope it is presented for, with no kind.
+- The identity port returns a principal, identified by issuer and subject, with no kind.
 - A principal's grants and decisions are the same however its token was obtained.
 - ADR 0021's reason for not using Token Exchange for the CLI's person token no longer bears on codehub: the CLI's token sources are in ADR 0031.
 - An outside layer that distinguishes agents does so in its own policy.

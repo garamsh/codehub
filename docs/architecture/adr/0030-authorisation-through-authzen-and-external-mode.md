@@ -35,7 +35,7 @@ Alternatives not taken:
 - A change lost between the core and an outside layer, because delivery is at most once, is not retried: the outside layer can lack an organisation or repository until a later adapter reconciles it.
 - Lazy creation ties an organisation's existence to the first allowed call, so a mistyped name from an allowed caller creates an organisation.
 - A new driven port has an in-process adapter used by tests (`docs/architecture/structure.md`).
-- This settles two open questions in `docs/architecture/access.md`, the behaviour when the decision service is unreachable and the shape of the request the AuthZEN adapter sends, in the form of their recommendations.
+- This settles two open questions in `docs/architecture/access.md` in the form of their recommendations: "Behaviour when the decision service is unreachable" (deny), and the caching half of "Decision caching and batching" (no caching).
 
 ## Signs the decision was wrong
 
