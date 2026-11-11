@@ -7,7 +7,7 @@ rust-version.workspace = true
 [dependencies]
 app = { path = "../app" }
 base64.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["rustls"] }
 rusty-s3.workspace = true
 
 [dev-dependencies]
