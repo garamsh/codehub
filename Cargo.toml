@@ -6,6 +6,9 @@ resolver = "3"
 edition = "2024"
 rust-version = "1.99.1"
 
+[workspace.dependencies]
+imara-diff = { version = "0.2.0", default-features = false }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
