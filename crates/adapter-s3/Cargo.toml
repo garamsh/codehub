@@ -1,0 +1,17 @@
+[package]
+name = "adapter-s3"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+app = { path = "../app" }
+base64.workspace = true
+reqwest.workspace = true
+rusty-s3.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+
+[lints]
+workspace = true
