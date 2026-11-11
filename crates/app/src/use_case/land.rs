@@ -7,17 +7,19 @@ use std::fmt;
 use crate::domain::address::Address;
 use crate::domain::changeset::{Change, Changeset};
 use crate::domain::derivation::{self, DerivationError, Step};
-use crate::domain::draft::DraftId;
+use crate::domain::draft::Draft;
 use crate::domain::encoding::EncodeError;
 use crate::domain::file::File;
 use crate::domain::merge::{self, FileConflict, FileVersion, Rebase};
 use crate::domain::path::Path;
+use crate::domain::principal::Principal;
 use crate::domain::repository::RepositoryId;
 use crate::domain::tree::{DeriveError, Tree, Trees};
 use crate::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
 use crate::port::driven::derived_data::{DerivedData, DerivedDataError};
-use crate::port::driven::draft_store::{DraftStore, DraftStoreError};
+use crate::port::driven::draft_store::DraftStoreError;
 use crate::port::driven::object_store::{ObjectStore, ObjectStoreError};
+use crate::use_case::access::AccessError;
 use crate::use_case::read_file::file_at;
 
 /// What a landing records beyond the draft's changes.
@@ -29,8 +31,8 @@ pub struct Landing {
     pub timestamp: i64,
 }
 
-/// Lands the draft `draft` of `repository` on its `main`, removes the draft, and returns the
-/// landed changeset's identifier. The changeset's author is the draft's principal.
+/// Lands the staged draft `staged` of `repository` on its `main` and returns the landed
+/// changeset's identifier. The changeset's author is `author`, the draft's principal.
 ///
 /// The draft's delta is rebased onto `main` as it is read; its parent becomes `main`, and `main`
 /// advances to it only where it still points where it was read.
@@ -39,24 +41,21 @@ pub struct Landing {
 ///
 /// [`LandError::Conflicts`] where the draft conflicts with what `main` changed since its base,
 /// [`LandError::MainMoved`] where `main` moved before the compare-and-swap, and otherwise the
-/// failure of a port or of the tree derivation. Nothing moves `main` on an error, except that a
-/// failure to remove the draft is reported after `main` advanced.
-pub async fn land<O, L, D, S>(
+/// failure of a port or of the tree derivation. Nothing moves `main` on an error.
+pub async fn land<O, L, D>(
     objects: &O,
     log: &L,
     derived: &D,
-    drafts: &S,
     repository: RepositoryId,
-    draft: &DraftId,
+    author: &Principal,
+    staged: Draft,
     landing: Landing,
 ) -> Result<Address, LandError>
 where
     O: ObjectStore,
     L: ChangesetLog,
     D: DerivedData,
-    S: DraftStore,
 {
-    let staged = drafts.get(repository, draft).await?;
     let main = log.read_ref(repository, Ref::Main).await?;
     let changes = rebase(
         objects,
@@ -70,7 +69,7 @@ where
     .await?;
     let changeset = Changeset {
         parents: main.into_iter().collect(),
-        author: draft.principal.as_str().to_owned(),
+        author: author.to_string(),
         timestamp: landing.timestamp,
         message: landing.message,
         changes,
@@ -86,9 +85,10 @@ where
         .await
         .map_err(|error| match error {
             ChangesetLogError::RefMoved { current } => LandError::MainMoved { current },
-            ChangesetLogError::NotFound(_) | ChangesetLogError::Encode(_) => LandError::Log(error),
+            ChangesetLogError::NotFound(_)
+            | ChangesetLogError::Encode(_)
+            | ChangesetLogError::Backend(_) => LandError::Log(error),
         })?;
-    drafts.remove(repository, draft).await?;
     Ok(id)
 }
 
@@ -282,6 +282,8 @@ pub enum LandError {
     Drafts(DraftStoreError),
     /// The landed changeset has no encoding.
     Encode(EncodeError),
+    /// The caller may not land the draft.
+    Access(AccessError),
 }
 
 impl fmt::Display for LandError {
@@ -299,6 +301,7 @@ impl fmt::Display for LandError {
             Self::Derived(error) => write!(f, "{error}"),
             Self::Drafts(error) => write!(f, "{error}"),
             Self::Encode(error) => write!(f, "{error}"),
+            Self::Access(error) => write!(f, "{error}"),
         }
     }
 }
@@ -326,6 +329,12 @@ impl From<DerivedDataError> for LandError {
 impl From<DraftStoreError> for LandError {
     fn from(error: DraftStoreError) -> Self {
         Self::Drafts(error)
+    }
+}
+
+impl From<AccessError> for LandError {
+    fn from(error: AccessError) -> Self {
+        Self::Access(error)
     }
 }
 

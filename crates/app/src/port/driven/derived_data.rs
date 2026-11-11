@@ -86,16 +86,19 @@ pub trait DerivedData {
 }
 
 /// Why derived data did not answer.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum DerivedDataError {
     /// Nothing is recorded under the address.
     NotFound(Address),
+    /// The store's backend failed; carries a description.
+    Backend(String),
 }
 
 impl fmt::Display for DerivedDataError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotFound(address) => write!(f, "no derived data for {address}"),
+            Self::Backend(description) => write!(f, "derived data failed: {description}"),
         }
     }
 }

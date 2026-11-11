@@ -2,22 +2,25 @@
 //! ports.
 
 use adapter_memory::{
-    MemoryChangesetLog, MemoryDerivedData, MemoryDraftStore, MemoryObjectStore,
-    MemoryRepositoryDirectory,
+    MemoryAuthorisationDecision, MemoryChangesetLog, MemoryDerivedData, MemoryDraftStore,
+    MemoryIdentityVerification, MemoryMembership, MemoryObjectStore, MemoryRepositoryDirectory,
 };
 use app::domain::address::Address;
 use app::domain::changeset::Change;
-use app::domain::draft::DraftId;
+use app::domain::credential::Credential;
 use app::domain::file::{File, FileKind};
-use app::domain::name::{OrganisationName, RepositoryName};
+use app::domain::name::{DraftName, OrganisationName, RepositoryName};
 use app::domain::path::Path;
+use app::domain::principal::{Caller, Principal};
 use app::domain::repository::RepositoryId;
 use app::domain::tree::Entry;
 use app::port::driven::changeset_log::{ChangesetLog, Ref};
 use app::port::driven::derived_data::DerivedData;
 use app::port::driven::object_store::ObjectStore;
+use app::port::driving::authentication::Authentication;
 use app::port::driving::repositories::Repositories;
 use app::port::driving::source_control::{SourceControl, SourceControlError};
+use app::use_case::authentication::AuthenticationService;
 use app::use_case::land::Landing;
 use app::use_case::repositories::RepositoriesService;
 use app::use_case::source_control::SourceControlService;
@@ -26,13 +29,31 @@ use app::use_case::source_control::SourceControlService;
 pub const MAX_UPLOAD_SIZE: u64 = 1024;
 
 /// The in-memory adapters of one deployment, holding any number of repositories.
-#[derive(Default)]
 pub struct Harness {
     pub objects: MemoryObjectStore,
     pub log: MemoryChangesetLog,
     pub derived: MemoryDerivedData,
     pub drafts: MemoryDraftStore,
     pub directory: MemoryRepositoryDirectory,
+    pub identity: MemoryIdentityVerification,
+    pub membership: MemoryMembership,
+    pub authorisation: MemoryAuthorisationDecision,
+}
+
+impl Default for Harness {
+    fn default() -> Self {
+        let membership = MemoryMembership::default();
+        Self {
+            objects: MemoryObjectStore::default(),
+            log: MemoryChangesetLog::default(),
+            derived: MemoryDerivedData::default(),
+            drafts: MemoryDraftStore::default(),
+            directory: MemoryRepositoryDirectory::default(),
+            identity: MemoryIdentityVerification::default(),
+            authorisation: membership.authorisation_decision(),
+            membership,
+        }
+    }
 }
 
 /// The source-control service over the harness's adapters.
@@ -42,12 +63,48 @@ pub type Service<'a> = SourceControlService<
     MemoryChangesetLog,
     MemoryDerivedData,
     MemoryDraftStore,
+    MemoryRepositoryDirectory,
+    MemoryAuthorisationDecision,
+>;
+
+/// The repositories service over the harness's adapters.
+pub type Repos<'a> = RepositoriesService<
+    'a,
+    MemoryRepositoryDirectory,
+    MemoryAuthorisationDecision,
+    MemoryMembership,
 >;
 
 impl Harness {
-    /// The repositories port over this harness's directory.
-    pub const fn repositories(&self) -> RepositoriesService<'_, MemoryRepositoryDirectory> {
-        RepositoriesService::new(&self.directory)
+    /// The repositories port over this harness's adapters.
+    pub const fn repositories(&self) -> Repos<'_> {
+        RepositoriesService::new(&self.directory, &self.authorisation, &self.membership)
+    }
+
+    /// The authentication port over this harness's identity verification.
+    pub const fn authentication(&self) -> AuthenticationService<'_, MemoryIdentityVerification> {
+        AuthenticationService::new(&self.identity)
+    }
+
+    /// The principal `name` of the harness's issuer.
+    pub fn principal(name: &str) -> Principal {
+        Principal::new("https://id.test", name).unwrap()
+    }
+
+    /// The credential the harness registers for `name`.
+    pub fn credential(name: &str) -> Credential {
+        format!("token-{name}").parse().unwrap()
+    }
+
+    /// Registers a credential for the principal `name` and authenticates with it, through the
+    /// authentication port.
+    pub async fn caller(&self, name: &str) -> Caller {
+        self.identity
+            .register(&Self::credential(name), Self::principal(name));
+        self.authentication()
+            .authenticate(&Self::credential(name))
+            .await
+            .unwrap()
     }
 
     /// Source control over this harness's adapters.
@@ -57,22 +114,24 @@ impl Harness {
             &self.log,
             &self.derived,
             &self.drafts,
+            &self.directory,
+            &self.authorisation,
             MAX_UPLOAD_SIZE,
         )
     }
 
-    /// Creates the organisation `organisation` holding the repository `app`, through the
-    /// repositories port.
-    pub async fn repository(&self, organisation: &str) -> Repo<'_> {
+    /// Creates the organisation `organisation`, which `owner` administers, holding the repository
+    /// `app`, through the repositories port.
+    pub async fn repository(&self, owner: &Caller, organisation: &str) -> Repo<'_> {
         let organisation: OrganisationName = organisation.parse().unwrap();
         let name: RepositoryName = "app".parse().unwrap();
         self.repositories()
-            .create_organisation(&organisation)
+            .create_organisation(owner, &organisation)
             .await
             .unwrap();
         let id = self
             .repositories()
-            .create_repository(&organisation, &name)
+            .create_repository(owner, &organisation, &name)
             .await
             .unwrap();
         Repo { harness: self, id }
@@ -85,12 +144,9 @@ pub struct Repo<'a> {
     pub id: RepositoryId,
 }
 
-/// The draft `name` of the principal `principal`.
-pub fn draft_id(principal: &str, name: &str) -> DraftId {
-    DraftId {
-        principal: principal.parse().unwrap(),
-        name: name.parse().unwrap(),
-    }
+/// The draft name `name`.
+pub fn draft(name: &str) -> DraftName {
+    name.parse().unwrap()
 }
 
 impl Repo<'_> {
@@ -103,8 +159,8 @@ impl Repo<'_> {
             .unwrap()
     }
 
-    /// Uploads and stages each `(path, content)` as a regular file in the draft `draft`.
-    pub async fn stage(&self, draft: &DraftId, files: &[(&str, &str)]) {
+    /// Uploads and stages each `(path, content)` as a regular file in `caller`'s draft `draft`.
+    pub async fn stage(&self, caller: &Caller, draft: &DraftName, files: &[(&str, &str)]) {
         for (path, content) in files {
             let content = self.upload(content).await;
             let file = File {
@@ -113,16 +169,23 @@ impl Repo<'_> {
             };
             self.harness
                 .source_control()
-                .stage(self.id, draft, path.parse().unwrap(), Change::File(file))
+                .stage(
+                    caller,
+                    self.id,
+                    draft,
+                    path.parse().unwrap(),
+                    Change::File(file),
+                )
                 .await
                 .unwrap();
         }
     }
 
-    /// Lands `draft` through the source-control port.
+    /// Lands `caller`'s `draft` through the source-control port.
     pub async fn land(
         &self,
-        draft: &DraftId,
+        caller: &Caller,
+        draft: &DraftName,
         message: &str,
     ) -> Result<Address, SourceControlError> {
         let landing = Landing {
@@ -131,7 +194,7 @@ impl Repo<'_> {
         };
         self.harness
             .source_control()
-            .land(self.id, draft, landing)
+            .land(caller, self.id, draft, landing)
             .await
     }
 

@@ -77,6 +77,8 @@ pub enum ChangesetLogError {
     },
     /// A changeset has no encoding, so no identifier.
     Encode(EncodeError),
+    /// The log's backend failed; carries a description.
+    Backend(String),
 }
 
 impl fmt::Display for ChangesetLogError {
@@ -88,6 +90,7 @@ impl fmt::Display for ChangesetLogError {
             } => write!(f, "the ref moved to {current}"),
             Self::RefMoved { current: None } => write!(f, "the ref was unset"),
             Self::Encode(error) => write!(f, "{error}"),
+            Self::Backend(description) => write!(f, "changeset log failed: {description}"),
         }
     }
 }

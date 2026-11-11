@@ -9,10 +9,11 @@ use crate::domain::derivation::{self, DerivationError};
 use crate::domain::file_version::{self, FileVersionError, FileVersionNode, FileVersions};
 use crate::domain::path::Path;
 use crate::domain::repository::RepositoryId;
-use crate::port::driven::changeset_log::{ChangesetLog, ChangesetLogError};
+use crate::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
 use crate::port::driven::derived_data::{DerivedData, DerivedDataError};
 
-/// The versions of `path` as of the changeset `at`, newest first.
+/// The versions of `path` as of the changeset `at`, or as of `main` where `at` is `None`, newest
+/// first; none where `main` is unset.
 ///
 /// Derives and stores the file-version nodes of `at` and of each ancestor that lacks them.
 ///
@@ -24,9 +25,16 @@ pub async fn history<L: ChangesetLog, D: DerivedData>(
     log: &L,
     derived: &D,
     repository: RepositoryId,
-    at: Address,
+    at: Option<Address>,
     path: &Path,
 ) -> Result<Vec<FileVersionNode>, HistoryError> {
+    let at = match at {
+        Some(at) => at,
+        None => match log.read_ref(repository, Ref::Main).await? {
+            Some(main) => main,
+            None => return Ok(Vec::new()),
+        },
+    };
     derive_file_versions(log, derived, repository, at).await?;
     let value = derived
         .file_versions(repository, at)
