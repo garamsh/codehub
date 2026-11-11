@@ -1,14 +1,16 @@
 #!/bin/sh
-# Runs the workspace tests, sums every "running N tests" line, and fails on a zero total.
-# Extra arguments pass through to cargo test (a filter, for instance).
+# Runs the tests of one selection of packages, sums every "running N tests" line, and fails on a
+# zero total. TEST_SELECTOR names the packages (default: the workspace without the e2e package);
+# extra arguments pass through to cargo test (a filter, for instance).
 set -eu
 
-selector="--workspace${*:+ $*}"
+packages=${TEST_SELECTOR:---workspace --exclude e2e}
+selector="$packages${*:+ $*}"
 out=$(mktemp)
 trap 'rm -f "$out"' EXIT
 
 status=0
-cargo test --workspace --locked "$@" >"$out" 2>&1 || status=$?
+cargo test $packages --locked "$@" >"$out" 2>&1 || status=$?
 cat "$out"
 
 if [ "$status" -ne 0 ]; then
