@@ -226,6 +226,10 @@ pub struct Client {
 
 impl Client {
     /// A client of the server at `base` presenting `token`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the HTTP client cannot be built.
     pub fn new(base: &str, token: Option<String>) -> Self {
         Self {
             http: reqwest::Client::builder().timeout(BOUND).build().unwrap(),
