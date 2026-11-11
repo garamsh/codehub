@@ -167,4 +167,5 @@ Each is undecided; the recommendation is not a decision.
 - **Skip-list spacing.** Which ancestors each changeset's skip list points at. No option has been examined.
 - **Retention and deletion of objects** no longer referenced by any changeset. Options: never delete; garbage-collect after a grace period.
   - Recommendation: garbage-collect after a grace period, with the export bundle (`workspace.md`) as the safety copy.
+- **What a landing that lost the compare-and-swap stored.** A landing appends its changeset and stores its trees before the compare-and-swap on `main`; where it loses, they are reachable from no ref and nothing removes them. No option has been examined.
 - **Client cache and checkout.** How a client lays out a working copy from cached objects; no option has been examined.
