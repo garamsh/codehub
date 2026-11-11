@@ -22,7 +22,7 @@ How a runner joins the system, receives jobs and runs them: registration, pollin
 
 Declared in the application's terms (`docs/architecture/structure.md`).
 
-- **Runner registry** — issues registration tokens, exchanges them for runner credentials, records runners, labels and pools. Adapter: the metadata database, not decided.
+- **Runner registry** — issues registration tokens, exchanges them for runner credentials, records runners, labels and pools. Adapter: not decided; the metadata database is PostgreSQL (ADR 0013), and whether the runner registry lives in it is open.
 - **Job queue** — holds queued jobs, hands one to a matching polling runner, records completion. Adapter: not decided.
 - **Job source** — how the runner core receives work: the poll conversation with the server. Adapter on the runner side: the chosen transport, see open questions.
 - **Executor driver** — see `execution.md`.
