@@ -7,7 +7,7 @@ publish = false
 
 [dev-dependencies]
 base64.workspace = true
-reqwest = { workspace = true, features = ["cookies", "form"] }
+reqwest = { workspace = true, features = ["cookies", "form", "json"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
