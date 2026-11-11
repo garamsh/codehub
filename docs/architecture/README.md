@@ -32,3 +32,8 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0010-cli-and-mcp-interfaces.md` — ADR 0010, the CLI and the MCP server are first-class interfaces over server-side work
 - `access.md` — identity, authorisation and provisioning ports and the standards their default adapters speak
 - `adr/0006-authentication-and-authorisation-outside-the-core.md` — ADR 0006, authentication and authorisation are separated from the core and speak standards
+- `execution.md` — caches, derived images, delivery through object storage, executor drivers
+- `runner.md` — runner registration, polling, labels, pools, job lifecycle
+- `adr/0007-cache-model-c.md` — ADR 0007, caches are versioned workspace data with images derived from them
+- `adr/0008-image-delivery-and-executor-drivers.md` — ADR 0008, images delivered through object storage, environment known only to executor drivers
+- `adr/0009-runner-registration-and-job-protocol.md` — ADR 0009, runners follow the GitHub Actions self-hosted runner model
