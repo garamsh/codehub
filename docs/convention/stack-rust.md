@@ -55,6 +55,39 @@ hexagonal unit takes these names:
   packages (`cyclic package dependency`), so an `app` that listed an
   adapter which lists `app` does not resolve.
 
+## Async ports and the runtime
+
+This section states where `async` appears, the form a port trait
+takes, how a caller holds a port, and which packages name the runtime.
+
+- **Nothing under `src/domain/` is `async`**, awaits, or names
+  `Future`. Use cases, ports and adapters are where `async` appears.
+- **A port operation is declared as a `fn` returning
+  `impl Future<Output = …> + Send`**, and each implementation writes
+  it as an `async fn`. The `Send` bound is what lets a caller spawn the
+  future on a multi-threaded runtime (`tokio::spawn` requires
+  `F: Future + Send + 'static`, tokio 1.54.1); an implementation whose
+  future holds a non-`Send` value across `.await` does not compile. A
+  bare `async fn` in a `pub` trait raises rustc's `async_fn_in_trait`
+  warning, which fails the lint entry point, and its future cannot be
+  passed where `Send` is required. An implementation that writes the
+  declared form with an `async` block body raises
+  `clippy::manual_async_fn`.
+- **A caller holds a port as a generic type parameter**
+  (`struct Land<S: ChangesetStore>`, `fn land<S: ChangesetStore>(…)`),
+  and the composition site names the concrete type. A trait with such
+  a method is not dyn compatible (The Rust Reference, Traits, Dyn
+  compatibility: a dispatchable method must "Not be an `async fn`" and
+  must not "have a return position `impl Trait` type"), so `dyn` of a
+  port fails with `E0038`.
+- **No `async-trait` crate.** `async fn` and return-position
+  `impl Trait` in traits are native since Rust 1.75.0.
+- **`tokio` is a `[dependencies]` entry only of a binary package**, and
+  any package may name it under `[dev-dependencies]`. A test that
+  awaits is `#[tokio::test]` (features `macros` and `rt`), which runs
+  on a current-thread runtime; the `Send` bound is checked when the
+  implementation compiles, not by the runtime.
+
 ## Naming
 
 This section states the form each kind of Rust identifier takes.

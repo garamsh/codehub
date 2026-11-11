@@ -22,6 +22,7 @@ The hexagonal structure of the system: what the unit is, what may reference what
 - **The application has two rings.** The inner domain ring holds the object model, deltas, merge and derivation. The application ring around it holds the use cases and the ports.
 - **The domain ring is pure.** It performs no I/O and reaches no port; what it needs from outside is passed to it as a value by a use case, and what it produces is returned to one.
 - **Every reference points inward.** The application ring references the domain ring; a reference pointing outward from the domain ring — to a use case, a port, or anything outside the application — is a defect, even where the language permits it.
+- **Ports wait; the domain ring does not.** A port's operations may suspend while the outside answers, and a use case waits on them; a domain function runs to completion on the values passed to it (ADR 0018).
 
 ### Shape rules every project carries
 
@@ -34,6 +35,7 @@ The hexagonal structure of the system: what the unit is, what may reference what
 - Hexagonal structure was chosen in ADR 0001; the signs that it was wrong are recorded there.
 - Rust as implementation language is recorded in ADR 0002.
 - The partition of the application into a domain ring and an application ring is recorded in ADR 0014, with the reason and the signs that it was wrong.
+- Asynchronous ports dispatched statically, and the synchronous domain ring, are recorded in ADR 0018, with the alternatives not taken and the signs that it was wrong.
 
 ## Open questions
 
