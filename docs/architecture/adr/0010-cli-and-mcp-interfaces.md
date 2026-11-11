@@ -1,6 +1,6 @@
 # ADR 0010: The CLI and the MCP server are first-class interfaces over server-side work
 
-> Status: accepted
+> Status: accepted; the MCP server part superseded by ADR-0026
 > Date: 2026-11-11
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.

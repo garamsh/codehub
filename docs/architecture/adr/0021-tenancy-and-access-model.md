@@ -1,6 +1,6 @@
 # ADR 0021: Organisations have admins and members, and members hold path-prefix grants
 
-> Status: accepted
+> Status: accepted; the agent and Token Exchange parts superseded by ADR-0027
 > Date: 2026-11-11
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.

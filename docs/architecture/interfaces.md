@@ -1,33 +1,31 @@
 # Interfaces
 
-The ways clients reach the system, which are the `ch` CLI, the MCP server and the API behind them, and what each may and may not do.
+The ways clients reach the system, which are the `ch` CLI and the HTTP API behind it, and what each may and may not do.
 
 ## Current decisions
 
-- **Two first-class interfaces** (ADR 0010): a minimal CLI named `ch`, and an MCP server. Agents are the main clients; people use the CLI.
+- **Two first-class interfaces** (ADR 0010, ADR 0026): a minimal CLI named `ch`, and the HTTP API described by OpenAPI. codehub builds no MCP server; anyone may build one outside codehub over the API.
 - **Both are driving adapters** under `structure.md`. Each translates between its protocol and the application's driving ports, and holds no subject matter of its own. An operation is added to a port first; an interface then exposes it.
 - **Complex work is server-side.** An interface hands a request to the server and reports the outcome. It does not orchestrate multi-step work, and it does not retry or compensate around the server's own steps. The server-side landing automation is described in `source-control.md`.
 - **The client is kept to a few verbs.** GitHub's workflow and CLI grew too complex and this project does not carry that over. The verbs in M2 are `login <server url>`, `use <org>/<repo>`, `put <path> <file>`, `put --delete <path>`, `land`, `log <path>`, `read <path>`, `org create`, `repo create` and `member add|remove`; a draft is named with `--draft <name>`, default `default`. Further verbs are open (ADR 0025).
 - **The CLI is named `ch`.** `hub` was rejected because Debian ships a package of that name, GitHub's old CLI.
-- **The server API is HTTP with JSON, described by OpenAPI** (ADR 0015). The CLI and the MCP server call it; its bodies carry metadata, not object bytes.
+- **The server API is HTTP with JSON, described by OpenAPI** (ADR 0015). `ch` and any other client call it; its bodies carry metadata, not object bytes.
 - **Object bytes move by presigned URL** (ADR 0015). The API issues a short-lived presigned URL and the client uploads or downloads the bytes directly to or from the S3-compatible object store, as runners already fetch images (`execution.md`, ADR 0008).
 - **The CLI keeps three items of local state**: the server URL, the token and the selected `<org>/<repo>`, in `$XDG_CONFIG_HOME/ch/` with mode 0600. Its output is human text by default and JSON with `--json`. It holds no PostgreSQL or S3 driver and moves object bytes with plain HTTP to presigned URLs (ADR 0025).
 - **The API is versioned in the path and described by OpenAPI 3.1** (ADR 0024). Its prefix is `/v1`, resources are under `/v1/orgs/{org}/repos/{repo}/…`, errors are RFC 9457 problem details, and callers present bearer tokens.
 - **Access failures are told apart by status** (ADR 0024): 401 without a valid token; 404 when the caller may not read the repository, so its existence is not disclosed; 403 when it may read but not perform the action; 409 for a landing conflict or a lost compare-and-swap, naming the paths.
 - **The OpenAPI document is committed in `crates/adapter-http`** and served at `/v1/openapi.json`; a test asserts they are equal. Landing is a synchronous request in M2.
 - **The server binary is `codehub`**, bound to `127.0.0.1` unless configured otherwise (ADR 0024).
-- **Credentials are not decided here.** How the CLI and agents obtain and present them is in `access.md`; interfaces carry what it defines.
+- **`ch` takes its token from a file path or an environment variable naming it, and may exchange it by RFC 8693** at a configured token endpoint for a configured audience; the exchanged token is held in memory only. Device-grant login stays for standalone mode (ADR 0031).
+- **Credentials are not decided here.** What the server accepts is in `access.md`; interfaces carry what it defines.
 
 ## Rationale
 
-- Why two first-class interfaces over server-side work: ADR 0010.
+- Why two first-class interfaces over server-side work: ADR 0010; why neither is an MCP server: ADR 0026.
+- The token sources and exchange of `ch`: ADR 0031.
 - Why interfaces are adapters over shared ports: ADR 0001 and `structure.md`.
 - Why HTTP with JSON and presigned URLs for object bytes, and what would show it wrong: ADR 0015. It was decided before authentication on the API and the runner-to-server transport were settled, although this document's earlier open question tied the choice to them; ADR 0015 names a second transport added on the same endpoint for either of them as a sign the decision was wrong.
 - The M2 verbs, local state and output format, and the alternatives not taken: ADR 0025. The API's version, description and status codes: ADR 0024.
-- MCP facts the open questions rely on, checked on 2026-11-11 against modelcontextprotocol.io, pages `/specification/latest/basic/transports` and `/specification/latest/basic/versioning`:
-  - The latest revision there is `2026-07-28`. Revisions `2025-11-25` and earlier are called legacy and use an `initialize` handshake.
-  - The standard transports are stdio and Streamable HTTP.
-  - Which revisions and transports this system serves is not decided.
 
 ## Open questions
 
@@ -36,4 +34,3 @@ Each is settled in an ADR when the project takes a side (`docs/architecture/READ
 - **Further verbs of `ch`** beyond those in M2 (ADR 0025), such as `find` and `run`, and whether `edit` is a verb. Options: a fixed small set; a small set plus an alias or plugin mechanism. Recommendation: a fixed small set.
 - **Streaming and long-running operations**, such as reporting a landing and its post-land checks. Options: long-poll; server-sent events; a status resource the client polls. Recommendation: none yet; ADR 0010 counts repeated polling around one workflow as a sign of a wrong unit of work, so the choice is made per operation with that in view.
 - **Whether runners use the same endpoint.** Options: runners call the same HTTP JSON API; runners use a separate endpoint and transport (`runner.md`, runner-to-server transport). Recommendation: none yet; ADR 0015 does not decide it, and runner identity is mutual TLS (`access.md`), which may favour a separate listener.
-- **MCP revisions and transports served.** Options: the latest revision only; the latest plus legacy revisions; stdio, Streamable HTTP, or both. Recommendation: the latest revision over Streamable HTTP for the hosted server, and stdio only if a client needs a local process.

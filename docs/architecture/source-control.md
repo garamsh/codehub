@@ -4,7 +4,7 @@ How versions of a repository's content are stored, changed, landed and queried.
 
 ## Current decisions
 
-- **The server holds the truth.** Clients (`ch`, the MCP server, runners) keep at most a bounded cache of objects. Everything that creates a changeset, rebases, lands or reverts runs on the server (ADR 0003).
+- **The server holds the truth.** Clients (`ch`, runners) keep at most a bounded cache of objects. Everything that creates a changeset, rebases, lands or reverts runs on the server (ADR 0003).
 - **Objects are content-addressed and immutable.** An object is identified by the SHA-256 of its content, written with an algorithm prefix (`sha256:<hex>`) so that a later algorithm can coexist, and is never modified (ADR 0011).
 - **Changesets, trees and file-version nodes have exactly one encoding each**, specified in §Object encoding, and an object's address is the SHA-256 of its encoded bytes (ADR 0016).
 - **A changeset is identified by its address**, the SHA-256 of its encoding, and not by anything the log assigns (ADR 0016).
@@ -129,7 +129,7 @@ The ports below follow from the decisions, named for the conversation and in the
 - **Derived data** — read and write computed trees, file-version nodes, blame and skip lists for a repository. Served by PostgreSQL (ADR 0022).
 - **Draft store** — put and get draft changesets, held outside the log until they land (ADR 0012). Served by PostgreSQL (ADR 0022).
 - **Check dispatch** — ask for the post-land checks to run and receive their results. The execution side is in `docs/architecture/runner.md`.
-- Driving adapters are the server API behind `ch` and the MCP server (`docs/architecture/interfaces.md`). They reach the application through the **source control** driving port: land a draft on `main`, and read a path's history.
+- Driving adapters are the server API behind `ch` (`docs/architecture/interfaces.md`). They reach the application through the **source control** driving port: land a draft on `main`, and read a path's history.
 
 ## Rationale
 
