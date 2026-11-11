@@ -81,6 +81,7 @@ impl AuthorisationDecision for PostgresAuthorisationDecision {
             Resource::Repository {
                 organisation,
                 repository,
+                ..
             }
             | Resource::Path {
                 organisation,

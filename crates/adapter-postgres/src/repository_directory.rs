@@ -104,20 +104,28 @@ impl RepositoryDirectory for PostgresRepositoryDirectory {
         }
     }
 
-    async fn organisation_of(
+    async fn names_of(
         &self,
         repository: RepositoryId,
-    ) -> Result<Option<OrganisationName>, DirectoryError> {
+    ) -> Result<Option<(OrganisationName, RepositoryName)>, DirectoryError> {
         // An identifier outside the stored range was never assigned.
         let Ok(id) = conversion::repository_column(repository) else {
             return Ok(None);
         };
-        let found =
-            sqlx::query_scalar::<_, String>("select organisation from repositories where id = $1")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(backend)?;
-        found.map(|name| name.parse().map_err(backend)).transpose()
+        let found = sqlx::query_as::<_, (String, String)>(
+            "select organisation, name from repositories where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?;
+        found
+            .map(|(organisation, name)| {
+                Ok((
+                    organisation.parse().map_err(backend)?,
+                    name.parse().map_err(backend)?,
+                ))
+            })
+            .transpose()
     }
 }

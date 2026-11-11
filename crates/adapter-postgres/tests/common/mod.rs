@@ -21,6 +21,7 @@ use app::port::driven::object_store::ObjectStore;
 use app::port::driving::authentication::Authentication;
 use app::port::driving::repositories::Repositories;
 use app::port::driving::source_control::{SourceControl, SourceControlError};
+use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
 use app::use_case::land::Landing;
 use app::use_case::repositories::RepositoriesService;
@@ -105,12 +106,19 @@ pub type Repos<'a> = RepositoriesService<
     PostgresRepositoryDirectory,
     PostgresAuthorisationDecision,
     PostgresMembership,
+    (),
 >;
 
 impl Harness {
     /// The repositories port over this harness's adapters.
     pub const fn repositories(&self) -> Repos<'_> {
-        RepositoriesService::new(&self.directory, &self.authorisation, &self.membership)
+        RepositoriesService::new(
+            &self.directory,
+            &self.authorisation,
+            &self.membership,
+            &(),
+            Administration::BuiltIn,
+        )
     }
 
     /// The authentication port over this harness's identity verification.

@@ -62,11 +62,18 @@ async fn refuses_a_request_without_a_valid_token() {
 
 #[cfg(test)]
 fn router_for(api: &Api) -> axum::Router {
+    use app::use_case::administration::Administration;
     use app::use_case::repositories::RepositoriesService;
     let stores = api.stores;
     router_with(
         stores,
-        RepositoriesService::new(&stores.directory, &stores.authorisation, &stores.membership),
+        RepositoriesService::new(
+            &stores.directory,
+            &stores.authorisation,
+            &stores.membership,
+            &(),
+            Administration::BuiltIn,
+        ),
     )
 }
 

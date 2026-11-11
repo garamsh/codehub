@@ -41,15 +41,16 @@ pub trait RepositoryDirectory {
         repository: &RepositoryName,
     ) -> impl Future<Output = Result<RepositoryId, DirectoryError>> + Send;
 
-    /// The organisation holding `repository`; `None` where no repository has this identifier.
+    /// The organisation holding `repository` and the name it has there; `None` where no
+    /// repository has this identifier.
     ///
     /// # Errors
     ///
     /// The directory's [`DirectoryError`].
-    fn organisation_of(
+    fn names_of(
         &self,
         repository: RepositoryId,
-    ) -> impl Future<Output = Result<Option<OrganisationName>, DirectoryError>> + Send;
+    ) -> impl Future<Output = Result<Option<(OrganisationName, RepositoryName)>, DirectoryError>> + Send;
 }
 
 /// Why the directory refused or did not answer.
