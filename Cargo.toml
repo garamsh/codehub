@@ -9,6 +9,7 @@ rust-version = "1.99.1"
 [workspace.dependencies]
 imara-diff = { version = "0.2.0", default-features = false }
 sha2 = "0.11.1"
+tokio = { version = "1.54.1", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -123,8 +123,9 @@ The ports below follow from the decisions, named for the conversation and in the
 - **Object store** — put and get immutable objects by content address, and issue presigned URLs through which clients upload and download object bytes directly to and from the store, so the bytes do not pass through the server API (ADR 0015). Served by an S3-compatible adapter; the same technology also holds filesystem images, delivered the same way (`docs/architecture/execution.md`, ADR 0008).
 - **Changeset log** — append a changeset, read the log, read a ref, and move a ref by compare-and-swap on that ref alone. Served by a PostgreSQL adapter, the log as a table (ADR 0013).
 - **Derived data** — read and write computed trees, file-version nodes, blame and skip lists for a workspace.
+- **Draft store** — put and get draft changesets, held outside the log until they land (ADR 0012).
 - **Check dispatch** — ask for the post-land checks to run and receive their results. The execution side is in `docs/architecture/runner.md`.
-- Driving adapters are the server API behind `ch` and the MCP server (`docs/architecture/interfaces.md`).
+- Driving adapters are the server API behind `ch` and the MCP server (`docs/architecture/interfaces.md`). They reach the application through the **source control** driving port: land a draft on `main`, and read a path's history.
 
 ## Rationale
 
@@ -166,4 +167,5 @@ Each is undecided; the recommendation is not a decision.
 - **Skip-list spacing.** Which ancestors each changeset's skip list points at. No option has been examined.
 - **Retention and deletion of objects** no longer referenced by any changeset. Options: never delete; garbage-collect after a grace period.
   - Recommendation: garbage-collect after a grace period, with the export bundle (`workspace.md`) as the safety copy.
+- **What a landing that lost the compare-and-swap stored.** A landing appends its changeset and stores its trees before the compare-and-swap on `main`; where it loses, they are reachable from no ref and nothing removes them. No option has been examined.
 - **Client cache and checkout.** How a client lays out a working copy from cached objects; no option has been examined.
