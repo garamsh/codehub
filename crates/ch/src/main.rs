@@ -3,5 +3,5 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    ch::run(std::env::args().skip(1))
+    ch::run(std::env::args_os().skip(1))
 }

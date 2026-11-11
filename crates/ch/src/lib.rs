@@ -1,5 +1,6 @@
 //! The `ch` command-line client and its composition site.
 
+use std::ffi::OsString;
 use std::fmt;
 use std::io::Write;
 use std::process::ExitCode;
@@ -24,7 +25,7 @@ impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingArgument => f.write_str("ch: missing argument; try --version"),
-            Self::UnknownArgument(arg) => write!(f, "ch: unknown argument '{arg}'; try --version"),
+            Self::UnknownArgument(arg) => write!(f, "ch: unknown argument {arg:?}; try --version"),
         }
     }
 }
@@ -36,20 +37,23 @@ impl std::error::Error for CliError {}
 /// # Errors
 ///
 /// Returns [`CliError::MissingArgument`] for no arguments and
-/// [`CliError::UnknownArgument`] for anything but `--version` alone.
-pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, CliError> {
+/// [`CliError::UnknownArgument`] for anything but `--version` alone. A non-Unicode
+/// argument is unknown and is held lossily.
+pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, CliError> {
     let mut args = args.into_iter();
-    match (args.next().as_deref(), args.next()) {
+    match (args.next(), args.next()) {
         (None, _) => Err(CliError::MissingArgument),
-        (Some("--version"), None) => Ok(Command::Version),
-        (Some(first), _) => Err(CliError::UnknownArgument(first.to_owned())),
+        (Some(first), None) if first == "--version" => Ok(Command::Version),
+        (Some(first), _) => Err(CliError::UnknownArgument(
+            first.to_string_lossy().into_owned(),
+        )),
     }
 }
 
 /// Runs `ch` over the arguments after the program name, reporting on stdout and stderr.
 ///
 /// This is the composition site; it has no adapters to wire yet.
-pub fn run<I: IntoIterator<Item = String>>(args: I) -> ExitCode {
+pub fn run<I: IntoIterator<Item = OsString>>(args: I) -> ExitCode {
     match parse(args) {
         Ok(Command::Version) => {
             match writeln!(std::io::stdout(), "ch {}", env!("CARGO_PKG_VERSION")) {
@@ -69,8 +73,8 @@ pub fn run<I: IntoIterator<Item = String>>(args: I) -> ExitCode {
 mod tests {
     use super::*;
 
-    fn args(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| (*s).to_owned()).collect()
+    fn args(list: &[&str]) -> Vec<OsString> {
+        list.iter().map(OsString::from).collect()
     }
 
     #[test]
@@ -97,6 +101,24 @@ mod tests {
             parse(args(&["--version", "extra"])),
             Err(CliError::UnknownArgument("--version".to_owned()))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_non_unicode_argument() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let bad = OsString::from_vec(vec![b'a', 0xff]);
+        assert_eq!(
+            parse([bad]),
+            Err(CliError::UnknownArgument("a\u{fffd}".to_owned()))
+        );
+    }
+
+    #[test]
+    fn keeps_the_message_on_one_line() {
+        let message = CliError::UnknownArgument("a\nb".to_owned()).to_string();
+        assert_eq!(message.lines().count(), 1);
     }
 
     #[test]

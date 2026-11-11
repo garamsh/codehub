@@ -34,3 +34,18 @@ fn exits_non_zero_without_arguments() -> io::Result<()> {
     assert!(!output.stderr.is_empty());
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn reports_non_unicode_argument_without_panicking() -> io::Result<()> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ch"))
+        .arg(OsString::from_vec(vec![0xff]))
+        .output()?;
+    assert!(!output.status.success());
+    assert_ne!(output.status.code(), Some(101));
+    assert_eq!(String::from_utf8_lossy(&output.stderr).lines().count(), 1);
+    Ok(())
+}
