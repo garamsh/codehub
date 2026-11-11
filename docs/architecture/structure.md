@@ -5,7 +5,7 @@ The hexagonal structure of the system: what the unit is, what may reference what
 ## Current decisions
 
 - **The system is a hexagon.** The inside is the application, the subject matter and the decisions made over it, and it names no technology. The outside is adapters, one per technology.
-- **The implementation language is Rust** (ADR 0002). The stack convention spelling these rules in Rust lands separately; until it exists, the package and file names a unit takes are not fixed.
+- **The implementation language is Rust** (ADR 0002). The package and file names a unit takes in Rust are spelled in `docs/convention/stack-rust.md`.
 
 ### Boundaries and dependency direction
 
