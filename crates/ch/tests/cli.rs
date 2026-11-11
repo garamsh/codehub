@@ -3,6 +3,7 @@
 use std::io;
 use std::process::{Command, Output};
 
+#[cfg(test)]
 fn ch(args: &[&str]) -> io::Result<Output> {
     Command::new(env!("CARGO_BIN_EXE_ch")).args(args).output()
 }

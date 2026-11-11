@@ -51,9 +51,12 @@ hexagonal unit takes these names:
   test that wires the shipped graph calls that function.
 - Direction is the dependency list. `app`'s `Cargo.toml` names no
   adapter; an adapter's names `app` and no other adapter; a binary
-  package's names the adapters it wires. Cargo rejects a cycle between
-  packages (`cyclic package dependency`), so an `app` that listed an
-  adapter which lists `app` does not resolve.
+  package's names `app` and the adapters it wires, each from the change
+  whose composition site first references it, so a binary package
+  whose composition site references nothing from `app` does not name
+  it. Cargo rejects a cycle between packages (`cyclic package
+  dependency`), so an `app` that listed an adapter which lists `app`
+  does not resolve.
 
 ## Async ports and the runtime
 
@@ -126,7 +129,13 @@ lints hold the line, and where a boundary parses.
   `wildcard_enum_match_arm` to `"deny"`. Test code is exempt through
   `clippy.toml` at the root: `allow-unwrap-in-tests`,
   `allow-expect-in-tests`, `allow-panic-in-tests` and
-  `allow-indexing-slicing-in-tests`, each `true`.
+  `allow-indexing-slicing-in-tests`, each `true`. Clippy applies them
+  "in test functions or `#[cfg(test)]`": a `#[test]` function, or an
+  item under a `#[cfg(test)]` attribute. Compiling an integration-test
+  file with `--test` does not count, so in
+  `crates/<package>/tests/<name>.rs` each helper function, and each
+  `mod common;` declaration, carries `#[cfg(test)]`; without it, an
+  `unwrap` in the helper fails the lint entry point.
 - **A suppression is `#[expect(lint, reason = "...")]`**, never
   `#[allow]`: an `expect` whose lint no longer fires raises
   `unfulfilled_lint_expectations`, so the suppression cannot outlive
@@ -209,10 +218,13 @@ entry point alone.
 per binary, and exits 0 where `N` is 0 everywhere: a package with no
 tests, or a filter that matches none, passes. The test entry point sums
 the `running N tests` lines it receives, prints the total beside the
-selector `--workspace`, and fails where the total is zero. Over a
-workspace with no members cargo itself exits 101 (`The manifest is
-virtual, and the workspace has no members`), so a member count is not
-checked separately.
+selector `--workspace`, and fails where the total is zero. It passes
+any arguments it is given through to `cargo test` and prints them
+after `--workspace`, verbatim, in the selector (`3 tests ran
+(--workspace version)`), so a filtered run never reads as the full
+one. Over a workspace with no members cargo itself exits 101 (`The
+manifest is virtual, and the workspace has no members`), so a member
+count is not checked separately.
 
 `--workspace` selects the packages `members` lists, and the glob
 `crates/*` takes the directories on disk. `cargo test` without
