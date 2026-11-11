@@ -111,7 +111,7 @@ pub fn parse_prefix(text: &str) -> Result<Prefix, Problem> {
     }
 }
 
-/// An issuer and a subject, as a request body names a principal.
+/// An issuer and a subject, as a request names a principal.
 #[derive(Deserialize)]
 pub struct PrincipalBody {
     issuer: String,

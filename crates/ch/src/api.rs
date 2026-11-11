@@ -110,6 +110,16 @@ impl<'a> Api<'a> {
         Self::send(request, Operation::Other).await.map(|_| ())
     }
 
+    /// A DELETE that names its target in the query string; DELETE carries no body (ADR 0032).
+    async fn delete_with_query<Q: Serialize + Sync>(
+        &self,
+        path: &str,
+        query: &Q,
+    ) -> Result<(), Failure> {
+        let request = self.request(Method::DELETE, path).query(query);
+        Self::send(request, Operation::Other).await.map(|_| ())
+    }
+
     /// Creates an organisation.
     ///
     /// # Errors
@@ -158,7 +168,7 @@ impl<'a> Api<'a> {
         member: &Principal,
     ) -> Result<(), Failure> {
         let path = format!("orgs/{}/members", encode(organisation));
-        self.call_empty(Method::DELETE, &path, Some(member)).await
+        self.delete_with_query(&path, member).await
     }
 
     /// Adds (`add`) or removes a grant on a repository.
@@ -172,13 +182,12 @@ impl<'a> Api<'a> {
         grant: &Grant,
         add: bool,
     ) -> Result<(), Failure> {
-        let method = if add { Method::PUT } else { Method::DELETE };
-        self.call_empty(
-            method,
-            &format!("{}/grants", repo_path(repository)),
-            Some(grant),
-        )
-        .await
+        let path = format!("{}/grants", repo_path(repository));
+        if add {
+            self.call_empty(Method::PUT, &path, Some(grant)).await
+        } else {
+            self.delete_with_query(&path, grant).await
+        }
     }
 
     /// Asks for a grant to upload an object.

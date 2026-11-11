@@ -279,24 +279,32 @@
             "schema": {
               "type": "string"
             }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/Principal"
-              }
+          },
+          {
+            "name": "issuer",
+            "in": "query",
+            "required": true,
+            "description": "The principal's issuer URL.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subject",
+            "in": "query",
+            "required": true,
+            "description": "The principal's subject at that issuer.",
+            "schema": {
+              "type": "string"
             }
           }
-        },
+        ],
         "responses": {
           "204": {
             "description": "The member was removed."
           },
           "400": {
-            "description": "A name, path, address or body is malformed.",
+            "description": "A name, path, address or query parameter is malformed or missing.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -467,24 +475,54 @@
             "schema": {
               "type": "string"
             }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/Grant"
-              }
+          },
+          {
+            "name": "issuer",
+            "in": "query",
+            "required": true,
+            "description": "The principal's issuer URL.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subject",
+            "in": "query",
+            "required": true,
+            "description": "The principal's subject at that issuer.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "prefix",
+            "in": "query",
+            "required": true,
+            "description": "The directory covered; empty for the whole repository.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "access",
+            "in": "query",
+            "required": true,
+            "description": "What the grant allows.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "read",
+                "write"
+              ]
             }
           }
-        },
+        ],
         "responses": {
           "204": {
             "description": "The grant was taken."
           },
           "400": {
-            "description": "A name, path, address or body is malformed.",
+            "description": "A name, path, address or query parameter is malformed or missing.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1274,24 +1312,6 @@
         "properties": {
           "name": {
             "$ref": "#/components/schemas/Name"
-          }
-        }
-      },
-      "Principal": {
-        "type": "object",
-        "required": [
-          "issuer",
-          "subject"
-        ],
-        "properties": {
-          "issuer": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "^\\S+$"
-          },
-          "subject": {
-            "type": "string",
-            "minLength": 1
           }
         }
       },
