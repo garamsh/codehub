@@ -1,4 +1,4 @@
-//! The 3-way merge of one path's content (ADR 0017).
+//! The 3-way merge of one path's version: its kind and its content (ADR 0017, ADR 0019).
 
 use std::fmt;
 use std::ops::Range;
@@ -8,6 +8,24 @@ use imara_diff::{Algorithm, Diff, InternedInput};
 
 /// How many leading bytes are searched for a NUL byte when telling binary from text.
 const BINARY_SCAN_LEN: usize = 8000;
+
+/// Whether a file is executable, the one file mode an object records (ADR 0016).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    /// A file that is not executable.
+    File,
+    /// An executable file.
+    Executable,
+}
+
+/// What one path holds: its kind and its content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileVersion {
+    /// Whether the file is executable.
+    pub kind: FileKind,
+    /// The file's bytes.
+    pub content: Vec<u8>,
+}
 
 /// Why one path's versions do not merge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +38,8 @@ pub enum FileConflict {
     Lines,
     /// Both sides changed the path to different content, and one of its versions is binary.
     Binary,
+    /// Both sides set the path's kind differently.
+    Kind,
 }
 
 impl fmt::Display for FileConflict {
@@ -29,45 +49,78 @@ impl fmt::Display for FileConflict {
             Self::AddAdd => "added on both sides with different content",
             Self::Lines => "the same lines changed differently on both sides",
             Self::Binary => "a binary file changed differently on both sides",
+            Self::Kind => "the file kind set differently on both sides",
         })
     }
 }
 
 impl std::error::Error for FileConflict {}
 
-/// Merges one path's content at the base with its content on two sides.
+/// Merges one path's version at the base with its version on two sides.
 ///
-/// `None` is the path's absence. Returns the merged content, `None` where the
-/// merge deletes the path. A path is merged by lines only when its base and
-/// both sides are text; otherwise a change on both sides to different content
-/// conflicts.
+/// `None` is the path's absence. Returns the merged version, `None` where the
+/// merge deletes the path. The kind and the content are merged apart, so one
+/// side's change to the kind is kept beside the other side's change to the
+/// content. Content is merged by lines only when its base and both sides are
+/// text; otherwise a change on both sides to different content conflicts.
 ///
 /// # Errors
 ///
-/// Returns the [`FileConflict`] that stops the merge.
+/// Returns the [`FileConflict`] that stops the merge; where the content and
+/// the kind both conflict, the content's.
 pub fn merge_file(
-    base: Option<&[u8]>,
-    ours: Option<&[u8]>,
-    theirs: Option<&[u8]>,
-) -> Result<Option<Vec<u8>>, FileConflict> {
+    base: Option<&FileVersion>,
+    ours: Option<&FileVersion>,
+    theirs: Option<&FileVersion>,
+) -> Result<Option<FileVersion>, FileConflict> {
     if ours == theirs || theirs == base {
-        return Ok(ours.map(<[u8]>::to_vec));
+        return Ok(ours.cloned());
     }
     if ours == base {
-        return Ok(theirs.map(<[u8]>::to_vec));
+        return Ok(theirs.cloned());
     }
-    match (base, ours, theirs) {
-        (None, _, _) => Err(FileConflict::AddAdd),
-        (Some(_), None, _) | (Some(_), _, None) => Err(FileConflict::DeleteModify),
-        (Some(base), Some(ours), Some(theirs)) => {
-            if is_text(base) && is_text(ours) && is_text(theirs) {
-                merge_lines(base, ours, theirs)
-                    .map(Some)
-                    .ok_or(FileConflict::Lines)
-            } else {
-                Err(FileConflict::Binary)
-            }
+    match (ours, theirs) {
+        (Some(ours), Some(theirs)) => {
+            let content = merge_content(
+                base.map(|base| base.content.as_slice()),
+                &ours.content,
+                &theirs.content,
+            )?;
+            let kind = merge_kind(base.map(|base| base.kind), ours.kind, theirs.kind)?;
+            Ok(Some(FileVersion { kind, content }))
         }
+        (None, _) | (_, None) => Err(FileConflict::DeleteModify),
+    }
+}
+
+fn merge_content(base: Option<&[u8]>, ours: &[u8], theirs: &[u8]) -> Result<Vec<u8>, FileConflict> {
+    if ours == theirs || Some(theirs) == base {
+        return Ok(ours.to_vec());
+    }
+    if Some(ours) == base {
+        return Ok(theirs.to_vec());
+    }
+    let Some(base) = base else {
+        return Err(FileConflict::AddAdd);
+    };
+    if is_text(base) && is_text(ours) && is_text(theirs) {
+        merge_lines(base, ours, theirs).ok_or(FileConflict::Lines)
+    } else {
+        Err(FileConflict::Binary)
+    }
+}
+
+fn merge_kind(
+    base: Option<FileKind>,
+    ours: FileKind,
+    theirs: FileKind,
+) -> Result<FileKind, FileConflict> {
+    if ours == theirs || Some(theirs) == base {
+        Ok(ours)
+    } else if Some(ours) == base {
+        Ok(theirs)
+    } else {
+        Err(FileConflict::Kind)
     }
 }
 
@@ -213,16 +266,26 @@ fn extend_lines(out: &mut Vec<u8>, lines: &[&[u8]], range: Range<usize>) {
 mod tests {
     use super::*;
 
-    fn merge_text(base: &str, ours: &str, theirs: &str) -> Result<Option<Vec<u8>>, FileConflict> {
-        merge_file(
-            Some(base.as_bytes()),
-            Some(ours.as_bytes()),
-            Some(theirs.as_bytes()),
-        )
+    fn merge_text(base: &str, ours: &str, theirs: &str) -> Result<Vec<u8>, FileConflict> {
+        merge_content(Some(base.as_bytes()), ours.as_bytes(), theirs.as_bytes())
     }
 
-    fn clean(text: &str) -> Result<Option<Vec<u8>>, FileConflict> {
-        Ok(Some(text.as_bytes().to_vec()))
+    fn clean(text: &str) -> Result<Vec<u8>, FileConflict> {
+        Ok(text.as_bytes().to_vec())
+    }
+
+    fn file(content: &str) -> Option<FileVersion> {
+        Some(FileVersion {
+            kind: FileKind::File,
+            content: content.as_bytes().to_vec(),
+        })
+    }
+
+    fn executable(content: &str) -> Option<FileVersion> {
+        Some(FileVersion {
+            kind: FileKind::Executable,
+            content: content.as_bytes().to_vec(),
+        })
     }
 
     #[test]
@@ -342,7 +405,7 @@ mod tests {
     #[test]
     fn conflicts_on_a_binary_path_changed_differently() {
         assert_eq!(
-            merge_file(Some(b"a\0b\nc\n"), Some(b"X\0b\nc\n"), Some(b"a\0b\nY\n")),
+            merge_content(Some(b"a\0b\nc\n"), b"X\0b\nc\n", b"a\0b\nY\n"),
             Err(FileConflict::Binary)
         );
     }
@@ -350,8 +413,8 @@ mod tests {
     #[test]
     fn takes_the_changed_side_of_a_binary_path_changed_once() {
         assert_eq!(
-            merge_file(Some(b"a\0"), Some(b"a\0"), Some(b"b\0")),
-            Ok(Some(b"b\0".to_vec()))
+            merge_content(Some(b"a\0"), b"a\0", b"b\0"),
+            Ok(b"b\0".to_vec())
         );
     }
 
@@ -362,7 +425,7 @@ mod tests {
         let ours = [base.as_slice(), b"c\n"].concat();
         let theirs = [b"c\n".as_slice(), base.as_slice()].concat();
         assert_eq!(
-            merge_file(Some(&base), Some(&ours), Some(&theirs)),
+            merge_content(Some(&base), &ours, &theirs),
             Err(FileConflict::Binary)
         );
     }
@@ -374,20 +437,13 @@ mod tests {
         let ours = [base.as_slice(), b"c\n"].concat();
         let theirs = [b"c\n".as_slice(), base.as_slice()].concat();
         let merged = [b"c\n".as_slice(), base.as_slice(), b"c\n"].concat();
-        assert_eq!(
-            merge_file(Some(&base), Some(&ours), Some(&theirs)),
-            Ok(Some(merged))
-        );
+        assert_eq!(merge_content(Some(&base), &ours, &theirs), Ok(merged));
     }
 
     #[test]
     fn treats_invalid_utf8_as_binary() {
         assert_eq!(
-            merge_file(
-                Some(b"a\n\xff\nb\n"),
-                Some(b"A\n\xff\nb\n"),
-                Some(b"a\n\xff\nB\n")
-            ),
+            merge_content(Some(b"a\n\xff\nb\n"), b"A\n\xff\nb\n", b"a\n\xff\nB\n"),
             Err(FileConflict::Binary)
         );
         // Control: the same edits around a valid line merge.
@@ -400,29 +456,45 @@ mod tests {
     #[test]
     fn conflicts_on_a_deletion_against_a_modification() {
         assert_eq!(
-            merge_file(Some(b"a\n"), None, Some(b"b\n")),
+            merge_file(file("a\n").as_ref(), None, file("b\n").as_ref()),
             Err(FileConflict::DeleteModify)
         );
         assert_eq!(
-            merge_file(Some(b"a\n"), Some(b"b\n"), None),
+            merge_file(file("a\n").as_ref(), file("b\n").as_ref(), None),
             Err(FileConflict::DeleteModify)
+        );
+    }
+
+    #[test]
+    fn conflicts_on_a_deletion_against_a_kind_change() {
+        assert_eq!(
+            merge_file(file("a\n").as_ref(), None, executable("a\n").as_ref()),
+            Err(FileConflict::DeleteModify)
+        );
+        // Control: the same deletion against an unchanged path deletes it.
+        assert_eq!(
+            merge_file(file("a\n").as_ref(), None, file("a\n").as_ref()),
+            Ok(None)
         );
     }
 
     #[test]
     fn deletes_a_path_deleted_on_one_side_and_unchanged_on_the_other() {
-        assert_eq!(merge_file(Some(b"a\n"), Some(b"a\n"), None), Ok(None));
+        assert_eq!(
+            merge_file(file("a\n").as_ref(), file("a\n").as_ref(), None),
+            Ok(None)
+        );
     }
 
     #[test]
     fn deletes_a_path_deleted_on_both_sides() {
-        assert_eq!(merge_file(Some(b"a\n"), None, None), Ok(None));
+        assert_eq!(merge_file(file("a\n").as_ref(), None, None), Ok(None));
     }
 
     #[test]
     fn conflicts_on_a_path_added_on_both_sides_with_different_content() {
         assert_eq!(
-            merge_file(None, Some(b"a\n"), Some(b"b\n")),
+            merge_file(None, file("a\n").as_ref(), file("b\n").as_ref()),
             Err(FileConflict::AddAdd)
         );
     }
@@ -430,8 +502,61 @@ mod tests {
     #[test]
     fn merges_a_path_added_on_both_sides_with_identical_content() {
         assert_eq!(
-            merge_file(None, Some(b"a\n"), Some(b"a\n")),
-            Ok(Some(b"a\n".to_vec()))
+            merge_file(None, file("a\n").as_ref(), file("a\n").as_ref()),
+            Ok(file("a\n"))
+        );
+    }
+
+    #[test]
+    fn takes_a_kind_changed_on_one_side_beside_a_content_change_on_the_other() {
+        assert_eq!(
+            merge_file(
+                file("a\n").as_ref(),
+                executable("a\n").as_ref(),
+                file("b\n").as_ref()
+            ),
+            Ok(executable("b\n"))
+        );
+        assert_eq!(
+            merge_file(
+                file("a\n").as_ref(),
+                file("b\n").as_ref(),
+                executable("a\n").as_ref()
+            ),
+            Ok(executable("b\n"))
+        );
+    }
+
+    #[test]
+    fn takes_a_kind_changed_identically_on_both_sides() {
+        assert_eq!(
+            merge_file(
+                file("a\nb\n").as_ref(),
+                executable("A\nb\n").as_ref(),
+                executable("a\nB\n").as_ref()
+            ),
+            Ok(executable("A\nB\n"))
+        );
+    }
+
+    #[test]
+    fn conflicts_on_a_path_added_on_both_sides_as_different_kinds() {
+        assert_eq!(
+            merge_file(None, file("a\n").as_ref(), executable("a\n").as_ref()),
+            Err(FileConflict::Kind)
+        );
+        // Control: the same addition as one kind on both sides merges.
+        assert_eq!(
+            merge_file(None, executable("a\n").as_ref(), executable("a\n").as_ref()),
+            Ok(executable("a\n"))
+        );
+    }
+
+    #[test]
+    fn reports_the_content_conflict_where_content_and_kind_both_conflict() {
+        assert_eq!(
+            merge_file(None, file("a\n").as_ref(), executable("b\n").as_ref()),
+            Err(FileConflict::AddAdd)
         );
     }
 }
