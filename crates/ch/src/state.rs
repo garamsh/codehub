@@ -73,8 +73,9 @@ impl From<RepositoryRef> for String {
 pub struct State {
     /// The server's base URL.
     pub server: String,
-    /// The access token.
-    pub token: String,
+    /// The access token `ch login` stored; absent where the state was made with a token source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
     /// The repository `use` selected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repository: Option<RepositoryRef>,
@@ -222,7 +223,7 @@ mod tests {
         let file = StateFile::at(root.join("ch").join("state.json"));
         let state = State {
             server: "http://s".to_owned(),
-            token: "t".to_owned(),
+            token: Some("t".to_owned()),
             repository: None,
         };
         file.save(&state).unwrap();

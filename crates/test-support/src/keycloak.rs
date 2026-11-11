@@ -38,8 +38,9 @@ pub async fn keycloak_token(client: &str, user: &str) -> String {
         status.is_success(),
         "Keycloak refused {user}'s token request: {answer}"
     );
-    answer["access_token"]
-        .as_str()
+    answer
+        .get("access_token")
+        .and_then(serde_json::Value::as_str)
         .expect("the answer has an access token")
         .to_owned()
 }

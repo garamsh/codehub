@@ -6,14 +6,13 @@ pub mod command;
 pub mod failure;
 pub mod login;
 pub mod state;
+pub mod token;
 pub mod wire;
 
 use std::ffi::OsString;
 use std::io::Write;
 use std::process::ExitCode;
 use std::time::Duration;
-
-use clap::Parser;
 
 use crate::cli::Cli;
 use crate::command::{Context, execute};
@@ -25,7 +24,7 @@ use crate::state::StateFile;
 /// This is the composition site: it builds the HTTP client and the state file the verbs run
 /// against.
 pub fn run<I: IntoIterator<Item = OsString>>(args: I) -> ExitCode {
-    let cli = match Cli::try_parse_from(std::iter::once(OsString::from("ch")).chain(args)) {
+    let cli = match Cli::try_parse_checked(std::iter::once(OsString::from("ch")).chain(args)) {
         Ok(cli) => cli,
         Err(error) => {
             let code = error.exit_code();
@@ -56,6 +55,7 @@ fn run_verb(cli: Cli, stderr: &mut std::io::Stderr) -> Result<(), failure::Failu
     let context = Context {
         http,
         state: StateFile::at(path),
+        credentials: cli.credentials.clone(),
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
