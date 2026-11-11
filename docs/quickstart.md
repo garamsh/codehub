@@ -7,7 +7,7 @@ The output below was produced on 2026-11-11 from the commit `e4fe6227eb08e05d515
 ## Before you start
 
 - `docker` with the compose plugin, `curl`, `jq`, `openssl` and a Rust toolchain (`rust-toolchain.toml` pins it).
-- Free host ports 15432 (PostgreSQL), 19000 (object store), 18080 (identity provider) and 8080 (`codehub`).
+- Free host ports 15432 (PostgreSQL), 19000 (object store), 18080 (identity provider), 18081 (Keycloak, federated section), 18082 (Cerbos, federated section) and 8080 (`codehub`).
 - All commands run from the repository root.
 
 ## 1. Start the services
@@ -122,3 +122,124 @@ hello again from codehub
 ## Stop and clean up
 
 Stop `codehub` with Ctrl-C. The services keep running; stop them and delete their data with `make services-down`. To start over against the same services, drop the database with `docker compose exec postgres dropdb -U codehub quickstart` and create it again.
+
+## Federated mode
+
+The same `ch` and `codehub`, with an external identity provider and an external decision point instead of the built-in ones: `codehub` verifies each token by introspection (RFC 7662) against Keycloak, and asks Cerbos, over AuthZEN 1.0, whether each request is allowed. Members and organisations are then administered outside `codehub`: `ch org create` and `ch member add` are not used.
+
+The output below was produced on 2026-11-12 from the commit `130a8d9fe84a00af29c69d6b0c8d84f71fa3a2da` plus this file's change, with the services of `compose.yaml` running and port 8080 free. Changeset identifiers contain a timestamp, so yours differ; every other line is the same.
+
+### Run `codehub` federated
+
+Stop the standalone `codehub` first if it still runs, then create a separate database and start the server from the repository root:
+
+```sh
+docker compose exec postgres createdb -U codehub federated
+cargo build --locked -p codehub -p ch
+set -a; . dev/check-env.sh; set +a
+export CODEHUB_POSTGRES_URL="${CODEHUB_TEST_POSTGRES_URL%/*}/federated"
+export CODEHUB_S3_ENDPOINT=$CODEHUB_TEST_S3_ENDPOINT
+export CODEHUB_S3_REGION=$CODEHUB_TEST_S3_REGION
+export CODEHUB_S3_BUCKET=$CODEHUB_TEST_S3_BUCKET
+export CODEHUB_S3_ACCESS_KEY=$CODEHUB_TEST_S3_ACCESS_KEY
+export CODEHUB_S3_SECRET_KEY=$CODEHUB_TEST_S3_SECRET_KEY
+export CODEHUB_IDENTITY=introspection
+export CODEHUB_INTROSPECTION_ENDPOINT=$CODEHUB_TEST_KEYCLOAK_ISSUER/protocol/openid-connect/token/introspect
+export CODEHUB_INTROSPECTION_CLIENT_ID=$CODEHUB_TEST_KEYCLOAK_INTROSPECTION_CLIENT_ID
+export CODEHUB_INTROSPECTION_CLIENT_SECRET=$CODEHUB_TEST_KEYCLOAK_INTROSPECTION_CLIENT_SECRET
+export CODEHUB_INTROSPECTION_ISSUER=$CODEHUB_TEST_KEYCLOAK_ISSUER
+export CODEHUB_INTROSPECTION_AUDIENCE=$CODEHUB_TEST_KEYCLOAK_AUDIENCE
+export CODEHUB_AUTHORISATION=authzen
+export CODEHUB_AUTHZEN_URL=$CODEHUB_TEST_AUTHZEN_URL
+export CODEHUB_AUTHZEN_TOKEN_ENDPOINT=$CODEHUB_TEST_KEYCLOAK_ISSUER/protocol/openid-connect/token
+export CODEHUB_AUTHZEN_CLIENT_ID=$CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_ID
+export CODEHUB_AUTHZEN_CLIENT_SECRET=$CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_SECRET
+target/debug/codehub
+```
+
+The first line of output is the same as in the standalone run:
+
+```text
+codehub listening on 127.0.0.1:8080
+```
+
+The audience is `codehub`: Keycloak puts it in the `aud` claim of the tokens of the client `codehub-test`, and introspection accepts only tokens issued for it. The `codehub-authzen` client is the one `codehub` authenticates as to reach Cerbos.
+
+### Use `ch` with a token file
+
+In a second terminal, from the repository root. A separate configuration directory keeps this run's `ch` state apart from the standalone one. The token is obtained as alice with the password grant of the client `codehub-test` and kept in a file; `ch` reads the file on every command, so it never logs in:
+
+```sh
+set -a; . dev/check-env.sh; set +a
+export PATH=$PWD/target/debug:$PATH
+export XDG_CONFIG_HOME=$(mktemp -d)
+export CH_SERVER=http://127.0.0.1:8080
+export CH_TOKEN_FILE=$(mktemp)
+curl -s -u "$CODEHUB_TEST_KEYCLOAK_TEST_CLIENT_ID:$CODEHUB_TEST_KEYCLOAK_TEST_CLIENT_SECRET" \
+  -d grant_type=password -d username=alice \
+  --data-urlencode "password=$CODEHUB_TEST_KEYCLOAK_PASSWORD_ALICE" \
+  "$CODEHUB_TEST_KEYCLOAK_ISSUER/protocol/openid-connect/token" | jq -r .access_token > "$CH_TOKEN_FILE"
+```
+
+The token expires after a few minutes. When `ch` exits 3 with `ch: the token was rejected`, run the `curl` again.
+
+There is no `ch org create`: the policy lets alice create repositories and, in `acme`, the organisation is created on first use.
+
+```console
+$ ch repo create acme/app
+created repository acme/app
+$ ch use acme/app
+$ tmp=$(mktemp -d)
+$ echo 'hello from codehub' > "$tmp/hello.txt"
+$ ch put docs/hello.txt "$tmp/hello.txt"
+$ ch land -m first
+sha256:91fef0218463c7314bef33a2008d17316c550a305652c7f204ad84153c5351b9
+$ ch read docs/hello.txt
+hello from codehub
+$ ch log docs/hello.txt
+sha256:91fef0218463c7314bef33a2008d17316c550a305652c7f204ad84153c5351b9 sha256:ca8c8fd1dca71b3bbfb9d42472525ebe830054c35ca192a2db6d200360bf6a54
+```
+
+A token issued to another client, here `codehub-test-upstream`, is for another audience and is rejected:
+
+```console
+$ upstream=$(mktemp)
+$ curl -s -u "$CODEHUB_TEST_KEYCLOAK_UPSTREAM_CLIENT_ID:$CODEHUB_TEST_KEYCLOAK_UPSTREAM_CLIENT_SECRET" \
+    -d grant_type=password -d username=alice \
+    --data-urlencode "password=$CODEHUB_TEST_KEYCLOAK_PASSWORD_ALICE" \
+    "$CODEHUB_TEST_KEYCLOAK_ISSUER/protocol/openid-connect/token" | jq -r .access_token > "$upstream"
+$ ch --token-file "$upstream" read docs/hello.txt; echo "exit $?"
+ch: the token was rejected
+exit 3
+```
+
+### Exchange a token (RFC 8693)
+
+`ch` can exchange that token for one the server accepts, with the client `codehub-exchange`. This run needs `codehub` verifying the exchanged token locally, because Keycloak issues it for the audience `codehub` without naming the introspection client; stop the server above and start it again with the identity settings below in place of the `CODEHUB_IDENTITY` and `CODEHUB_INTROSPECTION_*` exports (the database and the authorisation settings stay):
+
+```sh
+unset CODEHUB_IDENTITY CODEHUB_INTROSPECTION_ENDPOINT CODEHUB_INTROSPECTION_CLIENT_ID CODEHUB_INTROSPECTION_CLIENT_SECRET CODEHUB_INTROSPECTION_ISSUER CODEHUB_INTROSPECTION_AUDIENCE
+export CODEHUB_OIDC_ISSUER=$CODEHUB_TEST_KEYCLOAK_ISSUER
+export CODEHUB_OIDC_AUDIENCE=$CODEHUB_TEST_KEYCLOAK_AUDIENCE
+target/debug/codehub
+```
+
+Then, in the second terminal, with the token of `codehub-test-upstream` in `$upstream` and `ch use acme/app` run for this `XDG_CONFIG_HOME`:
+
+```console
+$ ch --token-file "$upstream" read docs/hello.txt; echo "exit $?"
+ch: the token was rejected
+exit 3
+$ ch --token-file "$upstream" \
+    --exchange-endpoint "$CODEHUB_TEST_KEYCLOAK_ISSUER/protocol/openid-connect/token" \
+    --exchange-audience codehub \
+    --exchange-client-id "$CODEHUB_TEST_KEYCLOAK_EXCHANGE_CLIENT_ID" \
+    --exchange-client-secret "$CODEHUB_TEST_KEYCLOAK_EXCHANGE_CLIENT_SECRET" \
+    read docs/hello.txt; echo "exit $?"
+hello from codehub
+exit 0
+```
+
+### Stop and clean up
+
+Stop `codehub` with Ctrl-C. To start over, drop the database with `docker compose exec postgres dropdb -U codehub federated` and create it again.
