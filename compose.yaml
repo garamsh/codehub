@@ -4,11 +4,13 @@ name: codehub
 # stops them (make services-down). Host ports sit below the Linux ephemeral
 # range and away from the defaults (5432, 9000, 8080).
 #   postgres  15432
-#   s3        19000   (SeaweedFS S3 gateway)
+#   s3        19000   (MinIO)
 #   dex       18080
 #
-# Images are pinned by digest (tag kept for the reader). Mover: the .github/
-# owner (CODEOWNERS) moves them on Dependabot's docker-compose updates.
+# Images are pinned by digest (tag kept for the reader). Mover: Dependabot's
+# docker-compose updates (.github/dependabot.yml), merged by the PM. The s3 image
+# is Chainguard's MinIO build, the only maintained image that pulls: its tag is
+# only `latest`, older digests stay pullable (checked 2026-11-11).
 services:
   postgres:
     image: postgres:18.6-alpine3.24@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
@@ -24,17 +26,15 @@ services:
       retries: 60
 
   s3:
-    image: chrislusf/seaweedfs:4.53@sha256:ccad23e18639c8b98cee17e7100b95830a06077b56d8e5b006d6dcf8ec5e94a0
-    command: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-s3.config=/etc/seaweedfs/s3.json"]
-    volumes:
-      - ./dev/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+    image: cgr.dev/chainguard/minio:latest@sha256:db3f583fa49121942168bd6383a773b2cde3384c9a99bf7193560b9a0f3a28fd
+    command: ["server", "/data", "--address", ":9000"]
+    environment:
+      MINIO_ROOT_USER: codehub-test-access
+      MINIO_ROOT_PASSWORD: codehub-test-secret-key
     ports:
-      - "127.0.0.1:19000:8333"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -S -O /dev/null http://127.0.0.1:8333/ 2>&1 | grep -q 'HTTP/'"]
-      interval: 1s
-      timeout: 3s
-      retries: 60
+      - "127.0.0.1:19000:9000"
+    # The image has no shell or client to probe with; scripts/services-up.sh
+    # waits on /minio/health/ready from the host.
 
   dex:
     image: ghcr.io/dexidp/dex:v2.46.1@sha256:65b72ca0f4b0bf6d4ada84ec21da8851782563404ac7b8f926923d27ceced9ab

@@ -1,7 +1,7 @@
 # Environment the checks read; the only place these values are written down.
 # Sourced with allexport by the Makefile and by scripts/*.sh. Keep it in step
 # with compose.yaml (ports, credentials), dev/dex/config.yaml (issuer, clients,
-# passwords) and dev/seaweedfs/s3.json (S3 credentials).
+# passwords).
 CODEHUB_TEST_POSTGRES_URL=postgres://codehub:codehub@127.0.0.1:15432/postgres
 
 CODEHUB_TEST_S3_ENDPOINT=http://127.0.0.1:19000

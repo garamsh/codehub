@@ -10,7 +10,18 @@ set +a
 
 docker compose up --detach --wait
 
-# The S3 server has no bucket-creation setting; a signed PUT does it.
+# The S3 image has no healthcheck of its own; wait for the store to be ready.
+tries=0
+until curl -sf -o /dev/null "${CODEHUB_TEST_S3_ENDPOINT}/minio/health/ready"; do
+    tries=$((tries + 1))
+    if [ "$tries" -gt 60 ]; then
+        echo "services-up: s3 not ready at ${CODEHUB_TEST_S3_ENDPOINT}" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
+# The store has no bucket-creation setting; a signed PUT does it.
 status=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
     --aws-sigv4 "aws:amz:${CODEHUB_TEST_S3_REGION}:s3" \
     --user "${CODEHUB_TEST_S3_ACCESS_KEY}:${CODEHUB_TEST_S3_SECRET_KEY}" \

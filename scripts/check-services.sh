@@ -18,7 +18,7 @@ if [ -z "${CODEHUB_TEST_POSTGRES_URL:-}" ]; then
     set +a
 fi
 
-for tool in curl jq docker; do
+for tool in curl jq docker openssl; do
     command -v "$tool" >/dev/null 2>&1 || fail "$tool is required"
 done
 
@@ -54,6 +54,26 @@ case "$listing" in
     *) fail "s3 listing does not name bucket $CODEHUB_TEST_S3_BUCKET" ;;
 esac
 echo "check-services: s3 listed bucket $CODEHUB_TEST_S3_BUCKET"
+
+# S3: a PUT whose x-amz-checksum-sha256 does not match the body is rejected
+# and stores nothing; the same PUT with the right checksum is accepted (the
+# control, so the refusal is the checksum's and not the credential's or the key's).
+s3_request() {
+    curl -s -o /dev/null -w '%{http_code}' \
+        --aws-sigv4 "aws:amz:${CODEHUB_TEST_S3_REGION}:s3" \
+        --user "${CODEHUB_TEST_S3_ACCESS_KEY}:${CODEHUB_TEST_S3_SECRET_KEY}" "$@"
+}
+right=$(printf 'checksum probe' | openssl dgst -sha256 -binary | openssl base64)
+wrong=$(printf 'another body' | openssl dgst -sha256 -binary | openssl base64)
+object="${CODEHUB_TEST_S3_ENDPOINT}/${CODEHUB_TEST_S3_BUCKET}"
+ok=$(s3_request -X PUT -H "x-amz-checksum-sha256: $right" --data-binary 'checksum probe' "$object/checksum-ok")
+[ "$ok" = "200" ] || fail "s3 answered HTTP $ok to a PUT with the right checksum"
+s3_request -X DELETE "$object/checksum-bad" >/dev/null
+bad=$(s3_request -X PUT -H "x-amz-checksum-sha256: $wrong" --data-binary 'checksum probe' "$object/checksum-bad")
+[ "$bad" = "400" ] || fail "s3 answered HTTP $bad, not 400, to a PUT with a wrong x-amz-checksum-sha256"
+missing=$(s3_request "$object/checksum-bad")
+[ "$missing" = "404" ] || fail "s3 stored an object whose checksum did not match (GET answered HTTP $missing)"
+echo "check-services: s3 rejected a PUT with a wrong x-amz-checksum-sha256 (400) and accepted the right one"
 
 # OIDC: discovery document, then the device grant end to end as alice.
 issuer=$CODEHUB_TEST_OIDC_ISSUER
