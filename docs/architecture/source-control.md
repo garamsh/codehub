@@ -1,6 +1,6 @@
 # Source control
 
-How versions of a workspace's content are stored, changed, landed and queried.
+How versions of a repository's content are stored, changed, landed and queried.
 
 ## Current decisions
 
@@ -8,7 +8,7 @@ How versions of a workspace's content are stored, changed, landed and queried.
 - **Objects are content-addressed and immutable.** An object is identified by the SHA-256 of its content, written with an algorithm prefix (`sha256:<hex>`) so that a later algorithm can coexist, and is never modified (ADR 0011).
 - **Changesets, trees and file-version nodes have exactly one encoding each**, specified in §Object encoding, and an object's address is the SHA-256 of its encoded bytes (ADR 0016).
 - **A changeset is identified by its address**, the SHA-256 of its encoding, and not by anything the log assigns (ADR 0016).
-- **The changeset is the unit of work.** A changeset is an entry in the workspace's changeset log (one log per workspace, ADR 0004).
+- **The changeset is the unit of work.** A changeset is an entry in the repository's changeset log (one log per repository, ADR 0004).
 - **A changeset is a delta against its first parent:** the parent, the changed paths each with its content address or a deletion, and metadata. The delta log is the source of truth (ADR 0011).
 - **Trees, history and blame are derived data.** Trees, path history, blame and ancestry queries are computed on the server from the log and the objects. Derived data is rebuildable and is not a source of truth.
 - **One derivation mechanism.** Every derived type is computed recursively from its values for the parents, and each type is flagged eager or deferred (ADR 0011). The types and their flags:
@@ -17,7 +17,7 @@ How versions of a workspace's content are stored, changed, landed and queried.
   - **Blame** — deferred, derived from the file-version nodes.
   - **Skip lists** — over the changeset graph, answering ancestry queries.
 - **A path's history follows each node's first previous node:** from the path's file-version node in a changeset back through the first entry of each node's previous list, newest first. The other entries of a merge's previous list are kept and not walked.
-- **A workspace has named refs** (ADR 0012):
+- **A repository has named refs** (ADR 0012):
   - `main` — what agents base their work on, and what landing advances;
   - release refs;
   - `last-green` — what CI and deployment base on.
@@ -44,7 +44,7 @@ How versions of a workspace's content are stored, changed, landed and queried.
 - **The file kind and a file against a directory** (ADR 0019):
   - a path's kind, file or executable file, is merged 3-way apart from its content: a kind changed on one side is taken, and both sides setting it to different kinds is a conflict; where the content conflicts too, the content conflict is reported;
   - a delta that leaves a path holding a file while another path lies under it is rejected where the delta is applied to a tree, and the landing reports it as a conflict on the path holding the file; the per-path merge does not detect it.
-- **There is no workspace-wide lock** around landing.
+- **There is no repository-wide lock** around landing.
 - **There is no push.** A client uploads objects; the server creates the changeset.
 - **PostgreSQL holds the metadata, the changeset log as a table, and the refs**, each behind a port (ADR 0013).
 - **Blobs are in the S3-compatible object store** (ADR 0013).
@@ -66,7 +66,7 @@ Field types:
 | `list<T>` | a `u32` count, then that many `T` |
 | `address` | a `u8` algorithm (`0x01` = SHA-256), then the digest as `bytes` (32 for SHA-256) |
 | `component` | `bytes`, non-empty, holding no `/` (`0x2F`) and no NUL (`0x00`), and neither `.` nor `..` |
-| `path` | a `list<component>` with at least one component, from the workspace root down |
+| `path` | a `list<component>` with at least one component, from the repository root down |
 
 Ordering: components compare by unsigned bytes, a proper prefix first; paths compare component by component, a proper prefix first.
 
@@ -87,7 +87,7 @@ The executable bit is the only file mode. Symbolic links are not represented in 
 Changeset, fields in order:
 
 1. Header, kind `0x01`.
-2. Parents: `list<address>` of changeset identifiers. The first is the parent the delta is against; the list is empty for a workspace's first changeset.
+2. Parents: `list<address>` of changeset identifiers. The first is the parent the delta is against; the list is empty for a repository's first changeset.
 3. Author: `text`.
 4. Timestamp: `i64`, seconds since 1970-01-01T00:00:00Z.
 5. Message: `text`.
@@ -122,7 +122,7 @@ The ports below follow from the decisions, named for the conversation and in the
 
 - **Object store** — put and get immutable objects by content address, and issue presigned URLs through which clients upload and download object bytes directly to and from the store, so the bytes do not pass through the server API (ADR 0015). Served by an S3-compatible adapter; the same technology also holds filesystem images, delivered the same way (`docs/architecture/execution.md`, ADR 0008).
 - **Changeset log** — append a changeset, read the log, read a ref, and move a ref by compare-and-swap on that ref alone. Served by a PostgreSQL adapter, the log as a table (ADR 0013).
-- **Derived data** — read and write computed trees, file-version nodes, blame and skip lists for a workspace.
+- **Derived data** — read and write computed trees, file-version nodes, blame and skip lists for a repository.
 - **Draft store** — put and get draft changesets, held outside the log until they land (ADR 0012).
 - **Check dispatch** — ask for the post-land checks to run and receive their results. The execution side is in `docs/architecture/runner.md`.
 - Driving adapters are the server API behind `ch` and the MCP server (`docs/architecture/interfaces.md`). They reach the application through the **source control** driving port: land a draft on `main`, and read a path's history.
@@ -136,7 +136,7 @@ The ports below follow from the decisions, named for the conversation and in the
 - The file kind and a file against a directory are ADR 0019: the kind apart from content, so a kind change on one side and a content change on the other both survive; a file against a directory at tree application, because the two paths never meet in the per-path merge and the tree cannot hold both. The kind as part of the content, one side's kind always winning, a per-path rule for a file against a directory and resolving it by preferring one side were not taken.
 - The project-defined encoding and the changeset identifier are ADR 0016: one encoding per value, because an address is a hash of bytes; the identifier as the address, so a changeset is checked like any other object and is named before it is appended. Deterministic CBOR and an identifier assigned by the log were not taken.
 - PostgreSQL for the metadata, the log and the refs, and the object store for blobs, are ADR 0013. SQLite behind a single writer, a distributed SQL database now, and log segments in the object store were not taken.
-- Tenancy that scopes the log to a workspace is ADR 0004.
+- Tenancy that scopes the log to a repository is ADR 0004.
 - Bundle-based export is ADR 0005.
 
 ## Open questions
@@ -152,8 +152,8 @@ Each is undecided; the recommendation is not a decision.
 - **What moves `last-green`, and on which check results.** Options: the server, when every post-land check of a changeset on `main` passes; the server, when only the checks marked blocking pass; a CI job holding a credential to move it.
 - **How release refs are created and moved, and by whom.** No option has been examined.
 - **Draft changeset lifetime.** How long a draft outside the log is kept, what removes it, and whether one agent can read another's draft. No option has been examined.
-- **Which checks run after landing, and who configures them.** Options: per workspace configuration stored as workspace data; a server-wide set.
-  - Recommendation: per workspace.
+- **Which checks run after landing, and who configures them.** Options: per repository configuration stored as repository data; a server-wide set.
+  - Recommendation: per repository.
 - **When revert is automatic.** Options: any failing check reverts; only checks marked blocking revert; a person or agent decides.
   - Recommendation: only checks marked blocking.
 - **Revert of a landing that later changesets depend on.** Options: revert as a new changeset and rebase dependants; refuse the revert while dependants exist.
@@ -166,6 +166,6 @@ Each is undecided; the recommendation is not a decision.
 - **Chunking parameters.** The content-defined chunking algorithm, its target, minimum and maximum chunk sizes, and the file size above which a file is chunked. No option has been examined.
 - **Skip-list spacing.** Which ancestors each changeset's skip list points at. No option has been examined.
 - **Retention and deletion of objects** no longer referenced by any changeset. Options: never delete; garbage-collect after a grace period.
-  - Recommendation: garbage-collect after a grace period, with the export bundle (`workspace.md`) as the safety copy.
+  - Recommendation: garbage-collect after a grace period, with the export bundle (`tenancy.md`) as the safety copy.
 - **What a landing that lost the compare-and-swap stored.** A landing appends its changeset and stores its trees before the compare-and-swap on `main`; where it loses, they are reachable from no ref and nothing removes them. No option has been examined.
 - **Client cache and checkout.** How a client lays out a working copy from cached objects; no option has been examined.

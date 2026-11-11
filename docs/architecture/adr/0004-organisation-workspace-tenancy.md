@@ -1,6 +1,6 @@
 # ADR 0004: An organisation contains workspaces, and a workspace is one codebase
 
-> Status: accepted
+> Status: accepted; the term "workspace" superseded by ADR-0020
 > Date: 2026-11-11
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.

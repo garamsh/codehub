@@ -7,7 +7,7 @@ How a runner joins the system, receives jobs and runs them: registration, pollin
 ### Model (ADR 0009)
 
 - Runners follow the GitHub Actions self-hosted runner model.
-- A short-lived registration token scoped to an organisation or a workspace is exchanged for runner credentials. Runner identity is mTLS, decided in `access.md`.
+- A short-lived registration token scoped to an organisation or a repository is exchanged for runner credentials. Runner identity is mTLS, decided in `access.md`.
 - A runner polls the server with an outbound long-poll for jobs. The server never connects to a runner.
 - Jobs are routed by labels and runner pools.
 - One disposable environment runs one job.
@@ -36,6 +36,6 @@ Declared in the application's terms (`docs/architecture/structure.md`).
 
 - **Runner-to-server transport.** Options: HTTP long-poll, gRPC streaming, WebSocket. Recommendation: HTTP long-poll, the model ADR 0009 follows; revisit if connection count is a problem.
 - **Registration token lifetime and reuse.** Options: single-use, one hour reusable (GitHub's documented lifetime). Recommendation: single-use with a short lifetime.
-- **Pool semantics.** Options: pool as a named label set, pool as a first-class entity with access policy (GitHub's runner groups). Recommendation: first-class entity scoped to an organisation or workspace.
+- **Pool semantics.** Options: pool as a named label set, pool as a first-class entity with access policy (GitHub's runner groups). Recommendation: first-class entity scoped to an organisation or repository.
 - **Job cancellation and timeouts.** Options: signalled in the poll response, a separate channel. Recommendation: in the poll response, given outbound-only runners.
 - **Runner lifecycle.** Options: ephemeral only, persistent hosts with a disposable environment per job. Recommendation: persistent hosts, since the host's image cache is what ADR 0008 relies on.

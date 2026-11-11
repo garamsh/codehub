@@ -35,7 +35,8 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0019-file-kind-and-file-against-directory.md` — ADR 0019, the landing merge merges the file kind apart from content, and a file against a directory conflicts where a delta is applied to a tree
 - `adr/0013-metadata-storage.md` — ADR 0013, PostgreSQL holds the metadata, the changeset log and the refs, and blobs stay in the object store
 - `adr/0016-object-encoding-and-changeset-identifier.md` — ADR 0016, objects use a project-defined binary encoding, and a changeset is identified by its address
-- `workspace.md` — tenancy (organisation, workspace, base layer) and workspace export, backup and import
+- `tenancy.md` — tenancy (organisation, repository, base layer) and repository export, backup and import
+- `adr/0020-repository-replaces-workspace.md` — ADR 0020, a repository is what ADRs 0004 and 0005 call a workspace
 - `interfaces.md` — the `ch` CLI, the MCP server and the API behind them: what each may do, and what stays server-side
 - `adr/0010-cli-and-mcp-interfaces.md` — ADR 0010, the CLI and the MCP server are first-class interfaces over server-side work
 - `adr/0015-server-api-transport.md` — ADR 0015, the server API is HTTP with JSON described by OpenAPI, and object bytes move by presigned URL
