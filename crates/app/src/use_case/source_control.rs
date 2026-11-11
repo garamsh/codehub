@@ -1,41 +1,53 @@
 //! The source-control driving port, served by the upload, staging, landing, reading and history
-//! use cases over the driven ports it is given.
+//! use cases over the driven ports it is given. Each operation first checks, through the
+//! authorisation decision, that the caller may do what it asks.
 
 use crate::domain::address::Address;
 use crate::domain::changeset::Change;
 use crate::domain::draft::DraftId;
 use crate::domain::file_version::FileVersionNode;
+use crate::domain::name::{DraftName, OrganisationName};
 use crate::domain::path::Path;
+use crate::domain::principal::Caller;
 use crate::domain::repository::RepositoryId;
+use crate::port::driven::authorisation_decision::{Action, AuthorisationDecision, Resource};
 use crate::port::driven::changeset_log::ChangesetLog;
 use crate::port::driven::derived_data::DerivedData;
 use crate::port::driven::draft_store::DraftStore;
+use crate::port::driven::membership::Access;
 use crate::port::driven::object_store::{Grant, ObjectStore};
+use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driving::source_control::{SourceControl, SourceControlError};
+use crate::use_case::access::{AccessError, readable_repository, require, require_paths};
 use crate::use_case::history::history;
-use crate::use_case::land::{Landing, land};
+use crate::use_case::land::{LandError, Landing, land};
 use crate::use_case::read_file::{FileContent, read_file};
 use crate::use_case::stage::stage;
 use crate::use_case::upload::request_upload;
 
 /// Source control over the driven ports the composition site passes to it.
-pub struct SourceControlService<'a, O, L, D, S> {
+pub struct SourceControlService<'a, O, L, D, S, R, A> {
     objects: &'a O,
     log: &'a L,
     derived: &'a D,
     drafts: &'a S,
+    directory: &'a R,
+    authorisation: &'a A,
     max_upload_size: u64,
 }
 
-impl<'a, O, L, D, S> SourceControlService<'a, O, L, D, S> {
+impl<'a, O, L, D, S, R, A> SourceControlService<'a, O, L, D, S, R, A> {
     /// Source control that stores blobs in `objects`, changesets and `main` in `log`, derived
-    /// data in `derived`, and drafts in `drafts`, and grants uploads of at most `max_upload_size`
-    /// bytes.
+    /// data in `derived`, and drafts in `drafts`, finds a repository's organisation in
+    /// `directory`, asks `authorisation` what callers may do, and grants uploads of at most
+    /// `max_upload_size` bytes.
     pub const fn new(
         objects: &'a O,
         log: &'a L,
         derived: &'a D,
         drafts: &'a S,
+        directory: &'a R,
+        authorisation: &'a A,
         max_upload_size: u64,
     ) -> Self {
         Self {
@@ -43,24 +55,81 @@ impl<'a, O, L, D, S> SourceControlService<'a, O, L, D, S> {
             log,
             derived,
             drafts,
+            directory,
+            authorisation,
             max_upload_size,
         }
     }
 }
 
-impl<O, L, D, S> SourceControl for SourceControlService<'_, O, L, D, S>
+impl<O, L, D, S, R, A> SourceControlService<'_, O, L, D, S, R, A>
+where
+    R: RepositoryDirectory + Sync,
+    A: AuthorisationDecision + Sync,
+{
+    /// The organisation of `repository`, where `caller` may read it.
+    async fn organisation(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+    ) -> Result<OrganisationName, AccessError> {
+        readable_repository(
+            self.directory,
+            self.authorisation,
+            caller.principal(),
+            repository,
+        )
+        .await
+    }
+
+    /// Requires `access` for `caller` on `path` in `repository`.
+    async fn require_path(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        access: Access,
+        path: &Path,
+    ) -> Result<(), AccessError> {
+        let organisation = self.organisation(caller, repository).await?;
+        require_paths(
+            self.authorisation,
+            caller.principal(),
+            &organisation,
+            repository,
+            access,
+            [path],
+        )
+        .await
+    }
+}
+
+impl<O, L, D, S, R, A> SourceControl for SourceControlService<'_, O, L, D, S, R, A>
 where
     O: ObjectStore + Sync,
     L: ChangesetLog + Sync,
     D: DerivedData + Sync,
     S: DraftStore + Sync,
+    R: RepositoryDirectory + Sync,
+    A: AuthorisationDecision + Sync,
 {
     async fn request_upload(
         &self,
+        caller: &Caller,
         repository: RepositoryId,
         address: Address,
         size: u64,
     ) -> Result<Grant, SourceControlError> {
+        let organisation = self.organisation(caller, repository).await?;
+        require(
+            self.authorisation,
+            caller.principal(),
+            Action::Write,
+            &Resource::Repository {
+                organisation,
+                repository,
+            },
+        )
+        .await?;
         Ok(request_upload(
             self.objects,
             repository,
@@ -73,17 +142,24 @@ where
 
     async fn stage(
         &self,
+        caller: &Caller,
         repository: RepositoryId,
-        draft: &DraftId,
+        draft: &DraftName,
         path: Path,
         change: Change,
     ) -> Result<(), SourceControlError> {
+        self.require_path(caller, repository, Access::Write, &path)
+            .await?;
+        let draft = DraftId {
+            principal: caller.principal().clone(),
+            name: draft.clone(),
+        };
         Ok(stage(
             self.objects,
             self.log,
             self.drafts,
             repository,
-            draft,
+            &draft,
             path,
             change,
         )
@@ -92,36 +168,68 @@ where
 
     async fn land(
         &self,
+        caller: &Caller,
         repository: RepositoryId,
-        draft: &DraftId,
+        draft: &DraftName,
         landing: Landing,
     ) -> Result<Address, SourceControlError> {
-        Ok(land(
+        let organisation = self.organisation(caller, repository).await?;
+        let draft = DraftId {
+            principal: caller.principal().clone(),
+            name: draft.clone(),
+        };
+        let staged = self
+            .drafts
+            .get(repository, &draft)
+            .await
+            .map_err(LandError::from)?;
+        require_paths(
+            self.authorisation,
+            caller.principal(),
+            &organisation,
+            repository,
+            Access::Write,
+            staged.changes.keys(),
+        )
+        .await
+        .map_err(LandError::from)?;
+        let landed = land(
             self.objects,
             self.log,
             self.derived,
-            self.drafts,
             repository,
-            draft,
+            caller.principal(),
+            staged,
             landing,
         )
-        .await?)
+        .await?;
+        self.drafts
+            .remove(repository, &draft)
+            .await
+            .map_err(LandError::from)?;
+        Ok(landed)
     }
 
     async fn read_file(
         &self,
+        caller: &Caller,
         repository: RepositoryId,
         path: &Path,
     ) -> Result<FileContent, SourceControlError> {
+        self.require_path(caller, repository, Access::Read, path)
+            .await?;
         Ok(read_file(self.objects, self.log, self.derived, repository, path).await?)
     }
 
     async fn history(
         &self,
+        caller: &Caller,
         repository: RepositoryId,
-        at: Address,
+        at: Option<Address>,
         path: &Path,
     ) -> Result<Vec<FileVersionNode>, SourceControlError> {
+        self.require_path(caller, repository, Access::Read, path)
+            .await?;
         Ok(history(self.log, self.derived, repository, at, path).await?)
     }
 }

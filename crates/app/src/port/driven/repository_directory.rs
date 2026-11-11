@@ -40,6 +40,16 @@ pub trait RepositoryDirectory {
         organisation: &OrganisationName,
         repository: &RepositoryName,
     ) -> impl Future<Output = Result<RepositoryId, DirectoryError>> + Send;
+
+    /// The organisation holding `repository`; `None` where no repository has this identifier.
+    ///
+    /// # Errors
+    ///
+    /// The directory's [`DirectoryError`].
+    fn organisation_of(
+        &self,
+        repository: RepositoryId,
+    ) -> impl Future<Output = Result<Option<OrganisationName>, DirectoryError>> + Send;
 }
 
 /// Why the directory refused or did not answer.
@@ -53,6 +63,8 @@ pub enum DirectoryError {
     RepositoryExists(OrganisationName, RepositoryName),
     /// The organisation holds no repository of this name.
     RepositoryNotFound(OrganisationName, RepositoryName),
+    /// The directory's backend failed; carries a description.
+    Backend(String),
 }
 
 impl fmt::Display for DirectoryError {
@@ -66,6 +78,7 @@ impl fmt::Display for DirectoryError {
             Self::RepositoryNotFound(organisation, name) => {
                 write!(f, "no repository {organisation}/{name}")
             }
+            Self::Backend(description) => write!(f, "directory failed: {description}"),
         }
     }
 }

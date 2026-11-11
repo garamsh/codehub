@@ -54,12 +54,15 @@ pub trait DraftStore {
 pub enum DraftStoreError {
     /// No draft is held under the identity.
     NotFound(DraftId),
+    /// The store's backend failed; carries a description.
+    Backend(String),
 }
 
 impl fmt::Display for DraftStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotFound(draft) => write!(f, "no draft {draft}"),
+            Self::Backend(description) => write!(f, "draft store failed: {description}"),
         }
     }
 }

@@ -89,16 +89,19 @@ pub trait ObjectStore {
 }
 
 /// Why the object store did not answer.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ObjectStoreError {
     /// Nothing is stored under the address.
     NotFound(Address),
+    /// The store's backend failed; carries a description.
+    Backend(String),
 }
 
 impl fmt::Display for ObjectStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotFound(address) => write!(f, "no object {address}"),
+            Self::Backend(description) => write!(f, "object store failed: {description}"),
         }
     }
 }

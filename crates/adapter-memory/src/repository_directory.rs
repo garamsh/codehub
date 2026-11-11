@@ -67,4 +67,15 @@ impl RepositoryDirectory for MemoryRepositoryDirectory {
                 DirectoryError::RepositoryNotFound(organisation.clone(), repository.clone())
             })
     }
+
+    async fn organisation_of(
+        &self,
+        repository: RepositoryId,
+    ) -> Result<Option<OrganisationName>, DirectoryError> {
+        Ok(lock(&self.directory)
+            .organisations
+            .iter()
+            .find(|(_, repositories)| repositories.values().any(|id| *id == repository))
+            .map(|(name, _)| name.clone()))
+    }
 }

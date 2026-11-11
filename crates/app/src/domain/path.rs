@@ -86,6 +86,31 @@ impl Path {
     }
 }
 
+/// A directory of the repository, or the whole of it: the path a grant covers.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Prefix(Vec<Component>);
+
+impl Prefix {
+    /// The prefix covering the whole repository.
+    #[must_use]
+    pub const fn whole() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Whether `path` is this prefix or lies under it; components match whole, so `src` covers
+    /// `src/a` and not `srcx/a`.
+    #[must_use]
+    pub fn covers(&self, path: &Path) -> bool {
+        path.0.starts_with(&self.0)
+    }
+}
+
+impl From<Path> for Prefix {
+    fn from(path: Path) -> Self {
+        Self(path.0)
+    }
+}
+
 impl FromStr for Path {
     type Err = PathError;
 
@@ -130,6 +155,17 @@ mod tests {
     fn rejects_a_path_with_no_components() {
         assert!(Path::new(vec![Component::new(b"a".to_vec()).unwrap()]).is_ok());
         assert_eq!(Path::new(Vec::new()), Err(PathError::Empty));
+    }
+
+    #[test]
+    fn a_prefix_covers_whole_components_only() {
+        let parse = |s: &str| s.parse::<Path>().unwrap();
+        let src = Prefix::from(parse("src"));
+        assert!(src.covers(&parse("src")));
+        assert!(src.covers(&parse("src/a")));
+        assert!(!src.covers(&parse("srcx/a")));
+        assert!(!src.covers(&parse("docs/src")));
+        assert!(Prefix::whole().covers(&parse("docs/b")));
     }
 
     #[test]
