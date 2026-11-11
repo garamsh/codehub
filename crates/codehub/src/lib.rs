@@ -116,6 +116,12 @@ fn redact_url(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return REDACTED.to_owned();
     };
+    // The userinfo is everything up to the last `@`, so a password holding an unencoded `#`, `?`
+    // or `/` is still inside it; the query and fragment are looked for only after the host.
+    let (userinfo, rest) = match rest.rsplit_once('@') {
+        Some((userinfo, rest)) => (format!("{}@", redact_userinfo(userinfo)), rest),
+        None => (String::new(), rest),
+    };
     let (location, fragment) = match rest.split_once('#') {
         Some((location, fragment)) => (location, Some(fragment)),
         None => (rest, None),
@@ -124,18 +130,7 @@ fn redact_url(url: &str) -> String {
         Some((location, query)) => (location, Some(query)),
         None => (location, None),
     };
-    let (authority, path) = match location.find('/') {
-        Some(slash) => location.split_at(slash),
-        None => (location, ""),
-    };
-    let authority = match authority.rsplit_once('@') {
-        Some((userinfo, host)) => match userinfo.split_once(':') {
-            Some((user, _)) => format!("{user}:{REDACTED}@{host}"),
-            None => authority.to_owned(),
-        },
-        None => authority.to_owned(),
-    };
-    let mut redacted = format!("{scheme}://{authority}{path}");
+    let mut redacted = format!("{scheme}://{userinfo}{location}");
     if let Some(query) = query {
         let parameters: Vec<String> = query
             .split('&')
@@ -154,6 +149,14 @@ fn redact_url(url: &str) -> String {
         redacted.push_str(fragment);
     }
     redacted
+}
+
+/// The userinfo with everything after its first `:` replaced by `<redacted>`.
+fn redact_userinfo(userinfo: &str) -> String {
+    match userinfo.split_once(':') {
+        Some((user, _)) => format!("{user}:{REDACTED}"),
+        None => userinfo.to_owned(),
+    }
 }
 
 /// Why the server did not start or stopped serving.
@@ -324,6 +327,22 @@ mod tests {
         assert_eq!(
             shown,
             "postgres://db.example/codehub?sslmode=require&password=<redacted>"
+        );
+    }
+
+    #[test]
+    fn redacts_a_password_holding_an_unencoded_delimiter() {
+        assert_eq!(
+            redact_url("postgres://u:p#w@h/db"),
+            "postgres://u:<redacted>@h/db"
+        );
+        assert_eq!(
+            redact_url("postgres://u:p/w@h/db"),
+            "postgres://u:<redacted>@h/db"
+        );
+        assert_eq!(
+            redact_url("postgres://u:p?w@h/db"),
+            "postgres://u:<redacted>@h/db"
         );
     }
 
