@@ -1315,6 +1315,24 @@
           }
         }
       },
+      "Principal": {
+        "type": "object",
+        "required": [
+          "issuer",
+          "subject"
+        ],
+        "properties": {
+          "issuer": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^\\S+$"
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
       "Member": {
         "type": "object",
         "required": [

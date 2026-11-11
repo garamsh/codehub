@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use crate::failure::{Failure, Operation};
 use crate::state::RepositoryRef;
 use crate::wire::{
-    Created, File, Grant, History, Landed, Landing, Member, NewName, Principal, StagedFile,
+    Access, Created, File, Grant, History, Landed, Landing, Member, NewName, Principal, StagedFile,
     TransferGrant, TransferMethod, Upload,
 };
 
@@ -111,12 +111,12 @@ impl<'a> Api<'a> {
     }
 
     /// A DELETE that names its target in the query string; DELETE carries no body (ADR 0032).
-    async fn delete_with_query<Q: Serialize + Sync>(
-        &self,
-        path: &str,
-        query: &Q,
-    ) -> Result<(), Failure> {
-        let request = self.request(Method::DELETE, path).query(query);
+    async fn delete_with_query(&self, path: &str, query: &[(&str, &str)]) -> Result<(), Failure> {
+        let query: Vec<String> = query
+            .iter()
+            .map(|(name, value)| format!("{name}={}", encode(value)))
+            .collect();
+        let request = self.request(Method::DELETE, &format!("{path}?{}", query.join("&")));
         Self::send(request, Operation::Other).await.map(|_| ())
     }
 
@@ -168,7 +168,11 @@ impl<'a> Api<'a> {
         member: &Principal,
     ) -> Result<(), Failure> {
         let path = format!("orgs/{}/members", encode(organisation));
-        self.delete_with_query(&path, member).await
+        self.delete_with_query(
+            &path,
+            &[("issuer", &member.issuer), ("subject", &member.subject)],
+        )
+        .await
     }
 
     /// Adds (`add`) or removes a grant on a repository.
@@ -186,7 +190,17 @@ impl<'a> Api<'a> {
         if add {
             self.call_empty(Method::PUT, &path, Some(grant)).await
         } else {
-            self.delete_with_query(&path, grant).await
+            let access = match grant.access {
+                Access::Read => "read",
+                Access::Write => "write",
+            };
+            let query = [
+                ("issuer", grant.issuer.as_str()),
+                ("subject", &grant.subject),
+                ("prefix", &grant.prefix),
+                ("access", access),
+            ];
+            self.delete_with_query(&path, &query).await
         }
     }
 
