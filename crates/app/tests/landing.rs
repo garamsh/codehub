@@ -12,7 +12,9 @@ use app::domain::tree::Entry;
 use app::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
 use app::port::driven::derived_data::DerivedData;
 use app::port::driven::object_store::ObjectStore;
-use app::use_case::land::{LandError, PathConflict, land};
+use app::port::driving::source_control::{SourceControl, SourceControlError};
+use app::use_case::land::{LandError, PathConflict};
+use app::use_case::source_control::SourceControlService;
 use common::Workspace;
 
 /// The content of the file at `path` in `main`'s tree, if one is there.
@@ -135,10 +137,12 @@ async fn a_draft_changing_the_same_lines_differently_is_rejected_naming_the_path
         .await;
     assert_eq!(
         workspace.land(same_line).await,
-        Err(LandError::Conflicts(BTreeMap::from([(
-            "f".parse().unwrap(),
-            PathConflict::File(FileConflict::Lines)
-        )])))
+        Err(SourceControlError::Land(LandError::Conflicts(
+            BTreeMap::from([(
+                "f".parse().unwrap(),
+                PathConflict::File(FileConflict::Lines)
+            )])
+        )))
     );
     assert_eq!(workspace.main().await, Some(landed));
     assert_eq!(
@@ -169,10 +173,9 @@ async fn a_file_where_main_made_a_directory_is_rejected_naming_the_file() {
     let main = workspace.main().await;
     assert_eq!(
         workspace.land(file).await,
-        Err(LandError::Conflicts(BTreeMap::from([(
-            "d".parse().unwrap(),
-            PathConflict::FileAgainstDirectory
-        )])))
+        Err(SourceControlError::Land(LandError::Conflicts(
+            BTreeMap::from([("d".parse().unwrap(), PathConflict::FileAgainstDirectory)])
+        )))
     );
     assert_eq!(workspace.main().await, main);
 }
@@ -224,18 +227,23 @@ async fn a_landing_that_loses_the_compare_and_swap_is_not_applied() {
         rival,
     };
 
-    let lost = land(
+    let lost = SourceControlService::new(
         &workspace.objects,
         &racing,
         &workspace.derived,
         &workspace.drafts,
-        late,
     )
+    .land(late)
     .await;
 
     let main = workspace.main().await;
     assert_ne!(main, Some(base));
-    assert_eq!(lost, Err(LandError::MainMoved { current: main }));
+    assert_eq!(
+        lost,
+        Err(SourceControlError::Land(LandError::MainMoved {
+            current: main
+        }))
+    );
     assert_eq!(read(&workspace, "a").await.as_deref(), Some("a0\n"));
     assert_eq!(read(&workspace, "b").await.as_deref(), Some("b1\n"));
 

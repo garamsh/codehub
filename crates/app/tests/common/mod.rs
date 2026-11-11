@@ -9,7 +9,8 @@ use app::domain::file::{File, FileKind};
 use app::port::driven::changeset_log::{ChangesetLog, Ref};
 use app::port::driven::draft_store::DraftStore;
 use app::port::driven::object_store::ObjectStore;
-use app::use_case::land::{LandError, land};
+use app::port::driving::source_control::{SourceControl, SourceControlError};
+use app::use_case::source_control::SourceControlService;
 
 /// The in-memory adapters of one workspace.
 #[derive(Default)]
@@ -47,9 +48,22 @@ impl Workspace {
         self.drafts.put(draft).await.unwrap()
     }
 
-    /// Lands `draft` through the in-memory adapters.
-    pub async fn land(&self, draft: Address) -> Result<Address, LandError> {
-        land(&self.objects, &self.log, &self.derived, &self.drafts, draft).await
+    /// Source control over this workspace's adapters.
+    pub const fn source_control(
+        &self,
+    ) -> SourceControlService<
+        '_,
+        MemoryObjectStore,
+        MemoryChangesetLog,
+        MemoryDerivedData,
+        MemoryDraftStore,
+    > {
+        SourceControlService::new(&self.objects, &self.log, &self.derived, &self.drafts)
+    }
+
+    /// Lands `draft` through the source-control port.
+    pub async fn land(&self, draft: Address) -> Result<Address, SourceControlError> {
+        self.source_control().land(draft).await
     }
 
     /// Where `main` points.

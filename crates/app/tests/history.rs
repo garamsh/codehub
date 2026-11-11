@@ -4,7 +4,7 @@
 mod common;
 
 use app::domain::address::Address;
-use app::use_case::history::history;
+use app::port::driving::source_control::SourceControl;
 use common::Workspace;
 
 #[tokio::test]
@@ -26,14 +26,11 @@ async fn a_path_history_query_returns_its_version_chain_newest_first() {
     let main = workspace.main().await.unwrap();
     assert_eq!(landed.last(), Some(&main));
 
-    let a = history(
-        &workspace.log,
-        &workspace.derived,
-        main,
-        &"a".parse().unwrap(),
-    )
-    .await
-    .unwrap();
+    let a = workspace
+        .source_control()
+        .history(main, &"a".parse().unwrap())
+        .await
+        .unwrap();
     assert_eq!(
         a.iter().map(|node| node.changeset).collect::<Vec<_>>(),
         [landed[4], landed[2], landed[0]]
@@ -43,14 +40,11 @@ async fn a_path_history_query_returns_its_version_chain_newest_first() {
         [Address::of(b"a5"), Address::of(b"a3"), Address::of(b"a1")]
     );
 
-    let b = history(
-        &workspace.log,
-        &workspace.derived,
-        main,
-        &"b".parse().unwrap(),
-    )
-    .await
-    .unwrap();
+    let b = workspace
+        .source_control()
+        .history(main, &"b".parse().unwrap())
+        .await
+        .unwrap();
     assert_eq!(
         b.iter().map(|node| node.changeset).collect::<Vec<_>>(),
         [landed[3], landed[1], landed[0]]
