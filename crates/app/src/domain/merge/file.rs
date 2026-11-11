@@ -356,8 +356,8 @@ mod tests {
     }
 
     #[test]
-    fn treats_a_nul_byte_within_the_scanned_bytes_as_binary() {
-        let mut base = vec![b'x'; BINARY_SCAN_LEN - 1];
+    fn treats_a_nul_byte_in_the_first_8000_bytes_as_binary() {
+        let mut base = vec![b'x'; 7999];
         base.extend_from_slice(b"\0\na\nb\n");
         let ours = [base.as_slice(), b"c\n"].concat();
         let theirs = [b"c\n".as_slice(), base.as_slice()].concat();
@@ -368,8 +368,8 @@ mod tests {
     }
 
     #[test]
-    fn treats_a_nul_byte_past_the_scanned_bytes_as_text() {
-        let mut base = vec![b'x'; BINARY_SCAN_LEN];
+    fn treats_a_nul_byte_after_the_first_8000_bytes_as_text() {
+        let mut base = vec![b'x'; 8000];
         base.extend_from_slice(b"\0\na\nb\n");
         let ours = [base.as_slice(), b"c\n"].concat();
         let theirs = [b"c\n".as_slice(), base.as_slice()].concat();
