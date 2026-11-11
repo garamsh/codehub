@@ -15,6 +15,7 @@ The ways clients reach the system, which are the `ch` CLI and the HTTP API behin
 - **The API is versioned in the path and described by OpenAPI 3.1** (ADR 0024). Its prefix is `/v1`, resources are under `/v1/orgs/{org}/repos/{repo}/…`, errors are RFC 9457 problem details, and callers present bearer tokens.
 - **Access failures are told apart by status** (ADR 0024): 401 without a valid token; 404 when the caller may not read the repository, so its existence is not disclosed; 403 when it may read but not perform the action; 409 for a landing conflict or a lost compare-and-swap, naming the paths.
 - **The OpenAPI document is committed in `crates/adapter-http`** and served at `/v1/openapi.json`; a test asserts they are equal. Landing is a synchronous request in M2.
+- **No operation of the API takes a request body on DELETE** (ADR 0032). What identifies the target goes in the path or the query, with the field names the body would have had, and a missing or malformed query parameter is a 400 problem detail.
 - **The server binary is `codehub`**, bound to `127.0.0.1` unless configured otherwise (ADR 0024).
 - **`ch` takes its token from a file path or an environment variable naming it, and may exchange it by RFC 8693** at a configured token endpoint for a configured audience; the exchanged token is held in memory only. Device-grant login stays for standalone mode (ADR 0031).
 - **Credentials are not decided here.** What the server accepts is in `access.md`; interfaces carry what it defines.
@@ -25,7 +26,7 @@ The ways clients reach the system, which are the `ch` CLI and the HTTP API behin
 - The token sources and exchange of `ch`: ADR 0031.
 - Why interfaces are adapters over shared ports: ADR 0001 and `structure.md`.
 - Why HTTP with JSON and presigned URLs for object bytes, and what would show it wrong: ADR 0015. It was decided before authentication on the API and the runner-to-server transport were settled, although this document's earlier open question tied the choice to them; ADR 0015 names a second transport added on the same endpoint for either of them as a sign the decision was wrong.
-- The M2 verbs, local state and output format, and the alternatives not taken: ADR 0025. The API's version, description and status codes: ADR 0024.
+- The M2 verbs, local state and output format, and the alternatives not taken: ADR 0025. The API's version, description and status codes: ADR 0024. Why DELETE carries no body: ADR 0032.
 
 ## Open questions
 
