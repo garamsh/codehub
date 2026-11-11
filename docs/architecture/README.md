@@ -42,11 +42,17 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0023-object-storage-details.md` — ADR 0023, objects are keyed per repository, verified by checksum, and uploaded in one part
 - `adr/0024-http-api-conventions.md` — ADR 0024, the HTTP API is versioned in the path, described by OpenAPI 3.1 and reports errors as problem details
 - `adr/0025-cli-m2-verbs-and-state.md` — ADR 0025, the M2 CLI has a fixed set of verbs, keeps three items of local state and speaks plain HTTP
-- `interfaces.md` — the `ch` CLI, the MCP server and the API behind them: what each may do, and what stays server-side
-- `adr/0010-cli-and-mcp-interfaces.md` — ADR 0010, the CLI and the MCP server are first-class interfaces over server-side work
+- `interfaces.md` — the `ch` CLI and the API behind it: what each may do, and what stays server-side
+- `adr/0010-cli-and-mcp-interfaces.md` — ADR 0010, the CLI and the MCP server are first-class interfaces over server-side work; the MCP part is superseded by ADR 0026
 - `adr/0015-server-api-transport.md` — ADR 0015, the server API is HTTP with JSON described by OpenAPI, and object bytes move by presigned URL
 - `access.md` — identity, authorisation and provisioning ports and the standards their default adapters speak
-- `adr/0006-authentication-and-authorisation-outside-the-core.md` — ADR 0006, authentication and authorisation are separated from the core and speak standards
+- `adr/0006-authentication-and-authorisation-outside-the-core.md` — ADR 0006, authentication and authorisation are separated from the core and speak standards; the agent and Token Exchange parts are superseded by ADR 0027
+- `adr/0026-no-mcp-server-in-codehub.md` — ADR 0026, codehub builds no MCP server, and its first-class interfaces are `ch` and the HTTP API
+- `adr/0027-one-kind-of-principal.md` — ADR 0027, codehub knows one kind of principal, and how a token is obtained is the issuer's and the client's
+- `adr/0028-federation-through-standards.md` — ADR 0028, codehub is federated through standards, with one audience and shared organisation names
+- `adr/0029-identity-verification-jwt-or-introspection.md` — ADR 0029, a token is verified as an OIDC JWT or by RFC 7662 introspection, selected by configuration
+- `adr/0030-authorisation-through-authzen-and-external-mode.md` — ADR 0030, authorisation may go through AuthZEN in an external mode, and directory changes are reported through a port
+- `adr/0031-ch-token-sources-and-exchange.md` — ADR 0031, `ch` reads a token from a file or an environment variable and may exchange it by RFC 8693
 - `execution.md` — caches, derived images, delivery through object storage, executor drivers
 - `runner.md` — runner registration, polling, labels, pools, job lifecycle
 - `adr/0007-cache-model-c.md` — ADR 0007, caches are versioned workspace data with images derived from them
