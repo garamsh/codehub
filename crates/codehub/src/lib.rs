@@ -1,0 +1,192 @@
+//! The `codehub` server and its composition site: the one place that builds the adapters, hands
+//! them to the use cases and serves the HTTP API over them (ADR 0024).
+
+use std::fmt;
+use std::io::Write;
+use std::net::SocketAddr;
+use std::time::Duration;
+
+use adapter_oidc::OidcIdentityVerification;
+use adapter_postgres::{
+    Database, DatabaseError, PostgresAuthorisationDecision, PostgresChangesetLog,
+    PostgresDerivedData, PostgresDraftStore, PostgresMembership, PostgresRepositoryDirectory,
+};
+use adapter_s3::S3ObjectStore;
+use app::port::driven::identity_verification::IdentityError;
+use app::port::driven::object_store::ObjectStoreError;
+use app::use_case::authentication::AuthenticationService;
+use app::use_case::members::MembersService;
+use app::use_case::repositories::RepositoriesService;
+use app::use_case::source_control::SourceControlService;
+use clap::Parser;
+use tokio::net::TcpListener;
+use tokio::signal::unix::{SignalKind, signal};
+
+/// The server's settings. Each is a flag and has an environment variable of the same name,
+/// upper-cased, with the prefix `CODEHUB_`.
+#[derive(Parser, Debug)]
+#[command(version, about = "The codehub server")]
+pub struct Config {
+    /// The address to listen on; port 0 takes any free port.
+    #[arg(long, env = "CODEHUB_LISTEN", default_value = "127.0.0.1:8080")]
+    pub listen: SocketAddr,
+    /// The URL of the PostgreSQL database holding the metadata.
+    #[arg(long, env = "CODEHUB_POSTGRES_URL")]
+    pub postgres_url: String,
+    /// The most connections held open to PostgreSQL.
+    #[arg(long, env = "CODEHUB_POSTGRES_POOL_SIZE", default_value_t = 10)]
+    pub postgres_pool_size: u32,
+    /// The URL of the S3-compatible object store.
+    #[arg(long, env = "CODEHUB_S3_ENDPOINT")]
+    pub s3_endpoint: String,
+    /// The object store's region.
+    #[arg(long, env = "CODEHUB_S3_REGION")]
+    pub s3_region: String,
+    /// The bucket that holds the objects.
+    #[arg(long, env = "CODEHUB_S3_BUCKET")]
+    pub s3_bucket: String,
+    /// The access key the object store is reached with.
+    #[arg(long, env = "CODEHUB_S3_ACCESS_KEY")]
+    pub s3_access_key: String,
+    /// The secret key the object store is reached with.
+    #[arg(long, env = "CODEHUB_S3_SECRET_KEY", hide_env_values = true)]
+    pub s3_secret_key: String,
+    /// The largest object a client may upload, in bytes.
+    #[arg(long, env = "CODEHUB_MAX_OBJECT_SIZE", default_value_t = 1024 * 1024 * 1024)]
+    pub max_object_size: u64,
+    /// How long an upload or download grant lasts, in seconds.
+    #[arg(long, env = "CODEHUB_GRANT_EXPIRY_SECONDS", default_value_t = 900)]
+    pub grant_expiry_seconds: u64,
+    /// The issuer of the tokens the server accepts.
+    #[arg(long, env = "CODEHUB_OIDC_ISSUER")]
+    pub oidc_issuer: String,
+    /// The audience the accepted tokens are issued for.
+    #[arg(long, env = "CODEHUB_OIDC_AUDIENCE")]
+    pub oidc_audience: String,
+    /// The shortest time between two fetches of the issuer's key set, in seconds.
+    #[arg(long, env = "CODEHUB_JWKS_MIN_REFETCH_SECONDS", default_value_t = 60)]
+    pub jwks_min_refetch_seconds: u64,
+}
+
+/// Why the server did not start or stopped serving.
+#[derive(Debug)]
+pub enum Error {
+    /// The database could not be reached or migrated.
+    Database(DatabaseError),
+    /// The object store could not be configured.
+    ObjectStore(ObjectStoreError),
+    /// Identity verification could not be configured.
+    Identity(IdentityError),
+    /// The listening address could not be bound.
+    Bind(SocketAddr, std::io::Error),
+    /// Signal handlers could not be installed, the address read or the server run.
+    Serve(std::io::Error),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Database(error) => error.fmt(f),
+            Self::ObjectStore(error) => write!(f, "configuring the object store failed: {error}"),
+            Self::Identity(error) => {
+                write!(f, "configuring identity verification failed: {error}")
+            }
+            Self::Bind(address, error) => write!(f, "binding {address} failed: {error}"),
+            Self::Serve(error) => write!(f, "serving failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+/// The adapters of the deployment.
+struct Adapters {
+    objects: S3ObjectStore,
+    log: PostgresChangesetLog,
+    derived: PostgresDerivedData,
+    drafts: PostgresDraftStore,
+    directory: PostgresRepositoryDirectory,
+    membership: PostgresMembership,
+    authorisation: PostgresAuthorisationDecision,
+    identity: OidcIdentityVerification,
+}
+
+/// Connects, migrates, binds and serves until SIGTERM or SIGINT, then finishes the requests in
+/// flight and returns.
+///
+/// # Errors
+///
+/// An [`Error`] naming the step that failed.
+pub async fn run(config: Config) -> Result<(), Error> {
+    let database = Database::connect(&config.postgres_url, config.postgres_pool_size)
+        .await
+        .map_err(Error::Database)?;
+    database.migrate().await.map_err(Error::Database)?;
+    let objects = S3ObjectStore::new(
+        &config.s3_endpoint,
+        &config.s3_region,
+        &config.s3_bucket,
+        &config.s3_access_key,
+        &config.s3_secret_key,
+        config.max_object_size,
+    )
+    .map_err(Error::ObjectStore)?
+    .with_expiry(Duration::from_secs(config.grant_expiry_seconds));
+    let identity = OidcIdentityVerification::new(
+        &config.oidc_issuer,
+        &config.oidc_audience,
+        Duration::from_secs(config.jwks_min_refetch_seconds),
+    )
+    .map_err(Error::Identity)?;
+    // The use cases borrow the adapters and the router holds its ports for `'static`; the
+    // adapters live as long as the process.
+    let adapters: &'static Adapters = Box::leak(Box::new(Adapters {
+        objects,
+        log: PostgresChangesetLog::new(&database),
+        derived: PostgresDerivedData::new(&database),
+        drafts: PostgresDraftStore::new(&database),
+        directory: PostgresRepositoryDirectory::new(&database),
+        membership: PostgresMembership::new(&database),
+        authorisation: PostgresAuthorisationDecision::new(&database),
+        identity,
+    }));
+    let router = adapter_http::router(
+        AuthenticationService::new(&adapters.identity),
+        RepositoriesService::new(
+            &adapters.directory,
+            &adapters.authorisation,
+            &adapters.membership,
+        ),
+        MembersService::new(
+            &adapters.directory,
+            &adapters.authorisation,
+            &adapters.membership,
+        ),
+        SourceControlService::new(
+            &adapters.objects,
+            &adapters.log,
+            &adapters.derived,
+            &adapters.drafts,
+            &adapters.directory,
+            &adapters.authorisation,
+            config.max_object_size,
+        ),
+    );
+    let listener = TcpListener::bind(config.listen)
+        .await
+        .map_err(|error| Error::Bind(config.listen, error))?;
+    let address = listener.local_addr().map_err(Error::Serve)?;
+    let mut terminate = signal(SignalKind::terminate()).map_err(Error::Serve)?;
+    let mut interrupt = signal(SignalKind::interrupt()).map_err(Error::Serve)?;
+    // Nowhere left to report a failed stderr write.
+    let _ = writeln!(std::io::stderr(), "codehub listening on {address}");
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            tokio::select! {
+                _ = terminate.recv() => {}
+                _ = interrupt.recv() => {}
+            }
+        })
+        .await
+        .map_err(Error::Serve)
+}
