@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "codehub-test",
+      "credentials": [{ "accessKey": "codehub-test-access", "secretKey": "codehub-test-secret-key" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

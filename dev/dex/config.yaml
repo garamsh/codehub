@@ -1,0 +1,63 @@
+# Dex identity provider for the check services (compose.yaml, service "dex").
+# The issuer URL must equal CODEHUB_TEST_OIDC_ISSUER: Dex puts it in every token.
+# Passwords below are fixtures for local and CI checks only; the bcrypt hashes
+# match the CODEHUB_TEST_OIDC_PASSWORD_* values in dev/check-env.sh.
+issuer: http://127.0.0.1:18080/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+telemetry:
+  http: 0.0.0.0:5558
+
+oauth2:
+  grantTypes:
+    - urn:ietf:params:oauth:grant-type:device_code
+    - authorization_code
+    - refresh_token
+    - password
+  passwordConnector: local
+  skipApprovalScreen: true
+
+enablePasswordDB: true
+
+staticPasswords:
+  - email: alice@example.test
+    username: alice
+    userID: 00000000-0000-4000-8000-00000000a11c
+    hash: "$2y$10$f6FEiEdBCSdjMBVAQiJC..REBhTNgmKjFh6SNMZuu.BkEIzPNE1kS"
+  - email: bob@example.test
+    username: bob
+    userID: 00000000-0000-4000-8000-0000000000b0
+    hash: "$2y$10$pDkj/pqULY/Q9jzgQZvKr.YWuz5PluTaFv8GMt0dzxGs7yWCETNF6"
+  - email: carol@example.test
+    username: carol
+    userID: 00000000-0000-4000-8000-00000000ca01
+    hash: "$2y$10$kz4g51VBXOBo1G0YAOBjaeN96CMZ4TvJ5UH1MjMQ4cYcwmrvW7BUu"
+
+staticClients:
+  # Public client for the device grant.
+  - id: ch
+    name: ch
+    public: true
+    redirectURIs:
+      - /dex/device/callback
+  # Confidential client for tests that obtain tokens directly (password grant).
+  - id: codehub-test
+    name: codehub-test
+    secret: codehub-test-secret
+    redirectURIs:
+      - http://127.0.0.1/callback
+  # The resource server: its client id is the access-token audience. The
+  # clients above request it with the scope audience:server:client_id:codehub.
+  - id: codehub
+    name: codehub
+    secret: codehub-resource-secret
+    redirectURIs:
+      - http://127.0.0.1/callback
+    trustedPeers:
+      - ch
+      - codehub-test
