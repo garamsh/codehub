@@ -29,6 +29,7 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0005-workspace-export-and-backup.md` — ADR 0005, a workspace is exported and backed up as a bundle
 - `source-control.md` — source control: objects, changesets, derived data, server-side landing, and the ports they imply
 - `adr/0011-source-control-data-model.md` — ADR 0011, objects are SHA-256 addressed, changesets are deltas, and trees and file history are derived
+- `adr/0012-refs-and-landing-merge.md` — ADR 0012, a workspace has named refs moved by compare-and-swap, and landing merges at line level
 - `workspace.md` — tenancy (organisation, workspace, base layer) and workspace export, backup and import
 - `interfaces.md` — the `ch` CLI, the MCP server and the API behind them: what each may do, and what stays server-side
 - `adr/0010-cli-and-mcp-interfaces.md` — ADR 0010, the CLI and the MCP server are first-class interfaces over server-side work
