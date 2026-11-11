@@ -242,7 +242,7 @@
             }
           },
           "403": {
-            "description": "The caller is not an admin of the organisation.",
+            "description": "The caller is not an admin of the organisation, or members are administered outside codehub (external authorisation mode); the detail tells which.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -324,7 +324,7 @@
             }
           },
           "403": {
-            "description": "The caller is not an admin of the organisation.",
+            "description": "The caller is not an admin of the organisation, or members are administered outside codehub (external authorisation mode); the detail tells which.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -419,7 +419,7 @@
             }
           },
           "403": {
-            "description": "The caller is not an admin of the organisation.",
+            "description": "The caller is not an admin of the organisation, or members are administered outside codehub (external authorisation mode); the detail tells which.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -542,7 +542,7 @@
             }
           },
           "403": {
-            "description": "The caller is not an admin of the organisation.",
+            "description": "The caller is not an admin of the organisation, or members are administered outside codehub (external authorisation mode); the detail tells which.",
             "content": {
               "application/problem+json": {
                 "schema": {

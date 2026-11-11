@@ -6,6 +6,7 @@ use std::io::Write;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use adapter_authzen::AuthzenAuthorisationDecision;
 use adapter_introspection::IntrospectionIdentityVerification;
 use adapter_oidc::OidcIdentityVerification;
 use adapter_postgres::{
@@ -15,6 +16,9 @@ use adapter_postgres::{
 use adapter_s3::S3ObjectStore;
 use app::domain::credential::Credential;
 use app::domain::principal::Principal;
+use app::port::driven::authorisation_decision::{
+    Action, AuthorisationDecision, AuthorisationError, Decision, Resource,
+};
 use app::port::driven::identity_verification::{IdentityError, IdentityVerification};
 use app::port::driven::object_store::ObjectStoreError;
 use app::use_case::administration::Administration;
@@ -33,6 +37,15 @@ pub enum Identity {
     Oidc,
     /// RFC 7662 introspection, asking the issuer on every request.
     Introspection,
+}
+
+/// Who decides what a caller may do, and so who administers members.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
+pub enum Authorisation {
+    /// Grants kept and evaluated in PostgreSQL; codehub administers members.
+    Postgres,
+    /// An AuthZEN 1.0 decision point; members are administered outside codehub (ADR 0030).
+    Authzen,
 }
 
 /// The server's settings. Each is a flag and has an environment variable of the same name,
@@ -105,6 +118,23 @@ pub struct Config {
     /// `--identity introspection`.
     #[arg(long, env = "CODEHUB_INTROSPECTION_AUDIENCE")]
     pub introspection_audience: Option<String>,
+    /// How callers are authorised: grants in PostgreSQL, or an AuthZEN decision point in the
+    /// external administration mode.
+    #[arg(long, env = "CODEHUB_AUTHORISATION", value_enum, default_value_t = Authorisation::Postgres)]
+    pub authorisation: Authorisation,
+    /// The base URL of the AuthZEN decision point; required with `--authorisation authzen`.
+    #[arg(long, env = "CODEHUB_AUTHZEN_URL")]
+    pub authzen_url: Option<String>,
+    /// The token endpoint the decision point's bearer token is obtained from by client
+    /// credentials; required with `--authorisation authzen`.
+    #[arg(long, env = "CODEHUB_AUTHZEN_TOKEN_ENDPOINT")]
+    pub authzen_token_endpoint: Option<String>,
+    /// The client id used at that token endpoint; required with `--authorisation authzen`.
+    #[arg(long, env = "CODEHUB_AUTHZEN_CLIENT_ID")]
+    pub authzen_client_id: Option<String>,
+    /// The client secret used at that token endpoint; required with `--authorisation authzen`.
+    #[arg(long, env = "CODEHUB_AUTHZEN_CLIENT_SECRET", hide_env_values = true)]
+    pub authzen_client_secret: Option<String>,
 }
 
 /// Prints every field but the secrets, which print as `<redacted>`. The impl destructures
@@ -132,6 +162,11 @@ impl fmt::Debug for Config {
             introspection_client_secret,
             introspection_issuer,
             introspection_audience,
+            authorisation,
+            authzen_url,
+            authzen_token_endpoint,
+            authzen_client_id,
+            authzen_client_secret,
         } = self;
         f.debug_struct("Config")
             .field("listen", listen)
@@ -156,6 +191,14 @@ impl fmt::Debug for Config {
             )
             .field("introspection_issuer", introspection_issuer)
             .field("introspection_audience", introspection_audience)
+            .field("authorisation", authorisation)
+            .field("authzen_url", authzen_url)
+            .field("authzen_token_endpoint", authzen_token_endpoint)
+            .field("authzen_client_id", authzen_client_id)
+            .field(
+                "authzen_client_secret",
+                &authzen_client_secret.as_ref().map(|_| REDACTED),
+            )
             .finish()
     }
 }
@@ -222,7 +265,10 @@ pub enum Error {
     ObjectStore(ObjectStoreError),
     /// Identity verification could not be configured.
     Identity(IdentityError),
-    /// A setting the selected identity mode needs is missing; carries its flag and variable.
+    /// Authorisation could not be configured.
+    Authorisation(AuthorisationError),
+    /// A setting the selected identity or authorisation mode needs is missing; carries its flag
+    /// and variable.
     MissingSetting(&'static str),
     /// The listening address could not be bound.
     Bind(SocketAddr, std::io::Error),
@@ -238,8 +284,14 @@ impl fmt::Display for Error {
             Self::Identity(error) => {
                 write!(f, "configuring identity verification failed: {error}")
             }
+            Self::Authorisation(error) => {
+                write!(f, "configuring authorisation failed: {error}")
+            }
             Self::MissingSetting(setting) => {
-                write!(f, "the selected identity mode needs {setting}")
+                write!(
+                    f,
+                    "the selected identity or authorisation mode needs {setting}"
+                )
             }
             Self::Bind(address, error) => write!(f, "binding {address} failed: {error}"),
             Self::Serve(error) => write!(f, "serving failed: {error}"),
@@ -257,7 +309,7 @@ struct Adapters {
     drafts: PostgresDraftStore,
     directory: PostgresRepositoryDirectory,
     membership: PostgresMembership,
-    authorisation: PostgresAuthorisationDecision,
+    authorisation: Decider,
     identity: Verifier,
 }
 
@@ -272,6 +324,26 @@ impl IdentityVerification for Verifier {
         match self {
             Self::Oidc(verifier) => verifier.verify(credential).await,
             Self::Introspection(verifier) => verifier.verify(credential).await,
+        }
+    }
+}
+
+/// The authorisation decision the configuration selected.
+enum Decider {
+    Postgres(PostgresAuthorisationDecision),
+    Authzen(AuthzenAuthorisationDecision),
+}
+
+impl AuthorisationDecision for Decider {
+    async fn decide(
+        &self,
+        subject: &Principal,
+        action: Action,
+        resource: &Resource,
+    ) -> Result<Decision, AuthorisationError> {
+        match self {
+            Self::Postgres(decider) => decider.decide(subject, action, resource).await,
+            Self::Authzen(decider) => decider.decide(subject, action, resource).await,
         }
     }
 }
@@ -315,6 +387,32 @@ fn verifier(config: &Config) -> Result<Verifier, Error> {
     .map_err(Error::Identity)
 }
 
+/// Builds the authorisation decision `config` selects, over `database` where it is PostgreSQL.
+fn decider(config: &Config, database: &Database) -> Result<Decider, Error> {
+    match config.authorisation {
+        Authorisation::Postgres => Ok(Decider::Postgres(PostgresAuthorisationDecision::new(
+            database,
+        ))),
+        Authorisation::Authzen => AuthzenAuthorisationDecision::new(
+            require(&config.authzen_url, "--authzen-url (CODEHUB_AUTHZEN_URL)")?,
+            require(
+                &config.authzen_token_endpoint,
+                "--authzen-token-endpoint (CODEHUB_AUTHZEN_TOKEN_ENDPOINT)",
+            )?,
+            require(
+                &config.authzen_client_id,
+                "--authzen-client-id (CODEHUB_AUTHZEN_CLIENT_ID)",
+            )?,
+            require(
+                &config.authzen_client_secret,
+                "--authzen-client-secret (CODEHUB_AUTHZEN_CLIENT_SECRET)",
+            )?,
+        )
+        .map(Decider::Authzen)
+        .map_err(Error::Authorisation),
+    }
+}
+
 fn require<'a>(value: &'a Option<String>, setting: &'static str) -> Result<&'a str, Error> {
     value.as_deref().ok_or(Error::MissingSetting(setting))
 }
@@ -327,10 +425,15 @@ fn require<'a>(value: &'a Option<String>, setting: &'static str) -> Result<&'a s
 /// An [`Error`] naming the step that failed.
 pub async fn run(config: Config) -> Result<(), Error> {
     let identity = verifier(&config)?;
+    let administration = match config.authorisation {
+        Authorisation::Postgres => Administration::BuiltIn,
+        Authorisation::Authzen => Administration::External,
+    };
     let database = Database::connect(&config.postgres_url, config.postgres_pool_size)
         .await
         .map_err(Error::Database)?;
     database.migrate().await.map_err(Error::Database)?;
+    let authorisation = decider(&config, &database)?;
     let objects = S3ObjectStore::new(
         &config.s3_endpoint,
         &config.s3_region,
@@ -350,7 +453,7 @@ pub async fn run(config: Config) -> Result<(), Error> {
         drafts: PostgresDraftStore::new(&database),
         directory: PostgresRepositoryDirectory::new(&database),
         membership: PostgresMembership::new(&database),
-        authorisation: PostgresAuthorisationDecision::new(&database),
+        authorisation,
         identity,
     }));
     let router = adapter_http::router(
@@ -360,13 +463,13 @@ pub async fn run(config: Config) -> Result<(), Error> {
             &adapters.authorisation,
             &adapters.membership,
             &(),
-            Administration::BuiltIn,
+            administration,
         ),
         MembersService::new(
             &adapters.directory,
             &adapters.authorisation,
             &adapters.membership,
-            Administration::BuiltIn,
+            administration,
         ),
         SourceControlService::new(
             &adapters.objects,
@@ -422,6 +525,11 @@ mod tests {
             introspection_client_secret: Some("introspection-secret-value".to_owned()),
             introspection_issuer: Some("http://issuer.example".to_owned()),
             introspection_audience: Some("introspection-audience-visible".to_owned()),
+            authorisation: Authorisation::Authzen,
+            authzen_url: Some("http://pdp.example".to_owned()),
+            authzen_token_endpoint: Some("http://issuer.example/token".to_owned()),
+            authzen_client_id: Some("authzen-client-visible".to_owned()),
+            authzen_client_secret: Some("authzen-secret-value".to_owned()),
         }
     }
 
@@ -434,7 +542,9 @@ mod tests {
         assert!(!shown.contains("s3-secret-value"), "{shown}");
         assert!(!shown.contains("pg-secret-value"), "{shown}");
         assert!(!shown.contains("introspection-secret-value"), "{shown}");
+        assert!(!shown.contains("authzen-secret-value"), "{shown}");
         assert!(shown.contains("introspection-client-visible"), "{shown}");
+        assert!(shown.contains("authzen-client-visible"), "{shown}");
         assert!(shown.contains("bucket-visible"), "{shown}");
         assert!(shown.contains("access-visible"), "{shown}");
         assert!(

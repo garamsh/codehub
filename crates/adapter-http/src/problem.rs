@@ -197,7 +197,10 @@ impl From<MembersError> for Problem {
             MembersError::Access(error) => error.into(),
             MembersError::Directory(error) => error.into(),
             MembersError::Membership(error) => error.into(),
-            MembersError::ExternallyAdministered => Self::internal(),
+            MembersError::ExternallyAdministered => Self::new(
+                StatusCode::FORBIDDEN,
+                "members are administered outside codehub",
+            ),
         }
     }
 }

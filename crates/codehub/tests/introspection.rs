@@ -6,51 +6,10 @@ pub mod common;
 
 use std::path::Path;
 
-use common::{Client, TestDatabase, env};
+use common::{Client, TestDatabase, introspection_settings, pairs};
 use reqwest::{Method, StatusCode};
 use serde_json::json;
 use test_support::{Server, keycloak_token};
-
-/// The settings that put `codehub` in introspection mode against Keycloak, as environment
-/// variables.
-#[cfg(test)]
-fn introspection_settings() -> Vec<(&'static str, String)> {
-    vec![
-        ("CODEHUB_IDENTITY", "introspection".to_owned()),
-        (
-            "CODEHUB_INTROSPECTION_ENDPOINT",
-            format!(
-                "{}/protocol/openid-connect/token/introspect",
-                env("CODEHUB_TEST_KEYCLOAK_ISSUER")
-            ),
-        ),
-        (
-            "CODEHUB_INTROSPECTION_CLIENT_ID",
-            env("CODEHUB_TEST_KEYCLOAK_INTROSPECTION_CLIENT_ID"),
-        ),
-        (
-            "CODEHUB_INTROSPECTION_CLIENT_SECRET",
-            env("CODEHUB_TEST_KEYCLOAK_INTROSPECTION_CLIENT_SECRET"),
-        ),
-        (
-            "CODEHUB_INTROSPECTION_ISSUER",
-            env("CODEHUB_TEST_KEYCLOAK_ISSUER"),
-        ),
-        (
-            "CODEHUB_INTROSPECTION_AUDIENCE",
-            env("CODEHUB_TEST_KEYCLOAK_AUDIENCE"),
-        ),
-    ]
-}
-
-/// `settings` as the borrowed pairs [`Server::start_with`] takes.
-#[cfg(test)]
-fn pairs<'a>(settings: &'a [(&'static str, String)]) -> Vec<(&'a str, &'a str)> {
-    settings
-        .iter()
-        .map(|(name, value)| (*name, value.as_str()))
-        .collect()
-}
 
 #[tokio::test]
 async fn accepts_a_token_for_its_audience_and_refuses_one_for_another() {
