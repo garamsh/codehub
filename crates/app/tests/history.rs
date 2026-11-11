@@ -1,7 +1,7 @@
 //! Reading a path's history through the in-memory adapters.
 
 #[cfg(test)]
-mod common;
+pub mod common;
 
 use app::domain::address::Address;
 use app::port::driving::source_control::SourceControl;

@@ -1,7 +1,7 @@
 //! Landing drafts on `main` through the in-memory adapters.
 
 #[cfg(test)]
-mod common;
+pub mod common;
 
 use std::collections::BTreeMap;
 

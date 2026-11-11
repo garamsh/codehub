@@ -1,7 +1,7 @@
 //! Authenticating callers and authorising them per path, through the driving ports.
 
 #[cfg(test)]
-mod common;
+pub mod common;
 
 use std::collections::BTreeSet;
 
