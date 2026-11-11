@@ -18,21 +18,34 @@ fn prints_name_and_version() -> io::Result<()> {
 }
 
 #[test]
-fn exits_non_zero_on_unknown_argument() -> io::Result<()> {
+fn exits_with_the_usage_code_on_unknown_argument() -> io::Result<()> {
     let output = ch(&["--bogus"])?;
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(stderr.lines().count(), 1);
-    assert!(stderr.contains("--bogus"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--bogus"));
     Ok(())
 }
 
 #[test]
-fn exits_non_zero_without_arguments() -> io::Result<()> {
+fn exits_with_the_usage_code_without_arguments() -> io::Result<()> {
     let output = ch(&[])?;
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
     assert!(!output.stderr.is_empty());
+    Ok(())
+}
+
+#[test]
+fn documents_the_exit_codes_in_help() -> io::Result<()> {
+    let output = ch(&["--help"])?;
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    for line in [
+        "3  Not logged in, or the server answered 401",
+        "4  Landing rejected: 409 or 403 on land",
+        "5  Denied or not found on any other operation: 403 or 404",
+    ] {
+        assert!(help.contains(line), "{line}");
+    }
     Ok(())
 }
 
@@ -45,8 +58,7 @@ fn reports_non_unicode_argument_without_panicking() -> io::Result<()> {
     let output = Command::new(env!("CARGO_BIN_EXE_ch"))
         .arg(OsString::from_vec(vec![0xff]))
         .output()?;
-    assert!(!output.status.success());
-    assert_ne!(output.status.code(), Some(101));
-    assert_eq!(String::from_utf8_lossy(&output.stderr).lines().count(), 1);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!output.stderr.is_empty());
     Ok(())
 }

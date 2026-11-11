@@ -214,4 +214,22 @@ mod tests {
     fn has_no_path_without_either() {
         assert_eq!(path(None, None), None);
     }
+
+    #[test]
+    fn writes_a_private_file_in_a_private_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("ch-state-{}", std::process::id()));
+        let file = StateFile::at(root.join("ch").join("state.json"));
+        let state = State {
+            server: "http://s".to_owned(),
+            token: "t".to_owned(),
+            repository: None,
+        };
+        file.save(&state).unwrap();
+        file.save(&state).unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&root.join("ch")), 0o700);
+        assert_eq!(mode(&root.join("ch").join("state.json")), 0o600);
+        fs::remove_dir_all(&root).unwrap();
+    }
 }
