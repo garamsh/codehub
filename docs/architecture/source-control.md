@@ -22,6 +22,10 @@ How versions of a repository's content are stored, changed, landed and queried.
   - release refs;
   - `last-green` — what CI and deployment base on.
   - Only `main` is implemented first; the format admits more refs.
+- **PostgreSQL holds the directory, the changeset log, refs, drafts, derived data and grants** in one schema shared by all organisations, with a repository identifier on every row. The minimum major version is 18, the server takes a connection URL, migrations are forward-only SQL files in `crates/adapter-postgres` applied at server start, and connections are pooled in process (ADR 0022).
+- **A draft is identified by repository, principal and draft name** (ADR 0022).
+- **A landing that lost the compare-and-swap leaves its changeset and derived rows**, which a retry reuses because they are content-addressed; removal waits for the retention decision (ADR 0022).
+- **Object keys are `<repository id>/<sha256 hex>`.** Uploads are single-part with `x-amz-checksum-sha256` signed, so the store verifies the bytes against the address; objects are not compressed, so the address covers the stored bytes. The server refuses a grant above a configured maximum no larger than S3's single-PUT limit, and presigned URLs expire after a configured time, 15 minutes by default (ADR 0023).
 - **There are no work branches.** Pending work is a server-side draft changeset outside the log (ADR 0012).
 - **Moving a ref is a compare-and-swap on that ref alone**, comparing the ref's current changeset identifier, and is separate from creating the changeset (ADR 0012).
 - **Landing is performed on the server**, in this order:
@@ -121,9 +125,9 @@ Addresses:
 The ports below follow from the decisions, named for the conversation and in the application's terms (`docs/architecture/structure.md`). Whether each is earned by two adapters is settled when it is written.
 
 - **Object store** — put and get immutable objects by content address, and issue presigned URLs through which clients upload and download object bytes directly to and from the store, so the bytes do not pass through the server API (ADR 0015). Served by an S3-compatible adapter; the same technology also holds filesystem images, delivered the same way (`docs/architecture/execution.md`, ADR 0008).
-- **Changeset log** — append a changeset, read the log, read a ref, and move a ref by compare-and-swap on that ref alone. Served by a PostgreSQL adapter, the log as a table (ADR 0013).
-- **Derived data** — read and write computed trees, file-version nodes, blame and skip lists for a repository.
-- **Draft store** — put and get draft changesets, held outside the log until they land (ADR 0012).
+- **Changeset log** — append a changeset, read the log, read a ref, and move a ref by compare-and-swap on that ref alone. Served by a PostgreSQL adapter, the log as a table (ADR 0013, ADR 0022).
+- **Derived data** — read and write computed trees, file-version nodes, blame and skip lists for a repository. Served by PostgreSQL (ADR 0022).
+- **Draft store** — put and get draft changesets, held outside the log until they land (ADR 0012). Served by PostgreSQL (ADR 0022).
 - **Check dispatch** — ask for the post-land checks to run and receive their results. The execution side is in `docs/architecture/runner.md`.
 - Driving adapters are the server API behind `ch` and the MCP server (`docs/architecture/interfaces.md`). They reach the application through the **source control** driving port: land a draft on `main`, and read a path's history.
 
@@ -136,6 +140,8 @@ The ports below follow from the decisions, named for the conversation and in the
 - The file kind and a file against a directory are ADR 0019: the kind apart from content, so a kind change on one side and a content change on the other both survive; a file against a directory at tree application, because the two paths never meet in the per-path merge and the tree cannot hold both. The kind as part of the content, one side's kind always winning, a per-path rule for a file against a directory and resolving it by preferring one side were not taken.
 - The project-defined encoding and the changeset identifier are ADR 0016: one encoding per value, because an address is a hash of bytes; the identifier as the address, so a changeset is checked like any other object and is named before it is appended. Deterministic CBOR and an identifier assigned by the log were not taken.
 - PostgreSQL for the metadata, the log and the refs, and the object store for blobs, are ADR 0013. SQLite behind a single writer, a distributed SQL database now, and log segments in the object store were not taken.
+- Where derived data and drafts live, how PostgreSQL is run, and what a lost landing leaves: ADR 0022. A shared schema was taken over a schema per organisation, and the object store for derived data was not taken.
+- The object key, checksum verification, no compression and single-part uploads are ADR 0023: per-repository keys because export and deletion are per repository; compression and multipart upload not taken because each forgoes the store's check of the bytes against the address. Facts checked on 2026-11-11 are cited there.
 - Tenancy that scopes the log to a repository is ADR 0004.
 - Bundle-based export is ADR 0005.
 
@@ -143,11 +149,6 @@ The ports below follow from the decisions, named for the conversation and in the
 
 Each is undecided; the recommendation is not a decision.
 
-- **Where derived data is stored.** ADR 0013 places the metadata, the log and the refs, and not derived data. Options: PostgreSQL; the object store, as content-addressed objects; split by type, such as trees in the object store and skip lists in PostgreSQL.
-- **Where draft changesets are stored.** They are outside the log (ADR 0012); no option has been examined.
-- **PostgreSQL version and hosting.** Which major version is the minimum, and whether it is run by the project or consumed as a managed service. No option has been examined.
-- **Schema migration tooling.** How the schema is versioned and migrated. No option has been examined.
-- **Connection pooling.** Whether the server pools connections itself or sits behind an external pooler. No option has been examined.
 - **When the move to distributed SQL is made.** What measurement triggers it, such as write latency on the log or on `main` at a given number of concurrent agents. No option has been examined.
 - **What moves `last-green`, and on which check results.** Options: the server, when every post-land check of a changeset on `main` passes; the server, when only the checks marked blocking pass; a CI job holding a credential to move it.
 - **How release refs are created and moved, and by whom.** No option has been examined.
@@ -161,11 +162,8 @@ Each is undecided; the recommendation is not a decision.
 - **Flag of skip lists.** ADR 0011 makes the flag per type and fixes trees as eager and blame as deferred; it does not flag skip lists. Options: eager at landing; deferred to the first query.
   - Recommendation: deferred, with the first query paying for the computation.
 - **History through a merge.** Whether a path's history walks the versions a merge's other parents reached it by, and in what order. Options: only the first previous node, as now; every previous node, in an order still to be chosen.
-- **Compression of stored objects**, and whether the address covers the stored or the original bytes. The object store verifies the checksum of the bytes it receives, so compressing before upload with the address over the original bytes forgoes that check. No option has been examined.
-- **Objects uploaded in parts.** S3 verifies SHA-256 for a multipart upload only as a composite of part checksums (https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html, "Multipart uploads"), so such an object is not checked against its address by the store. Options: a size limit that keeps every object a single-part upload; server-side verification after a multipart upload.
 - **Chunking parameters.** The content-defined chunking algorithm, its target, minimum and maximum chunk sizes, and the file size above which a file is chunked. No option has been examined.
 - **Skip-list spacing.** Which ancestors each changeset's skip list points at. No option has been examined.
 - **Retention and deletion of objects** no longer referenced by any changeset. Options: never delete; garbage-collect after a grace period.
   - Recommendation: garbage-collect after a grace period, with the export bundle (`tenancy.md`) as the safety copy.
-- **What a landing that lost the compare-and-swap stored.** A landing appends its changeset and stores its trees before the compare-and-swap on `main`; where it loses, they are reachable from no ref and nothing removes them. No option has been examined.
 - **Client cache and checkout.** How a client lays out a working copy from cached objects; no option has been examined.
