@@ -9,6 +9,7 @@ permissions: read-all
 
 jobs:
   ci:
+    # Mover: the .github/ owner in CODEOWNERS (@sauce-git) moves this label when a newer versioned label is published.
     runs-on: ubuntu-24.04
     steps:
       - name: Record runner image
