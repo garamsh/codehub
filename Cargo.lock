@@ -23,6 +23,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "test-support",
  "tokio",
 ]
 
@@ -2184,6 +2185,8 @@ dependencies = [
 name = "test-support"
 version = "0.0.0"
 dependencies = [
+ "reqwest",
+ "serde_json",
  "sqlx",
  "tokio",
 ]

@@ -1,5 +1,5 @@
 //! Helpers that the tests of more than one package share: the check environment, a fresh
-//! PostgreSQL database, a started `codehub` and a user's `ch`.
+//! PostgreSQL database, a started `codehub`, a user's `ch` and a token from Keycloak.
 //!
 //! Every helper panics when something is not as expected, as a failed assertion does, so a test
 //! calls it without handling a `Result`. Every wait is bounded.
@@ -13,6 +13,7 @@
 
 mod ch;
 mod database;
+mod keycloak;
 mod server;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,6 +21,7 @@ use std::time::Duration;
 
 pub use ch::{ChUser, Run};
 pub use database::TestDatabase;
+pub use keycloak::keycloak_token;
 pub use server::Server;
 
 /// How long a start, a shutdown or one run of `ch` may take.

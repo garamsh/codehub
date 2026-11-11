@@ -17,9 +17,9 @@ pub struct Server {
 }
 
 impl Server {
-    /// Starts `binary`, the built `codehub`, on `127.0.0.1:0` against `database`, the object store
-    /// and the identity provider of the check environment, accepting tokens for `audience`, and
-    /// waits for the line that names its address.
+    /// Starts `binary`, the built `codehub`, in its default OIDC mode on `127.0.0.1:0` against
+    /// `database`, the object store and the Dex of the check environment, accepting tokens for
+    /// `audience`, and waits for the line that names its address.
     ///
     /// # Panics
     ///
@@ -27,6 +27,37 @@ impl Server {
     /// line within the bound.
     #[must_use]
     pub fn start(binary: &Path, database: &TestDatabase, audience: &str) -> Self {
+        Self::start_with(binary, database, &[("CODEHUB_OIDC_AUDIENCE", audience)])
+    }
+
+    /// Starts `binary` as [`Server::start`] does, with `variables` set after the check
+    /// environment's: one of them replaces the variable of the same name (`CODEHUB_OIDC_ISSUER`
+    /// is Dex's until one does), the others add to it. No audience is set.
+    ///
+    /// # Panics
+    ///
+    /// Panics where [`Server::start`] does, and where the first line is not the one that names
+    /// the address.
+    #[must_use]
+    pub fn start_with(binary: &Path, database: &TestDatabase, variables: &[(&str, &str)]) -> Self {
+        Self::try_start_with(binary, database, variables)
+            .unwrap_or_else(|line| panic!("codehub did not start: {line}"))
+    }
+
+    /// Starts `binary` as [`Server::start_with`] does.
+    ///
+    /// # Errors
+    ///
+    /// The first line of stderr, where it is not the line that names the address.
+    ///
+    /// # Panics
+    ///
+    /// Panics where [`Server::start`] does.
+    pub fn try_start_with(
+        binary: &Path,
+        database: &TestDatabase,
+        variables: &[(&str, &str)],
+    ) -> Result<Self, String> {
         let mut child = Command::new(binary)
             .env("CODEHUB_LISTEN", "127.0.0.1:0")
             .env("CODEHUB_POSTGRES_URL", database.url())
@@ -36,7 +67,7 @@ impl Server {
             .env("CODEHUB_S3_ACCESS_KEY", env("CODEHUB_TEST_S3_ACCESS_KEY"))
             .env("CODEHUB_S3_SECRET_KEY", env("CODEHUB_TEST_S3_SECRET_KEY"))
             .env("CODEHUB_OIDC_ISSUER", env("CODEHUB_TEST_OIDC_ISSUER"))
-            .env("CODEHUB_OIDC_AUDIENCE", audience)
+            .envs(variables.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -61,11 +92,11 @@ impl Server {
             ._stderr
             .recv_timeout(BOUND)
             .expect("codehub printed a line to stderr within the bound");
-        let address = line
-            .strip_prefix("codehub listening on ")
-            .unwrap_or_else(|| panic!("codehub did not start: {line}"));
+        let Some(address) = line.strip_prefix("codehub listening on ") else {
+            return Err(line);
+        };
         server.base = format!("http://{address}");
-        server
+        Ok(server)
     }
 
     /// Sends the signal `name` (`TERM`, `INT`) to the process and returns how it exited.
