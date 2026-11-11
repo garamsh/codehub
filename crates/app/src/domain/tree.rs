@@ -5,7 +5,8 @@ use std::fmt;
 use std::num::NonZeroUsize;
 
 use super::address::Address;
-use super::changeset::Change;
+use super::changeset::{Change, Changeset};
+use super::derivation::{Derivation, Flag, Step};
 use super::encoding::{
     DIRECTORY, DecodeError, EncodeError, Reader, TREE_KIND, Writer, sorted_list,
 };
@@ -238,6 +239,40 @@ fn apply_entry(
     }
 }
 
+/// Merkle trees as a derived type: a changeset's value is the address of its root tree.
+pub struct Trees<'a> {
+    /// The trees derived so far, by address; the first parent's root and the subtrees on the
+    /// path to a change are read from here.
+    pub known: &'a BTreeMap<Address, Tree>,
+}
+
+impl Derivation for Trees<'_> {
+    const FLAG: Flag = Flag::Eager;
+    type Value = Address;
+    type Object = Tree;
+    type Error = DeriveError;
+
+    /// Applies the delta to the first parent's root, or to the empty tree where there is none.
+    fn step(
+        &self,
+        changeset: &Changeset,
+        parents: &[Address],
+    ) -> Result<Step<Address, Tree>, DeriveError> {
+        let parent = match parents.first() {
+            Some(root) => self
+                .known
+                .get(root)
+                .ok_or(DeriveError::MissingTree(*root))?,
+            None => &EMPTY,
+        };
+        let derived = derive(parent, &changeset.changes, self.known)?;
+        Ok(Step {
+            value: derived.root,
+            objects: derived.trees,
+        })
+    }
+}
+
 /// Records a non-empty subtree and returns its entry; an empty one is pruned.
 fn store(tree: Tree, out: &mut BTreeMap<Address, Tree>) -> Result<Option<Entry>, DeriveError> {
     if tree.entries.is_empty() {
@@ -251,6 +286,7 @@ fn store(tree: Tree, out: &mut BTreeMap<Address, Tree>) -> Result<Option<Entry>,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::derivation::{DerivationError, derive as derive_step};
     use crate::domain::file::FileKind;
 
     const ENCODED: &str = "01020000000300000006524541444d450101000000205891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be030000000362696e0301000000200a0369a8dc42658354e0c10425f84a0c95226ba213f2cf571cc056cb757434a20000000672756e2e7368020100000020a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf";
@@ -483,6 +519,44 @@ mod tests {
         assert_eq!(
             step(&parent, &[("a", write("x")), ("a/b", write("b"))]).err(),
             Some(DeriveError::NotADirectory(path("a")))
+        );
+    }
+
+    #[test]
+    fn the_tree_step_applies_the_delta_to_the_first_parents_root() {
+        let changeset = |parents: usize, changes: &[(&str, Change)]| Changeset {
+            parents: vec![Address::of(b"parent"); parents],
+            author: "ada".to_owned(),
+            timestamp: 0,
+            message: String::new(),
+            changes: delta(changes),
+        };
+        let (other, mut known) = step(&empty(), &[("z", write("z"))]).unwrap();
+        let first = derive_step(
+            &Trees { known: &known },
+            &changeset(0, &[("a", write("a"))]),
+            &[],
+        )
+        .unwrap();
+        known.extend(first.objects);
+        let roots = [first.value, other.address().unwrap()];
+
+        let merge = changeset(2, &[("b", write("b"))]);
+        let derived = derive_step(&Trees { known: &known }, &merge, &roots).unwrap();
+
+        assert_eq!(
+            derived.objects[&derived.value]
+                .entries
+                .keys()
+                .collect::<Vec<_>>(),
+            [&name("a"), &name("b")]
+        );
+        let unknown = [Address::of(b"no such root"), roots[1]];
+        assert_eq!(
+            derive_step(&Trees { known: &known }, &merge, &unknown).err(),
+            Some(DerivationError::Step(DeriveError::MissingTree(
+                Address::of(b"no such root")
+            )))
         );
     }
 

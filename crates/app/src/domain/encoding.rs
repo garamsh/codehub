@@ -12,6 +12,7 @@ const SHA256_DIGEST_LENGTH: usize = 32;
 
 pub(crate) const CHANGESET_KIND: u8 = 0x01;
 pub(crate) const TREE_KIND: u8 = 0x02;
+pub(crate) const FILE_VERSION_KIND: u8 = 0x03;
 
 pub(crate) const DELETION: u8 = 0x00;
 pub(crate) const FILE: u8 = 0x01;
