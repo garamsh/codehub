@@ -134,7 +134,7 @@ lints hold the line, and where a boundary parses.
   item under a `#[cfg(test)]` attribute. Compiling an integration-test
   file with `--test` does not count, so in
   `crates/<package>/tests/<name>.rs` each helper function, and each
-  `mod common;` declaration, carries `#[cfg(test)]`; without it, an
+  `pub mod common;` declaration, carries `#[cfg(test)]`; without it, an
   `unwrap` in the helper fails the lint entry point.
 - **A suppression is `#[expect(lint, reason = "...")]`**, never
   `#[allow]`: an `expect` whose lint no longer fires raises
@@ -179,8 +179,15 @@ are `assert!`, `assert_eq!` and `assert_ne!`. A test may return
 - **Integration tests:** `crates/<package>/tests/<name>.rs`. Each file is
   its own crate and sees only the package's public API. Shared helpers
   go in `tests/common/mod.rs`, so that they are not compiled as a test
-  of their own. A package whose tests substitute a port wires
-  `crates/adapter-memory` in as a dev-dependency.
+  of their own, and each test file declares the module `pub mod
+  common;`. Every test file compiles `common` into its own crate, and
+  a helper one file does not call raises `dead_code` there under a
+  private `mod common;`, which fails the lint entry point; a `pub`
+  module's items count as exported and raise none. `missing_docs` then
+  reaches the module and each helper, so `tests/common/mod.rs` opens
+  with `//!` and each helper carries `///`. A package whose tests
+  substitute a port wires `crates/adapter-memory` in as a
+  dev-dependency.
 - **E2E tests:** the `e2e` package at the repository root, with
   `e2e/tests/<name>.rs`, added to `members` beside `crates/*`. The
   workspace test entry point excludes it with `--exclude e2e`.
