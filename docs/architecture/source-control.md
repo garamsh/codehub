@@ -31,6 +31,13 @@ How versions of a workspace's content are stored, changed, landed and queried.
   - overlapping text files are merged by a line-level 3-way merge;
   - overlapping binary files are merged at path level;
   - a true conflict rejects the landing and returns the conflicting paths for the author's agent to resolve.
+- **Details of the landing merge** (ADR 0017):
+  - lines are diffed with the Histogram algorithm of the `imara-diff` crate; the 3-way merge over those diffs is the domain ring's own;
+  - a file version is binary when a NUL byte occurs in its first 8000 bytes or it is not valid UTF-8, and text otherwise; a path is merged by lines only when its base and both sides are text;
+  - lines are compared byte for byte, so whitespace-only and line-ending differences are differences;
+  - renames are not detected: a rename is a deletion and an addition;
+  - true conflicts are a deletion against a modification, an addition on both sides with different content, both sides changing overlapping base line ranges or inserting at the same base position differently, and both sides changing a binary path to different content;
+  - identical changes on both sides, a deletion on both sides, and changes to disjoint line ranges of one text file, adjacent ones included, are clean.
 - **There is no workspace-wide lock** around landing.
 - **There is no push.** A client uploads objects; the server creates the changeset.
 - **PostgreSQL holds the metadata, the changeset log as a table, and the refs**, each behind a port (ADR 0013).
@@ -52,6 +59,7 @@ The ports below follow from the decisions, named for the conversation and in the
 - Server-centred source control, content-addressed objects, changesets and derived data follow the model in Anthropic's account of its own system (https://www.anthropic.com/engineering/redesigning-source-control); the decision and its rejected alternatives are in ADR 0003.
 - SHA-256 addressing, delta changesets, derived trees and file-version nodes, and the single derivation mechanism are ADR 0011: SHA-256 because an S3 presigned upload can carry its checksum and the store then rejects content that does not match its address; trees eager because checkout starts from them. BLAKE3, snapshot changesets and flat manifests were not taken.
 - Named refs, the absence of work branches and the landing merge are ADR 0012: line-level merge because rejecting non-overlapping edits to one file would cause retry storms among hundreds of agents; re-parenting because it keeps landing cost proportional to the change; `last-green` because a broken `main` contaminates work based on it until the revert. Work branches, path-level merge of text, a merge changeset for every landing, CI basing on `main` and server-side conflict resolution were not taken.
+- The merge details are ADR 0017: Histogram because, as a patience variant, it misaligns lines less often than Myers, which in a 3-way merge means fewer spurious conflicts; text by content because it needs no configuration; no rename detection because a wrong pairing merges edits into the wrong file. Myers diff, rename detection in M1, whitespace-insensitive merge and a per-path text attribute were not taken.
 - PostgreSQL for the metadata, the log and the refs, and the object store for blobs, are ADR 0013. SQLite behind a single writer, a distributed SQL database now, and log segments in the object store were not taken.
 - Tenancy that scopes the log to a workspace is ADR 0004.
 - Bundle-based export is ADR 0005.
@@ -69,10 +77,6 @@ Each is undecided; the recommendation is not a decision.
 - **What moves `last-green`, and on which check results.** Options: the server, when every post-land check of a changeset on `main` passes; the server, when only the checks marked blocking pass; a CI job holding a credential to move it.
 - **How release refs are created and moved, and by whom.** No option has been examined.
 - **Draft changeset lifetime.** How long a draft outside the log is kept, what removes it, and whether one agent can read another's draft. No option has been examined.
-- **Rename and move detection in the landing merge.** Whether a path renamed on one side and edited on the other is merged or is a conflict. No option has been examined.
-- **Line-merge algorithm.** Which 3-way line merge, and whether whitespace-only differences count. No option has been examined.
-- **Text or binary.** How the merge decides a file is text: by content, by a per-path attribute, or both. No option has been examined.
-- **Which overlaps are true conflicts beyond overlapping lines**, such as a deletion on one side against an edit on the other, or the same path added on both sides with different content. No option has been examined.
 - **Which checks run after landing, and who configures them.** Options: per workspace configuration stored as workspace data; a server-wide set.
   - Recommendation: per workspace.
 - **When revert is automatic.** Options: any failing check reverts; only checks marked blocking revert; a person or agent decides.
