@@ -30,6 +30,7 @@ Current architecture of the system and the decisions behind it. This file is the
 - `workspace.md` — tenancy (organisation, workspace, base layer) and workspace export, backup and import
 - `interfaces.md` — the `ch` CLI, the MCP server and the API behind them: what each may do, and what stays server-side
 - `adr/0010-cli-and-mcp-interfaces.md` — ADR 0010, the CLI and the MCP server are first-class interfaces over server-side work
+- `adr/0015-server-api-transport.md` — ADR 0015, the server API is HTTP with JSON described by OpenAPI, and object bytes move by presigned URL
 - `access.md` — identity, authorisation and provisioning ports and the standards their default adapters speak
 - `adr/0006-authentication-and-authorisation-outside-the-core.md` — ADR 0006, authentication and authorisation are separated from the core and speak standards
 - `execution.md` — caches, derived images, delivery through object storage, executor drivers
