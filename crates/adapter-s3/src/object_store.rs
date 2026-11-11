@@ -45,17 +45,8 @@ fn hex(address: Address) -> String {
 }
 
 /// The base64 of the address's digest, the form `x-amz-checksum-sha256` takes.
-fn checksum(address: Address) -> Result<String, ObjectStoreError> {
-    let hex = hex(address);
-    let digest = (0..hex.len())
-        .step_by(2)
-        .map(|start| {
-            hex.get(start..start + 2)
-                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
-        })
-        .collect::<Option<Vec<u8>>>()
-        .ok_or_else(|| backend(format!("address {address} has no digest")))?;
-    Ok(STANDARD.encode(digest))
+fn checksum(address: Address) -> String {
+    STANDARD.encode(address.digest())
 }
 
 fn now() -> i64 {
@@ -213,7 +204,7 @@ impl ObjectStore for S3ObjectStore {
             )));
         }
         let issued_at = now();
-        let checksum = checksum(address)?;
+        let checksum = checksum(address);
         let key = Self::key(repository, address);
         let mut action = self.bucket.put_object(Some(&self.credentials), &key);
         action
@@ -256,7 +247,7 @@ mod tests {
     #[test]
     fn encodes_the_digest_as_base64() {
         assert_eq!(
-            checksum(Address::of(b"hello world")).unwrap(),
+            checksum(Address::of(b"hello world")),
             "uU0nuZNNPgilLlLX2n2r+sSE7+N6U4DukIj3rOLvzek="
         );
     }
