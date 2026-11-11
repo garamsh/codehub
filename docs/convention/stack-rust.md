@@ -28,7 +28,7 @@
 
 ## Crate layout
 
-The workspace holds three kinds of package, all under `crates/`. Its
+The workspace holds four kinds of package, all under `crates/`. Its
 hexagonal unit takes these names:
 
 - `crates/app` — the application crate. Its domain ring is
@@ -49,6 +49,13 @@ hexagonal unit takes these names:
   adapters and passes them to the application, and `src/main.rs` only
   calls it. A binary-only package cannot be reached from `tests/`, so a
   test that wires the shipped graph calls that function.
+- `crates/test-support` — a library named only under another package's
+  `[dev-dependencies]`, `publish = false`, holding the helpers that the
+  tests of more than one package share. A helper only one package's
+  tests use stays in that package's `tests/common/mod.rs`. No shipped
+  package names it. Since nothing ships it, it takes `tokio` and `sqlx`
+  under `[dependencies]`, and, as a library, it does not get the test
+  exemptions of `clippy.toml`.
 - Direction is the dependency list. `app`'s `Cargo.toml` names no
   adapter; an adapter's names `app` and no other adapter; a binary
   package's names `app` and the adapters it wires, each from the change
@@ -85,8 +92,9 @@ takes, how a caller holds a port, and which packages name the runtime.
   port fails with `E0038`.
 - **No `async-trait` crate.** `async fn` and return-position
   `impl Trait` in traits are native since Rust 1.75.0.
-- **`tokio` is a `[dependencies]` entry only of a binary package**, and
-  any package may name it under `[dev-dependencies]`. A test that
+- **`tokio` is a `[dependencies]` entry only of a binary package and of
+  `crates/test-support`**, and any package may name it under
+  `[dev-dependencies]`. A test that
   awaits is `#[tokio::test]` (features `macros` and `rt`), which runs
   on a current-thread runtime; the `Send` bound is checked when the
   implementation compiles, not by the runtime.

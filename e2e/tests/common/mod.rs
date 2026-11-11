@@ -4,39 +4,21 @@
 //! Every helper panics when something is not as expected, as a failed assertion does. Every wait
 //! is bounded.
 
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::process::ExitStatus;
+use std::time::Duration;
 
 use serde::Deserialize;
-use sqlx::{AssertSqlSafe, Connection, Executor, PgConnection};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
+pub use test_support::{ChUser, Run, TestDatabase, env, unique};
 
 /// The audience `codehub` accepts: the client `ch`, to which Dex issues the device grant's token.
 const AUDIENCE: &str = "ch";
 
 /// How long a start, a shutdown, a login or one run of `ch` may take.
 const BOUND: Duration = Duration::from_secs(60);
-
-/// The value of the environment variable `name`.
-///
-/// # Panics
-///
-/// Panics if it is not set.
-pub fn env(name: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set; run through `make e2e`"))
-}
-
-/// A name no other test of any run uses: `prefix`, the process and a counter.
-pub fn unique(prefix: &str) -> String {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    format!(
-        "{prefix}-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    )
-}
 
 /// The path of the built binary `name`, which sits beside the directory of the running test.
 ///
@@ -54,121 +36,22 @@ pub fn binary(name: &str) -> PathBuf {
     path
 }
 
-/// A database created for one test and dropped with it.
-pub struct TestDatabase {
-    server: String,
-    name: String,
-}
-
-/// `server` with its database replaced by `database`.
-fn url(server: &str, database: &str) -> String {
-    let (base, _) = server.rsplit_once('/').expect("the URL names a database");
-    format!("{base}/{database}")
-}
-
-impl TestDatabase {
-    /// Creates an empty database named `codehub_45_<unique>`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the server cannot be reached or the database cannot be created.
-    pub async fn new() -> Self {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let name = format!("{}_{nanos}", unique("codehub_45").replace('-', "_"));
-        let server = env("CODEHUB_TEST_POSTGRES_URL");
-        let mut admin = PgConnection::connect(&server).await.unwrap();
-        admin
-            .execute(AssertSqlSafe(format!("create database {name}")))
-            .await
-            .unwrap();
-        Self { server, name }
-    }
-
-    /// The URL of the database.
-    pub fn url(&self) -> String {
-        url(&self.server, &self.name)
-    }
-}
-
-impl Drop for TestDatabase {
-    fn drop(&mut self) {
-        let (server, name) = (self.server.clone(), self.name.clone());
-        // A thread of its own, since the test's runtime may be shutting down.
-        let removed = std::thread::spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(async {
-                    let mut admin = PgConnection::connect(&server).await.unwrap();
-                    admin
-                        .execute(AssertSqlSafe(format!(
-                            "drop database if exists {name} with (force)"
-                        )))
-                        .await
-                        .unwrap();
-                });
-        });
-        let _ = removed.join();
-    }
-}
-
 /// A started `codehub` process, killed when dropped.
-pub struct Server {
-    child: Child,
-    /// The URL the server answers on.
-    pub base: String,
-}
+pub struct Server(test_support::Server);
 
 impl Server {
-    /// Starts `codehub` on `127.0.0.1:0` against `database` and Dex, and waits for the line that
-    /// names its address.
+    /// Starts the built `codehub` against `database` and Dex, and waits for the line that names
+    /// its address.
     ///
     /// # Panics
     ///
     /// Panics if the process does not print that line within the bound.
     pub fn start(database: &TestDatabase) -> Self {
-        let mut child = Command::new(binary("codehub"))
-            .env("CODEHUB_LISTEN", "127.0.0.1:0")
-            .env("CODEHUB_POSTGRES_URL", database.url())
-            .env("CODEHUB_S3_ENDPOINT", env("CODEHUB_TEST_S3_ENDPOINT"))
-            .env("CODEHUB_S3_REGION", env("CODEHUB_TEST_S3_REGION"))
-            .env("CODEHUB_S3_BUCKET", env("CODEHUB_TEST_S3_BUCKET"))
-            .env("CODEHUB_S3_ACCESS_KEY", env("CODEHUB_TEST_S3_ACCESS_KEY"))
-            .env("CODEHUB_S3_SECRET_KEY", env("CODEHUB_TEST_S3_SECRET_KEY"))
-            .env("CODEHUB_OIDC_ISSUER", env("CODEHUB_TEST_OIDC_ISSUER"))
-            .env("CODEHUB_OIDC_AUDIENCE", AUDIENCE)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let pipe = child.stderr.take().unwrap();
-        let (sender, lines) = std::sync::mpsc::channel();
-        // The pipe is read to its end so the child never blocks writing to it.
-        std::thread::spawn(move || {
-            use std::io::BufRead;
-            for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
-                if sender.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-        let mut server = Self {
-            child,
-            base: String::new(),
-        };
-        let line = lines
-            .recv_timeout(BOUND)
-            .expect("codehub printed a line to stderr within the bound");
-        let address = line
-            .strip_prefix("codehub listening on ")
-            .unwrap_or_else(|| panic!("codehub did not start: {line}"));
-        server.base = format!("http://{address}");
-        server
+        Self(test_support::Server::start(
+            &binary("codehub"),
+            database,
+            AUDIENCE,
+        ))
     }
 
     /// Sends SIGTERM to the process and returns how it exited.
@@ -177,39 +60,22 @@ impl Server {
     ///
     /// Panics if the signal cannot be sent or the process is still running after the bound.
     pub fn terminate(&mut self) -> ExitStatus {
-        let sent = Command::new("kill")
-            .args(["-TERM", &self.child.id().to_string()])
-            .status()
-            .unwrap();
-        assert!(sent.success(), "kill -TERM failed");
-        let deadline = Instant::now() + BOUND;
-        loop {
-            if let Some(status) = self.child.try_wait().unwrap() {
-                return status;
-            }
-            assert!(Instant::now() < deadline, "codehub is still running");
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        self.0.signal("TERM")
     }
 }
 
-impl Drop for Server {
-    fn drop(&mut self) {
-        if self.child.try_wait().unwrap().is_none() {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
+impl Deref for Server {
+    type Target = test_support::Server;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
-/// What one run of `ch` did.
-pub struct Run {
-    /// The exit code.
-    pub code: Option<i32>,
-    /// What it wrote to stdout.
-    pub stdout: String,
-    /// What it wrote to stderr.
-    pub stderr: String,
+impl DerefMut for Server {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 /// The issuer and subject `ch login --json` prints.
@@ -224,7 +90,15 @@ pub struct Principal {
 /// One user of `ch`: a configuration directory of its own, and the Dex account it logs in as.
 pub struct User {
     name: String,
-    home: PathBuf,
+    ch: ChUser,
+}
+
+impl Deref for User {
+    type Target = ChUser;
+
+    fn deref(&self) -> &Self::Target {
+        &self.ch
+    }
 }
 
 impl User {
@@ -234,59 +108,14 @@ impl User {
     ///
     /// Panics if the directory cannot be created.
     pub fn new(name: &str) -> Self {
-        let home = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(unique(&format!("e2e-{name}")));
-        std::fs::create_dir_all(&home).unwrap();
         Self {
             name: name.to_owned(),
-            home,
+            ch: ChUser::new(
+                &binary("ch"),
+                Path::new(env!("CARGO_TARGET_TMPDIR")),
+                &format!("e2e-{name}"),
+            ),
         }
-    }
-
-    /// The file `ch` keeps its state in.
-    pub fn state_file(&self) -> PathBuf {
-        self.home.join("ch").join("state.json")
-    }
-
-    fn command(&self, arguments: &[&str]) -> tokio::process::Command {
-        let mut command = tokio::process::Command::new(binary("ch"));
-        command
-            .args(arguments)
-            .env("XDG_CONFIG_HOME", &self.home)
-            .env_remove("HOME")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        command
-    }
-
-    /// Runs `ch` with `arguments` and waits for it.
-    ///
-    /// # Panics
-    ///
-    /// Panics if it cannot be started or does not finish within the bound.
-    pub async fn ch(&self, arguments: &[&str]) -> Run {
-        let child = self.command(arguments).spawn().unwrap();
-        let output = tokio::time::timeout(BOUND, child.wait_with_output())
-            .await
-            .unwrap_or_else(|_| panic!("ch {arguments:?} did not finish within the bound"))
-            .unwrap();
-        Run {
-            code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        }
-    }
-
-    /// Runs `ch` with `arguments`, expects exit 0 and returns its stdout.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `ch` exits with anything else.
-    pub async fn ok(&self, arguments: &[&str]) -> String {
-        let run = self.ch(arguments).await;
-        assert_eq!(run.code, Some(0), "ch {arguments:?}: {}", run.stderr);
-        run.stdout
     }
 
     /// Creates the organisation `org` and its repository `repo`, and selects the repository.
@@ -306,7 +135,7 @@ impl User {
     ///
     /// Panics if the file cannot be written.
     pub async fn put(&self, draft: &str, path: &str, content: &str) -> Run {
-        let file = self.home.join(unique("upload"));
+        let file = self.home().join(unique("upload"));
         std::fs::write(&file, content).unwrap();
         self.ch(&["put", path, file.to_str().unwrap(), "--draft", draft])
             .await
@@ -393,11 +222,5 @@ impl User {
             "Dex refused {}'s login",
             self.name
         );
-    }
-}
-
-impl Drop for User {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.home);
     }
 }

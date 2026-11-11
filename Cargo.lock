@@ -42,6 +42,7 @@ dependencies = [
  "adapter-memory",
  "app",
  "sqlx",
+ "test-support",
  "tokio",
 ]
 
@@ -269,6 +270,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "test-support",
  "tokio",
 ]
 
@@ -350,7 +352,7 @@ dependencies = [
  "clap",
  "reqwest",
  "serde_json",
- "sqlx",
+ "test-support",
  "tokio",
 ]
 
@@ -560,7 +562,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
- "sqlx",
+ "test-support",
  "tokio",
 ]
 
@@ -2164,6 +2166,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.10",
+]
+
+[[package]]
+name = "test-support"
+version = "0.0.0"
+dependencies = [
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]
