@@ -19,6 +19,7 @@ adapter-memory = { path = "../adapter-memory" }
 adapter-s3 = { path = "../adapter-s3" }
 app = { path = "../app" }
 axum = { workspace = true, features = ["http1", "tokio"] }
+test-support = { path = "../test-support" }
 tokio = { workspace = true, features = ["macros", "net", "process", "rt"] }
 
 [lints]

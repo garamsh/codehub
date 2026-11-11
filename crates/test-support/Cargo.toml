@@ -1,0 +1,13 @@
+[package]
+name = "test-support"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio"] }
+tokio = { workspace = true, features = ["process", "rt", "time"] }
+
+[lints]
+workspace = true

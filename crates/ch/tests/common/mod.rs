@@ -3,10 +3,10 @@
 //!
 //! Every helper panics when something is not as expected, as a failed assertion does.
 
-use std::path::PathBuf;
+use std::ops::Deref;
+use std::path::{Path, PathBuf};
 
 use base64::Engine;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use adapter_memory::{
     MemoryAuthorisationDecision, MemoryChangesetLog, MemoryDerivedData, MemoryDraftStore,
@@ -18,6 +18,8 @@ use app::use_case::authentication::AuthenticationService;
 use app::use_case::members::MembersService;
 use app::use_case::repositories::RepositoriesService;
 use app::use_case::source_control::SourceControlService;
+
+pub use test_support::{ChUser, Run, env, unique};
 
 /// The largest upload the server grants.
 const MAX_UPLOAD_SIZE: u64 = 1024 * 1024;
@@ -34,48 +36,15 @@ struct Stores {
     authorisation: MemoryAuthorisationDecision,
 }
 
-/// The value of the environment variable `name`, which `make test` sets.
-///
-/// # Panics
-///
-/// Panics when it is not set.
-#[must_use]
-pub fn env(name: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set; run through `make test`"))
-}
-
-/// A name no other test of any run uses: `prefix`, the process and a counter.
-#[must_use]
-pub fn unique(prefix: &str) -> String {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    format!(
-        "{prefix}-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    )
-}
-
-/// What one run of `ch` did.
-pub struct Run {
-    /// The exit code.
-    pub code: Option<i32>,
-    /// What it wrote to stdout.
-    pub stdout: Vec<u8>,
-    /// What it wrote to stderr.
-    pub stderr: String,
-}
-
-impl Run {
-    /// Stdout as text.
-    #[must_use]
-    pub fn out(&self) -> String {
-        String::from_utf8_lossy(&self.stdout).into_owned()
-    }
-}
-
 /// A user of `ch`: a configuration directory of its own, and so a state file of its own.
-pub struct User {
-    config_home: PathBuf,
+pub struct User(ChUser);
+
+impl Deref for User {
+    type Target = ChUser;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl User {
@@ -86,47 +55,11 @@ impl User {
     /// Panics when the directory cannot be created.
     #[must_use]
     pub fn logged_out() -> Self {
-        let config_home = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(unique("ch-config"));
-        std::fs::create_dir_all(&config_home).unwrap();
-        Self { config_home }
-    }
-
-    /// Where this user's `ch` keeps its state file.
-    #[must_use]
-    pub fn state_file(&self) -> PathBuf {
-        self.config_home.join("ch").join("state.json")
-    }
-
-    /// Runs `ch` with `args`, with this user's configuration directory and no `HOME`, so that a
-    /// state file anywhere else is not found.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `ch` cannot be run.
-    pub async fn ch(&self, args: &[&str]) -> Run {
-        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ch"))
-            .args(args)
-            .env("XDG_CONFIG_HOME", &self.config_home)
-            .env_remove("HOME")
-            .output()
-            .await
-            .unwrap();
-        Run {
-            code: output.status.code(),
-            stdout: output.stdout,
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        }
-    }
-
-    /// Runs `ch` with `args` and returns its stdout as text.
-    ///
-    /// # Panics
-    ///
-    /// Panics when it does not exit 0.
-    pub async fn ok(&self, args: &[&str]) -> String {
-        let run = self.ch(args).await;
-        assert_eq!(run.code, Some(0), "ch {args:?}: {}", run.stderr);
-        run.out()
+        Self(ChUser::new(
+            Path::new(env!("CARGO_BIN_EXE_ch")),
+            Path::new(env!("CARGO_TARGET_TMPDIR")),
+            "ch-config",
+        ))
     }
 }
 

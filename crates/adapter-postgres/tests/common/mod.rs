@@ -1,9 +1,6 @@
 //! Repositories held by the PostgreSQL adapters, each harness over a database of its own, with
 //! drafts staged and landed through the driving ports.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use adapter_memory::{MemoryIdentityVerification, MemoryObjectStore};
 use adapter_postgres::{
     Database, PostgresAuthorisationDecision, PostgresChangesetLog, PostgresDerivedData,
@@ -28,7 +25,7 @@ use app::use_case::authentication::AuthenticationService;
 use app::use_case::land::Landing;
 use app::use_case::repositories::RepositoriesService;
 use app::use_case::source_control::SourceControlService;
-use sqlx::{AssertSqlSafe, Connection, Executor, PgConnection};
+use test_support::TestDatabase;
 
 /// The largest upload the fixture's source control grants.
 pub const MAX_UPLOAD_SIZE: u64 = 1024;
@@ -52,24 +49,11 @@ pub struct Harness {
     pub membership: PostgresMembership,
     /// The authorisation decision.
     pub authorisation: PostgresAuthorisationDecision,
-    server: String,
-    name: String,
-}
-
-/// The server the checks run against.
-fn server() -> String {
-    std::env::var("CODEHUB_TEST_POSTGRES_URL").expect("CODEHUB_TEST_POSTGRES_URL is set")
-}
-
-/// `server` with its database replaced by `database`.
-fn url(server: &str, database: &str) -> String {
-    let (base, _) = server.rsplit_once('/').expect("the URL names a database");
-    format!("{base}/{database}")
+    database: TestDatabase,
 }
 
 impl Harness {
-    /// Creates a database named `codehub_40_<unique>` and migrates it, with a pool of three
-    /// connections.
+    /// Creates a database and migrates it, with a pool of three connections.
     pub async fn new() -> Self {
         Self::with_pool(3).await
     }
@@ -80,23 +64,8 @@ impl Harness {
     ///
     /// Panics if the server cannot be reached or the database cannot be created or migrated.
     pub async fn with_pool(pool_size: u32) -> Self {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let name = format!(
-            "codehub_40_{}_{}_{nanos}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
-        let server = server();
-        let mut admin = PgConnection::connect(&server).await.unwrap();
-        admin
-            .execute(AssertSqlSafe(format!("create database {name}")))
-            .await
-            .unwrap();
-        let database = Database::connect(&url(&server, &name), pool_size)
+        let test_database = TestDatabase::new().await;
+        let database = Database::connect(&test_database.url(), pool_size)
             .await
             .unwrap();
         database.migrate().await.unwrap();
@@ -109,37 +78,13 @@ impl Harness {
             identity: MemoryIdentityVerification::default(),
             membership: PostgresMembership::new(&database),
             authorisation: PostgresAuthorisationDecision::new(&database),
-            server,
-            name,
+            database: test_database,
         }
     }
 
     /// The URL of this harness's database, for a pool of another making.
     pub fn url(&self) -> String {
-        url(&self.server, &self.name)
-    }
-}
-
-impl Drop for Harness {
-    fn drop(&mut self) {
-        let (server, name) = (self.server.clone(), self.name.clone());
-        // A thread of its own, since the test's runtime may be shutting down.
-        let removed = std::thread::spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(async {
-                    let mut admin = PgConnection::connect(&server).await.unwrap();
-                    admin
-                        .execute(AssertSqlSafe(format!(
-                            "drop database if exists {name} with (force)"
-                        )))
-                        .await
-                        .unwrap();
-                });
-        });
-        let _ = removed.join();
+        self.database.url()
     }
 }
 
