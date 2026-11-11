@@ -1,7 +1,7 @@
 //! Organisations, repositories, staging and object grants through the driving ports.
 
 #[cfg(test)]
-mod common;
+pub mod common;
 
 use app::domain::address::Address;
 use app::domain::changeset::Change;

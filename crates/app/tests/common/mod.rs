@@ -30,13 +30,21 @@ pub const MAX_UPLOAD_SIZE: u64 = 1024;
 
 /// The in-memory adapters of one deployment, holding any number of repositories.
 pub struct Harness {
+    /// The object store.
     pub objects: MemoryObjectStore,
+    /// The changeset log.
     pub log: MemoryChangesetLog,
+    /// The derived data.
     pub derived: MemoryDerivedData,
+    /// The draft store.
     pub drafts: MemoryDraftStore,
+    /// The repository directory.
     pub directory: MemoryRepositoryDirectory,
+    /// The identity verification.
     pub identity: MemoryIdentityVerification,
+    /// The membership.
     pub membership: MemoryMembership,
+    /// The authorisation decision, derived from the membership.
     pub authorisation: MemoryAuthorisationDecision,
 }
 
@@ -87,17 +95,29 @@ impl Harness {
     }
 
     /// The principal `name` of the harness's issuer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the issuer or `name` is not a valid principal.
     pub fn principal(name: &str) -> Principal {
         Principal::new("https://id.test", name).unwrap()
     }
 
     /// The credential the harness registers for `name`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` does not form a valid credential.
     pub fn credential(name: &str) -> Credential {
         format!("token-{name}").parse().unwrap()
     }
 
     /// Registers a credential for the principal `name` and authenticates with it, through the
     /// authentication port.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the authentication port refuses the credential.
     pub async fn caller(&self, name: &str) -> Caller {
         self.identity
             .register(&Self::credential(name), Self::principal(name));
@@ -122,6 +142,10 @@ impl Harness {
 
     /// Creates the organisation `organisation`, which `owner` administers, holding the repository
     /// `app`, through the repositories port.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `organisation` is not a valid name or a port call fails.
     pub async fn repository(&self, owner: &Caller, organisation: &str) -> Repo<'_> {
         let organisation: OrganisationName = organisation.parse().unwrap();
         let name: RepositoryName = "app".parse().unwrap();
@@ -140,17 +164,27 @@ impl Harness {
 
 /// One repository of a harness.
 pub struct Repo<'a> {
+    /// The harness holding the repository.
     pub harness: &'a Harness,
+    /// The repository's identifier.
     pub id: RepositoryId,
 }
 
 /// The draft name `name`.
+///
+/// # Panics
+///
+/// Panics if `name` is not a valid draft name.
 pub fn draft(name: &str) -> DraftName {
     name.parse().unwrap()
 }
 
 impl Repo<'_> {
     /// Stands in for the client uploading `content`: puts the bytes where an upload grant leads.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the object store refuses the put.
     pub async fn upload(&self, content: &str) -> Address {
         self.harness
             .objects
@@ -160,6 +194,10 @@ impl Repo<'_> {
     }
 
     /// Uploads and stages each `(path, content)` as a regular file in `caller`'s draft `draft`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a path is invalid or the staging is refused.
     pub async fn stage(&self, caller: &Caller, draft: &DraftName, files: &[(&str, &str)]) {
         for (path, content) in files {
             let content = self.upload(content).await;
@@ -182,6 +220,10 @@ impl Repo<'_> {
     }
 
     /// Lands `caller`'s `draft` through the source-control port.
+    ///
+    /// # Errors
+    ///
+    /// Returns the source-control error the landing is refused with.
     pub async fn land(
         &self,
         caller: &Caller,
@@ -199,11 +241,19 @@ impl Repo<'_> {
     }
 
     /// Where `main` points.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the changeset log fails to read the ref.
     pub async fn main(&self) -> Option<Address> {
         self.harness.log.read_ref(self.id, Ref::Main).await.unwrap()
     }
 
     /// The content of the file at `path` in `main`'s tree, if one is there.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `path` is invalid, a port call fails or the content is not UTF-8.
     pub async fn read(&self, path: &str) -> Option<String> {
         let path: Path = path.parse().unwrap();
         let derived = &self.harness.derived;
