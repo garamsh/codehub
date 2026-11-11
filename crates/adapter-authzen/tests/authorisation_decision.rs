@@ -154,11 +154,13 @@ async fn decides_actions_on_repositories() {
         decide(&adapter, &alice(), Action::Write, &app).await,
         Decision::Allow
     );
-    // Controls: bob reads acme/app; he may not write it whole, nor read another repository.
+    // A repository asked without a path means "write somewhere in it", the question before an
+    // upload, as the built-in adapter reads it: bob, who may write under docs/, is allowed it.
     assert_eq!(
         decide(&adapter, &bob(), Action::Write, &app).await,
-        Decision::Deny
+        Decision::Allow
     );
+    // Controls: bob may not read another repository, nor alice one outside acme.
     assert_eq!(
         decide(&adapter, &bob(), Action::Read, &repository("acme", "lib")).await,
         Decision::Deny
