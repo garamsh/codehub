@@ -1,0 +1,16 @@
+[package]
+name = "adapter-postgres"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+app = { path = "../app" }
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "migrate", "macros"] }
+
+[dev-dependencies]
+adapter-memory = { path = "../adapter-memory" }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+
+[lints]
+workspace = true
