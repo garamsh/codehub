@@ -23,6 +23,17 @@ until curl -sf -o /dev/null "${CODEHUB_TEST_S3_ENDPOINT}/minio/health/ready"; do
     sleep 1
 done
 
+# The Keycloak image has no shell or client to probe with; wait on the discovery document.
+tries=0
+until curl -sf -o /dev/null "${CODEHUB_TEST_KEYCLOAK_ISSUER}/.well-known/openid-configuration"; do
+    tries=$((tries + 1))
+    if [ "$tries" -gt 120 ]; then
+        echo "services-up: keycloak not ready at ${CODEHUB_TEST_KEYCLOAK_ISSUER}" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
 # The store has no bucket-creation setting; a signed PUT does it.
 status=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
     --aws-sigv4 "aws:amz:${CODEHUB_TEST_S3_REGION}:s3" \
@@ -35,4 +46,4 @@ case "$status" in
         exit 1
         ;;
 esac
-echo "services-up: postgres, s3 and dex healthy; bucket ${CODEHUB_TEST_S3_BUCKET} present"
+echo "services-up: postgres, s3, dex and keycloak healthy; bucket ${CODEHUB_TEST_S3_BUCKET} present"

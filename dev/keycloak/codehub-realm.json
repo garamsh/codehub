@@ -1,0 +1,279 @@
+{
+  "realm": "codehub",
+  "enabled": true,
+  "sslRequired": "none",
+  "accessTokenLifespan": 300,
+  "roles": {
+    "client": {
+      "codehub": [
+        {
+          "name": "access"
+        }
+      ],
+      "codehub-introspection": [
+        {
+          "name": "access"
+        }
+      ]
+    }
+  },
+  "users": [
+    {
+      "id": "00000000-0000-4000-8000-00000000a11c",
+      "username": "alice",
+      "email": "alice@example.test",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Test",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "alice-check-password",
+          "temporary": false
+        }
+      ],
+      "clientRoles": {
+        "codehub": [
+          "access"
+        ],
+        "codehub-introspection": [
+          "access"
+        ]
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-0000000000b0",
+      "username": "bob",
+      "email": "bob@example.test",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Test",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "bob-check-password",
+          "temporary": false
+        }
+      ],
+      "clientRoles": {
+        "codehub": [
+          "access"
+        ],
+        "codehub-introspection": [
+          "access"
+        ]
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-00000000ca01",
+      "username": "carol",
+      "email": "carol@example.test",
+      "emailVerified": true,
+      "firstName": "Carol",
+      "lastName": "Test",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "carol-check-password",
+          "temporary": false
+        }
+      ],
+      "clientRoles": {
+        "codehub": [
+          "access"
+        ],
+        "codehub-introspection": [
+          "access"
+        ]
+      }
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "codehub",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "codehub-resource-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "attributes": {},
+      "protocolMappers": []
+    },
+    {
+      "clientId": "codehub-introspection",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "codehub-introspection-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "attributes": {},
+      "protocolMappers": []
+    },
+    {
+      "clientId": "codehub-test",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "codehub-test-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "attributes": {},
+      "protocolMappers": [
+        {
+          "name": "codehub-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "codehub",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "introspector-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "codehub-introspection",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "codehub-test-other",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "codehub-test-other-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "attributes": {},
+      "protocolMappers": [
+        {
+          "name": "other-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "other-service",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "introspector-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "codehub-introspection",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "codehub-test-short",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "codehub-test-short-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "attributes": {
+        "access.token.lifespan": "2"
+      },
+      "protocolMappers": [
+        {
+          "name": "codehub-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "codehub",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "introspector-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "codehub-introspection",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "codehub-test-upstream",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "codehub-test-upstream-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "attributes": {},
+      "protocolMappers": [
+        {
+          "name": "exchange-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "codehub-exchange",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "codehub-exchange",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "codehub-exchange-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "attributes": {
+        "standard.token.exchange.enabled": "true"
+      },
+      "protocolMappers": []
+    }
+  ]
+}

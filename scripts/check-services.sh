@@ -29,7 +29,16 @@ for name in \
     CODEHUB_TEST_OIDC_ISSUER CODEHUB_TEST_OIDC_CLIENT_ID \
     CODEHUB_TEST_OIDC_TEST_CLIENT_ID CODEHUB_TEST_OIDC_TEST_CLIENT_SECRET \
     CODEHUB_TEST_OIDC_PASSWORD_ALICE CODEHUB_TEST_OIDC_PASSWORD_BOB \
-    CODEHUB_TEST_OIDC_PASSWORD_CAROL; do
+    CODEHUB_TEST_OIDC_PASSWORD_CAROL \
+    CODEHUB_TEST_KEYCLOAK_ISSUER CODEHUB_TEST_KEYCLOAK_AUDIENCE \
+    CODEHUB_TEST_KEYCLOAK_INTROSPECTION_CLIENT_ID CODEHUB_TEST_KEYCLOAK_INTROSPECTION_CLIENT_SECRET \
+    CODEHUB_TEST_KEYCLOAK_TEST_CLIENT_ID CODEHUB_TEST_KEYCLOAK_TEST_CLIENT_SECRET \
+    CODEHUB_TEST_KEYCLOAK_OTHER_CLIENT_ID CODEHUB_TEST_KEYCLOAK_OTHER_CLIENT_SECRET \
+    CODEHUB_TEST_KEYCLOAK_SHORT_CLIENT_ID CODEHUB_TEST_KEYCLOAK_SHORT_CLIENT_SECRET \
+    CODEHUB_TEST_KEYCLOAK_UPSTREAM_CLIENT_ID CODEHUB_TEST_KEYCLOAK_UPSTREAM_CLIENT_SECRET \
+    CODEHUB_TEST_KEYCLOAK_EXCHANGE_CLIENT_ID CODEHUB_TEST_KEYCLOAK_EXCHANGE_CLIENT_SECRET \
+    CODEHUB_TEST_KEYCLOAK_PASSWORD_ALICE CODEHUB_TEST_KEYCLOAK_PASSWORD_BOB \
+    CODEHUB_TEST_KEYCLOAK_PASSWORD_CAROL; do
     eval "value=\${$name:-}"
     [ -n "$value" ] || fail "$name is unset"
 done
@@ -119,3 +128,59 @@ direct=$(curl -sf -u "$CODEHUB_TEST_OIDC_TEST_CLIENT_ID:$CODEHUB_TEST_OIDC_TEST_
     fail "the codehub-test client could not obtain a token for bob"
 echo "$direct" | jq -e '.access_token' >/dev/null || fail "no access token for bob"
 echo "check-services: codehub-test client obtained a token for bob"
+
+# Keycloak: discovery document, then introspection (RFC 7662) of a token for codehub's
+# audience, a revoked one (RFC 7009) and one for another audience, and an RFC 8693 exchange.
+kc_issuer=$CODEHUB_TEST_KEYCLOAK_ISSUER
+kc_discovery=$(curl -sf "$kc_issuer/.well-known/openid-configuration") ||
+    fail "keycloak did not serve the discovery document at $kc_issuer"
+[ "$(echo "$kc_discovery" | jq -r .issuer)" = "$kc_issuer" ] ||
+    fail "keycloak discovery issuer differs from CODEHUB_TEST_KEYCLOAK_ISSUER"
+kc_token_endpoint=$(echo "$kc_discovery" | jq -r .token_endpoint)
+kc_introspection=$(echo "$kc_discovery" | jq -r .introspection_endpoint)
+kc_revocation=$(echo "$kc_discovery" | jq -r .revocation_endpoint)
+
+# An access token of alice from the password grant of client $1 with secret $2.
+kc_token() {
+    curl -sf -u "$1:$2" "$kc_token_endpoint" -d grant_type=password -d username=alice \
+        --data-urlencode "password=$CODEHUB_TEST_KEYCLOAK_PASSWORD_ALICE" | jq -r '.access_token // empty'
+}
+# What the introspection endpoint answers codehub's client for token $1.
+kc_introspect() {
+    curl -sf -u "$CODEHUB_TEST_KEYCLOAK_INTROSPECTION_CLIENT_ID:$CODEHUB_TEST_KEYCLOAK_INTROSPECTION_CLIENT_SECRET" \
+        "$kc_introspection" -d "token=$1"
+}
+
+kc_access=$(kc_token "$CODEHUB_TEST_KEYCLOAK_TEST_CLIENT_ID" "$CODEHUB_TEST_KEYCLOAK_TEST_CLIENT_SECRET")
+[ -n "$kc_access" ] || fail "keycloak yielded no access token for alice"
+kc_answer=$(kc_introspect "$kc_access") || fail "keycloak refused the introspection request"
+echo "$kc_answer" | jq -e --arg aud "$CODEHUB_TEST_KEYCLOAK_AUDIENCE" '.active == true and (.aud | index($aud))' >/dev/null ||
+    fail "introspection did not name an active token for $CODEHUB_TEST_KEYCLOAK_AUDIENCE: $kc_answer"
+
+kc_other=$(kc_token "$CODEHUB_TEST_KEYCLOAK_OTHER_CLIENT_ID" "$CODEHUB_TEST_KEYCLOAK_OTHER_CLIENT_SECRET")
+[ -n "$kc_other" ] || fail "keycloak yielded no other-audience token for alice"
+kc_answer=$(kc_introspect "$kc_other") || fail "keycloak refused the introspection request"
+echo "$kc_answer" | jq -e --arg aud "$CODEHUB_TEST_KEYCLOAK_AUDIENCE" '.active == true and (.aud | index($aud) | not)' >/dev/null ||
+    fail "introspection did not name an active token without audience $CODEHUB_TEST_KEYCLOAK_AUDIENCE: $kc_answer"
+
+curl -sf -u "$CODEHUB_TEST_KEYCLOAK_TEST_CLIENT_ID:$CODEHUB_TEST_KEYCLOAK_TEST_CLIENT_SECRET" \
+    "$kc_revocation" -d "token=$kc_access" >/dev/null || fail "keycloak refused to revoke the token"
+kc_introspect "$kc_access" | jq -e '.active == false' >/dev/null ||
+    fail "introspection still names the revoked token active"
+
+# RFC 8693: the exchange client trades a token addressed to it for one addressed to codehub and
+# its introspection client.
+kc_upstream=$(kc_token "$CODEHUB_TEST_KEYCLOAK_UPSTREAM_CLIENT_ID" "$CODEHUB_TEST_KEYCLOAK_UPSTREAM_CLIENT_SECRET")
+[ -n "$kc_upstream" ] || fail "keycloak yielded no upstream token for alice"
+kc_exchanged=$(curl -sf -u "$CODEHUB_TEST_KEYCLOAK_EXCHANGE_CLIENT_ID:$CODEHUB_TEST_KEYCLOAK_EXCHANGE_CLIENT_SECRET" \
+    "$kc_token_endpoint" -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+    -d "subject_token=$kc_upstream" -d subject_token_type=urn:ietf:params:oauth:token-type:access_token \
+    -d requested_token_type=urn:ietf:params:oauth:token-type:access_token \
+    -d "audience=$CODEHUB_TEST_KEYCLOAK_AUDIENCE" \
+    -d "audience=$CODEHUB_TEST_KEYCLOAK_INTROSPECTION_CLIENT_ID" | jq -r '.access_token // empty') ||
+    fail "keycloak refused the token exchange"
+[ -n "$kc_exchanged" ] || fail "the token exchange yielded no access token"
+kc_answer=$(kc_introspect "$kc_exchanged") || fail "keycloak refused the introspection request"
+echo "$kc_answer" | jq -e --arg aud "$CODEHUB_TEST_KEYCLOAK_AUDIENCE" '.active == true and (.aud | index($aud))' >/dev/null ||
+    fail "introspection did not name the exchanged token active for $CODEHUB_TEST_KEYCLOAK_AUDIENCE: $kc_answer"
+echo "check-services: keycloak discovery served; introspection named a token active for $CODEHUB_TEST_KEYCLOAK_AUDIENCE and a revoked one inactive; an exchanged token was active for it"
