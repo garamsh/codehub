@@ -1,5 +1,6 @@
-//! The built `codehub` and `ch` binaries, the database `codehub` runs against, and the approval of
-//! a device code at Dex.
+//! The built `codehub` and `ch` binaries, the database `codehub` runs against, the approval of a
+//! device code at Dex, and the federated mode: `codehub` verifying tokens by introspection at
+//! Keycloak and asking Cerbos for decisions, and `ch` presenting a token from a file.
 //!
 //! Every helper panics when something is not as expected, as a failed assertion does. Every wait
 //! is bounded.
@@ -12,7 +13,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
-pub use test_support::{ChUser, Run, TestDatabase, env, unique};
+pub use test_support::{ChUser, Run, TestDatabase, env, keycloak_token, unique};
 
 /// The audience `codehub` accepts: the client `ch`, to which Dex issues the device grant's token.
 const AUDIENCE: &str = "ch";
@@ -51,6 +52,72 @@ impl Server {
             &binary("codehub"),
             database,
             AUDIENCE,
+        ))
+    }
+
+    /// Starts the built `codehub` in introspection mode against Keycloak, with the built-in
+    /// grants.
+    ///
+    /// # Panics
+    ///
+    /// Panics where [`Server::start`] does.
+    pub fn start_introspection(database: &TestDatabase) -> Self {
+        Self::start_with(database, introspection_settings())
+    }
+
+    /// Starts the built `codehub` verifying JWTs offline against Keycloak's keys, for the
+    /// audience `codehub`, with the built-in grants.
+    ///
+    /// # Panics
+    ///
+    /// Panics where [`Server::start`] does.
+    pub fn start_oidc(database: &TestDatabase) -> Self {
+        Self::start_with(
+            database,
+            vec![
+                ("CODEHUB_OIDC_ISSUER", env("CODEHUB_TEST_KEYCLOAK_ISSUER")),
+                (
+                    "CODEHUB_OIDC_AUDIENCE",
+                    env("CODEHUB_TEST_KEYCLOAK_AUDIENCE"),
+                ),
+            ],
+        )
+    }
+
+    /// Starts the built `codehub` in introspection mode with Cerbos deciding every request: the
+    /// external mode.
+    ///
+    /// # Panics
+    ///
+    /// Panics where [`Server::start`] does.
+    pub fn start_external(database: &TestDatabase) -> Self {
+        let mut settings = introspection_settings();
+        settings.extend([
+            ("CODEHUB_AUTHORISATION", "authzen".to_owned()),
+            ("CODEHUB_AUTHZEN_URL", env("CODEHUB_TEST_AUTHZEN_URL")),
+            ("CODEHUB_AUTHZEN_TOKEN_ENDPOINT", token_endpoint()),
+            (
+                "CODEHUB_AUTHZEN_CLIENT_ID",
+                env("CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_ID"),
+            ),
+            (
+                "CODEHUB_AUTHZEN_CLIENT_SECRET",
+                env("CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_SECRET"),
+            ),
+        ]);
+        Self::start_with(database, settings)
+    }
+
+    /// Starts the built `codehub` with `settings` set after the check environment's.
+    fn start_with(database: &TestDatabase, settings: Vec<(&'static str, String)>) -> Self {
+        let pairs: Vec<(&str, &str)> = settings
+            .iter()
+            .map(|(name, value)| (*name, value.as_str()))
+            .collect();
+        Self(test_support::Server::start_with(
+            &binary("codehub"),
+            database,
+            &pairs,
         ))
     }
 
@@ -222,5 +289,155 @@ impl User {
             "Dex refused {}'s login",
             self.name
         );
+    }
+}
+
+/// Keycloak's token endpoint, which the RFC 8693 exchange and the decision point's client
+/// credentials use.
+pub fn token_endpoint() -> String {
+    format!(
+        "{}/protocol/openid-connect/token",
+        env("CODEHUB_TEST_KEYCLOAK_ISSUER")
+    )
+}
+
+/// The settings of introspection mode: Keycloak's endpoint, the introspection client, and the
+/// audience `codehub`.
+fn introspection_settings() -> Vec<(&'static str, String)> {
+    vec![
+        ("CODEHUB_IDENTITY", "introspection".to_owned()),
+        (
+            "CODEHUB_INTROSPECTION_ENDPOINT",
+            format!("{}/introspect", token_endpoint()),
+        ),
+        (
+            "CODEHUB_INTROSPECTION_CLIENT_ID",
+            env("CODEHUB_TEST_KEYCLOAK_INTROSPECTION_CLIENT_ID"),
+        ),
+        (
+            "CODEHUB_INTROSPECTION_CLIENT_SECRET",
+            env("CODEHUB_TEST_KEYCLOAK_INTROSPECTION_CLIENT_SECRET"),
+        ),
+        (
+            "CODEHUB_INTROSPECTION_ISSUER",
+            env("CODEHUB_TEST_KEYCLOAK_ISSUER"),
+        ),
+        (
+            "CODEHUB_INTROSPECTION_AUDIENCE",
+            env("CODEHUB_TEST_KEYCLOAK_AUDIENCE"),
+        ),
+    ]
+}
+
+/// A user of `ch` who presents a token from a file at one server, with no `ch login`.
+pub struct TokenUser {
+    ch: ChUser,
+    server: String,
+    token_file: PathBuf,
+}
+
+impl TokenUser {
+    /// A user of `server` whose token file holds a Keycloak token of `user` (`alice`, `bob`)
+    /// from the password grant of `client` (`TEST`, `OTHER`, `UPSTREAM`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if Keycloak refuses the token or the file cannot be written.
+    pub async fn new(server: &Server, client: &str, user: &str) -> Self {
+        let ch = ChUser::new(
+            &binary("ch"),
+            Path::new(env!("CARGO_TARGET_TMPDIR")),
+            &format!("e2e-{user}"),
+        );
+        let token_file = ch.home().join("token");
+        let this = Self {
+            ch,
+            server: server.base.clone(),
+            token_file,
+        };
+        std::fs::write(&this.token_file, keycloak_token(client, user).await).unwrap();
+        this
+    }
+
+    /// The token the file holds.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the file cannot be read.
+    pub fn token(&self) -> String {
+        std::fs::read_to_string(&self.token_file).unwrap()
+    }
+
+    /// The file `ch` keeps its state in.
+    pub fn state_file(&self) -> PathBuf {
+        self.ch.state_file()
+    }
+
+    /// Runs `ch` with the server, the token file and `extra` global arguments, then `arguments`.
+    async fn run(&self, extra: &[&str], arguments: &[&str]) -> Run {
+        let mut all = vec![
+            "--server",
+            &self.server,
+            "--token-file",
+            self.token_file.to_str().unwrap(),
+        ];
+        all.extend(extra);
+        all.extend(arguments);
+        self.ch.ch(&all).await
+    }
+
+    /// Runs `ch` with the server and the token file, then `arguments`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ch` cannot be started or does not finish within the bound.
+    pub async fn ch(&self, arguments: &[&str]) -> Run {
+        self.run(&[], arguments).await
+    }
+
+    /// Runs `ch` as [`TokenUser::ch`] does, expects exit 0 and returns its stdout as text.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ch` exits with anything else.
+    pub async fn ok(&self, arguments: &[&str]) -> String {
+        let run = self.ch(arguments).await;
+        assert_eq!(run.code, Some(0), "ch {arguments:?}: {}", run.stderr);
+        run.out()
+    }
+
+    /// Runs `ch` as [`TokenUser::ch`] does, exchanging the token at Keycloak for one for the
+    /// audience `codehub`, as the `codehub-exchange` client.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ch` cannot be started or does not finish within the bound.
+    pub async fn ch_exchanging(&self, arguments: &[&str]) -> Run {
+        let endpoint = token_endpoint();
+        let client = env("CODEHUB_TEST_KEYCLOAK_EXCHANGE_CLIENT_ID");
+        let secret = env("CODEHUB_TEST_KEYCLOAK_EXCHANGE_CLIENT_SECRET");
+        let extra = [
+            "--exchange-endpoint",
+            &endpoint,
+            "--exchange-audience",
+            "codehub",
+            "--exchange-client-id",
+            &client,
+            "--exchange-client-secret",
+            &secret,
+        ];
+        self.run(&extra, arguments).await
+    }
+
+    /// Stages `content` at `path` in the draft `draft` and expects it to succeed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the file cannot be written or `ch put` exits with anything but 0.
+    pub async fn stage(&self, draft: &str, path: &str, content: &str) {
+        let file = self.ch.home().join(unique("upload"));
+        std::fs::write(&file, content).unwrap();
+        self.ok(&["put", path, file.to_str().unwrap(), "--draft", draft])
+            .await;
     }
 }
