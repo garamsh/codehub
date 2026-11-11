@@ -11,6 +11,8 @@ How the system is divided into organisations and repositories, and how a reposit
 - **An organisation holds a base layer** that its repositories share.
 - **Target scale** is hundreds of concurrent agents.
 - **Tenancy scopes every port that reaches stored data**: a request names its repository and, through it, its organisation.
+- **Organisation roles and path grants** are decided in ADR 0021 and described in `docs/architecture/access.md`. codehub owns organisations and repositories as tenancy containers; an outside service keeps its own mapping onto them and depends on codehub, not the reverse.
+- **The directory and the metadata are in one shared PostgreSQL schema** with a repository identifier on every row (ADR 0022).
 - Authentication and authorisation of people, agents and runners are outside this document (`docs/architecture/access.md`).
 
 ### Export and backup
@@ -29,6 +31,7 @@ How the system is divided into organisations and repositories, and how a reposit
 ## Rationale
 
 - The tenancy model and its signs of being wrong are in ADR 0004.
+- Roles, grants and the ownership of the containers: ADR 0021. The shared schema: ADR 0022.
 - The term "repository" for what ADR 0004 and ADR 0005 call a workspace is in ADR 0020.
 - The bundle as the one unit for export, backup and import is in ADR 0005.
 

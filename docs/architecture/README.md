@@ -37,6 +37,11 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0016-object-encoding-and-changeset-identifier.md` — ADR 0016, objects use a project-defined binary encoding, and a changeset is identified by its address
 - `tenancy.md` — tenancy (organisation, repository, base layer) and repository export, backup and import
 - `adr/0020-repository-replaces-workspace.md` — ADR 0020, a repository is what ADRs 0004 and 0005 call a workspace
+- `adr/0021-tenancy-and-access-model.md` — ADR 0021, organisations have admins and members, and members hold path-prefix grants
+- `adr/0022-metadata-storage-details.md` — ADR 0022, metadata lives in one shared PostgreSQL schema, migrated forward-only at server start
+- `adr/0023-object-storage-details.md` — ADR 0023, objects are keyed per repository, verified by checksum, and uploaded in one part
+- `adr/0024-http-api-conventions.md` — ADR 0024, the HTTP API is versioned in the path, described by OpenAPI 3.1 and reports errors as problem details
+- `adr/0025-cli-m2-verbs-and-state.md` — ADR 0025, the M2 CLI has a fixed set of verbs, keeps three items of local state and speaks plain HTTP
 - `interfaces.md` — the `ch` CLI, the MCP server and the API behind them: what each may do, and what stays server-side
 - `adr/0010-cli-and-mcp-interfaces.md` — ADR 0010, the CLI and the MCP server are first-class interfaces over server-side work
 - `adr/0015-server-api-transport.md` — ADR 0015, the server API is HTTP with JSON described by OpenAPI, and object bytes move by presigned URL
