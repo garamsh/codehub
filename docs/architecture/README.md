@@ -23,6 +23,7 @@ Current architecture of the system and the decisions behind it. This file is the
 - `structure.md` — hexagonal structure: what the unit is, what may reference what, when a new port is earned
 - `adr/0001-hexagonal-structure.md` — ADR 0001, the system is structured as a hexagon
 - `adr/0002-rust-implementation-language.md` — ADR 0002, Rust is the implementation language
+- `adr/0014-application-rings.md` — ADR 0014, the application is partitioned into a domain ring and an application ring
 - `adr/0003-server-centred-source-control.md` — ADR 0003, source control is server-centred and replaces Git, with server-side landing
 - `adr/0004-organisation-workspace-tenancy.md` — ADR 0004, an organisation contains workspaces and a workspace is one codebase
 - `adr/0005-workspace-export-and-backup.md` — ADR 0005, a workspace is exported and backed up as a bundle
