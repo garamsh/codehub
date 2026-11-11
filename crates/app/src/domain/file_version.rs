@@ -11,9 +11,9 @@ use super::encoding::{DecodeError, EncodeError, FILE_VERSION_KIND, Reader, Write
 use super::file::File;
 use super::path::Path;
 
-/// One version of the file at a path.
+/// A file-version node: one version of the file at a path.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct FileVersion {
+pub struct FileVersionNode {
     /// The changeset that introduced this version.
     pub changeset: Address,
     /// The path the file is at.
@@ -25,7 +25,7 @@ pub struct FileVersion {
     pub previous: Vec<Address>,
 }
 
-impl FileVersion {
+impl FileVersionNode {
     /// The node's encoding.
     ///
     /// # Errors
@@ -110,7 +110,7 @@ pub struct FileVersions;
 impl Derivation for FileVersions {
     const FLAG: Flag = Flag::Deferred;
     type Value = BTreeMap<Path, Address>;
-    type Object = FileVersion;
+    type Object = FileVersionNode;
     type Error = FileVersionError;
 
     /// Starts from the first parent's value: an unchanged path keeps its node, a deleted path
@@ -119,7 +119,7 @@ impl Derivation for FileVersions {
         &self,
         changeset: &Changeset,
         parents: &[Self::Value],
-    ) -> Result<Step<Self::Value, FileVersion>, FileVersionError> {
+    ) -> Result<Step<Self::Value, FileVersionNode>, FileVersionError> {
         let id = changeset.id()?;
         let mut value = parents.first().cloned().unwrap_or_default();
         let mut objects = BTreeMap::new();
@@ -131,7 +131,7 @@ impl Derivation for FileVersions {
                         .ok_or_else(|| FileVersionError::NotFound(path.clone()))?;
                 }
                 Change::File(file) => {
-                    let node = FileVersion {
+                    let node = FileVersionNode {
                         changeset: id,
                         path: path.clone(),
                         file: *file,
@@ -160,7 +160,7 @@ pub enum HistoryError {
 impl fmt::Display for HistoryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingNode(address) => write!(f, "file version {address} was not supplied"),
+            Self::MissingNode(address) => write!(f, "file-version node {address} was not supplied"),
         }
     }
 }
@@ -176,8 +176,8 @@ impl std::error::Error for HistoryError {}
 pub fn history<'a>(
     path: &Path,
     value: &BTreeMap<Path, Address>,
-    nodes: &'a BTreeMap<Address, FileVersion>,
-) -> Result<Vec<&'a FileVersion>, HistoryError> {
+    nodes: &'a BTreeMap<Address, FileVersionNode>,
+) -> Result<Vec<&'a FileVersionNode>, HistoryError> {
     let mut versions = Vec::new();
     let mut next = value.get(path);
     while let Some(address) = next {
@@ -206,8 +206,8 @@ mod tests {
             .collect()
     }
 
-    fn fixed() -> FileVersion {
-        FileVersion {
+    fn fixed() -> FileVersionNode {
+        FileVersionNode {
             changeset: Address::of(b"changeset"),
             path: "bin/run".parse().unwrap(),
             file: File {
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn decodes_its_own_encoding_to_the_same_node() {
-        assert_eq!(FileVersion::decode(&hex(ENCODED)), Ok(fixed()));
+        assert_eq!(FileVersionNode::decode(&hex(ENCODED)), Ok(fixed()));
     }
 
     #[test]
@@ -235,12 +235,12 @@ mod tests {
         // The content's entry kind: after the header, the changeset address and "bin/run".
         let at = 2 + 37 + 4 + 7 + 7;
         assert_eq!(bytes[at], 0x02);
-        assert!(FileVersion::decode(&bytes).is_ok());
+        assert!(FileVersionNode::decode(&bytes).is_ok());
         for code in [0x00, 0x03, 0x04] {
             let mut bytes = bytes.clone();
             bytes[at] = code;
             assert_eq!(
-                FileVersion::decode(&bytes),
+                FileVersionNode::decode(&bytes),
                 Err(DecodeError::UnexpectedEntryKind(code))
             );
         }
@@ -250,11 +250,14 @@ mod tests {
     fn rejects_trailing_bytes_and_the_wrong_object_kind() {
         let mut bytes = hex(ENCODED);
         bytes.push(0);
-        assert_eq!(FileVersion::decode(&bytes), Err(DecodeError::TrailingBytes));
+        assert_eq!(
+            FileVersionNode::decode(&bytes),
+            Err(DecodeError::TrailingBytes)
+        );
         let mut bytes = hex(ENCODED);
         bytes[1] = 0x02;
         assert_eq!(
-            FileVersion::decode(&bytes),
+            FileVersionNode::decode(&bytes),
             Err(DecodeError::UnexpectedObjectKind(0x02))
         );
     }
@@ -265,7 +268,7 @@ mod tests {
     #[derive(Default)]
     struct Log {
         values: BTreeMap<Address, Value>,
-        nodes: BTreeMap<Address, FileVersion>,
+        nodes: BTreeMap<Address, FileVersionNode>,
     }
 
     impl Log {
