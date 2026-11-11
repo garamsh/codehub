@@ -2,7 +2,7 @@
 
 Starting the check services, running `codehub` against them, and landing and reading a file with `ch`, from a clean checkout.
 
-The output below was produced on 2026-11-11 from the commit `e4fe6227eb08e05d515d77ac625515cc6054340b` plus this file's change, with the services of `compose.yaml` running. Changeset identifiers contain a timestamp, so yours differ; every other line is the same.
+The output below was produced on 2026-11-11 from the commit `e4fe6227eb08e05d515d77ac625515cc6054340b` plus this file's change, with the services of `compose.yaml` running. Steps 5 and 6 changed afterwards only in the path of the scratch file, and were run again on 2026-11-12 from the commit `33ec12de6559b810aaf1a93494716df864dc62e0` plus that change: their output lines are the same apart from the changeset identifiers. Changeset identifiers contain a timestamp, so yours differ; every other line is the same.
 
 ## Before you start
 
@@ -87,13 +87,14 @@ $ ch use acme/app
 ## 5. Stage and land a file
 
 ```console
-$ echo 'hello from codehub' > hello.txt
-$ ch put docs/hello.txt hello.txt
+$ tmp=$(mktemp -d)
+$ echo 'hello from codehub' > "$tmp/hello.txt"
+$ ch put docs/hello.txt "$tmp/hello.txt"
 $ ch land -m first
 sha256:db8a02d35b9d85376a1ec639a8b16832debe88b4baf128c66825d2a66fcb9375
 ```
 
-`ch put` prints nothing; it stages the file in the draft `default`. `ch land` prints the landed changeset's identifier.
+The file is written under a temporary directory, so the repository is left as it was. `ch put` prints nothing; it stages the file in the draft `default`. `ch land` prints the landed changeset's identifier.
 
 ## 6. Read the history and the content
 
@@ -107,8 +108,8 @@ hello from codehub
 Each `log` line is a changeset and the address of the file's content in it, newest first. Land a second version to see the chain:
 
 ```console
-$ echo 'hello again from codehub' > hello.txt
-$ ch put docs/hello.txt hello.txt
+$ echo 'hello again from codehub' > "$tmp/hello.txt"
+$ ch put docs/hello.txt "$tmp/hello.txt"
 $ ch land -m second
 sha256:a2c2e7d07690c05c7fbc8f3cdeac500f3772fed22b0516eed6d012ddc3ac9617
 $ ch log docs/hello.txt
