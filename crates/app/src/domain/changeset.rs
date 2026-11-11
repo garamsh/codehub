@@ -22,7 +22,7 @@ pub enum Change {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Changeset {
     /// Parent changeset identifiers. The first is the one the delta is against; empty for a
-    /// workspace's first changeset.
+    /// repository's first changeset.
     pub parents: Vec<Address>,
     /// Who made the changeset.
     pub author: String,

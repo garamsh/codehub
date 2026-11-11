@@ -7,9 +7,11 @@ use std::fmt;
 use crate::domain::address::Address;
 use crate::domain::file_version::FileVersionNode;
 use crate::domain::path::Path;
+use crate::domain::repository::RepositoryId;
 use crate::domain::tree::Tree;
 
-/// Holds each derived type's value for a changeset and the objects its steps wrote.
+/// Holds each derived type's value for a changeset and the objects its steps wrote, per
+/// repository.
 pub trait DerivedData {
     /// Records `root` as `changeset`'s root tree, and stores `trees` by address.
     ///
@@ -18,6 +20,7 @@ pub trait DerivedData {
     /// The store's [`DerivedDataError`].
     fn put_trees(
         &self,
+        repository: RepositoryId,
         changeset: Address,
         root: Address,
         trees: BTreeMap<Address, Tree>,
@@ -30,6 +33,7 @@ pub trait DerivedData {
     /// [`DerivedDataError::NotFound`] where no root is recorded for `changeset`.
     fn root(
         &self,
+        repository: RepositoryId,
         changeset: Address,
     ) -> impl Future<Output = Result<Address, DerivedDataError>> + Send;
 
@@ -38,8 +42,11 @@ pub trait DerivedData {
     /// # Errors
     ///
     /// [`DerivedDataError::NotFound`] where no tree is stored under `address`.
-    fn tree(&self, address: Address)
-    -> impl Future<Output = Result<Tree, DerivedDataError>> + Send;
+    fn tree(
+        &self,
+        repository: RepositoryId,
+        address: Address,
+    ) -> impl Future<Output = Result<Tree, DerivedDataError>> + Send;
 
     /// Records `value` as `changeset`'s file-version nodes by path, and stores `nodes` by
     /// address.
@@ -49,6 +56,7 @@ pub trait DerivedData {
     /// The store's [`DerivedDataError`].
     fn put_file_versions(
         &self,
+        repository: RepositoryId,
         changeset: Address,
         value: BTreeMap<Path, Address>,
         nodes: BTreeMap<Address, FileVersionNode>,
@@ -61,6 +69,7 @@ pub trait DerivedData {
     /// The store's [`DerivedDataError`].
     fn file_versions(
         &self,
+        repository: RepositoryId,
         changeset: Address,
     ) -> impl Future<Output = Result<Option<BTreeMap<Path, Address>>, DerivedDataError>> + Send;
 
@@ -71,6 +80,7 @@ pub trait DerivedData {
     /// [`DerivedDataError::NotFound`] where no node is stored under `address`.
     fn file_version_node(
         &self,
+        repository: RepositoryId,
         address: Address,
     ) -> impl Future<Output = Result<FileVersionNode, DerivedDataError>> + Send;
 }

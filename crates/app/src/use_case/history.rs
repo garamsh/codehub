@@ -8,6 +8,7 @@ use crate::domain::address::Address;
 use crate::domain::derivation::{self, DerivationError};
 use crate::domain::file_version::{self, FileVersionError, FileVersionNode, FileVersions};
 use crate::domain::path::Path;
+use crate::domain::repository::RepositoryId;
 use crate::port::driven::changeset_log::{ChangesetLog, ChangesetLogError};
 use crate::port::driven::derived_data::{DerivedData, DerivedDataError};
 
@@ -22,12 +23,13 @@ use crate::port::driven::derived_data::{DerivedData, DerivedDataError};
 pub async fn history<L: ChangesetLog, D: DerivedData>(
     log: &L,
     derived: &D,
+    repository: RepositoryId,
     at: Address,
     path: &Path,
 ) -> Result<Vec<FileVersionNode>, HistoryError> {
-    derive_file_versions(log, derived, at).await?;
+    derive_file_versions(log, derived, repository, at).await?;
     let value = derived
-        .file_versions(at)
+        .file_versions(repository, at)
         .await?
         .ok_or(DerivedDataError::NotFound(at))?;
 
@@ -36,7 +38,7 @@ pub async fn history<L: ChangesetLog, D: DerivedData>(
         match file_version::history(path, &value, &nodes) {
             Ok(versions) => return Ok(versions.into_iter().cloned().collect()),
             Err(file_version::HistoryError::MissingNode(address)) => {
-                let node = derived.file_version_node(address).await?;
+                let node = derived.file_version_node(repository, address).await?;
                 nodes.insert(address, node);
             }
         }
@@ -47,18 +49,19 @@ pub async fn history<L: ChangesetLog, D: DerivedData>(
 async fn derive_file_versions<L: ChangesetLog, D: DerivedData>(
     log: &L,
     derived: &D,
+    repository: RepositoryId,
     at: Address,
 ) -> Result<(), HistoryError> {
     let mut pending = vec![at];
     while let Some(id) = pending.pop() {
-        if derived.file_versions(id).await?.is_some() {
+        if derived.file_versions(repository, id).await?.is_some() {
             continue;
         }
-        let changeset = log.get(id).await?;
+        let changeset = log.get(repository, id).await?;
         let mut values = Vec::with_capacity(changeset.parents.len());
         let mut underived = Vec::new();
         for parent in &changeset.parents {
-            match derived.file_versions(*parent).await? {
+            match derived.file_versions(repository, *parent).await? {
                 Some(value) => values.push(value),
                 None => underived.push(*parent),
             }
@@ -66,7 +69,7 @@ async fn derive_file_versions<L: ChangesetLog, D: DerivedData>(
         if underived.is_empty() {
             let step = derivation::derive(&FileVersions, &changeset, &values)?;
             derived
-                .put_file_versions(id, step.value, step.objects)
+                .put_file_versions(repository, id, step.value, step.objects)
                 .await?;
         } else {
             // Revisited once its parents are derived.

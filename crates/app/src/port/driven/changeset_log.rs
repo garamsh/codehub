@@ -1,19 +1,21 @@
-//! The changeset log: a workspace's changesets and the refs naming them (ADR 0012).
+//! The changeset log: a repository's changesets and the refs naming them (ADR 0012).
 
 use std::fmt;
 
 use crate::domain::address::Address;
 use crate::domain::changeset::Changeset;
 use crate::domain::encoding::EncodeError;
+use crate::domain::repository::RepositoryId;
 
-/// A named ref of the workspace.
+/// A named ref of a repository.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Ref {
     /// What agents base their work on, and what landing advances.
     Main,
 }
 
-/// Holds the changesets of a workspace and moves its refs.
+/// Holds the changesets of each repository and moves its refs. Each operation reads or writes the
+/// log of the repository it is given.
 pub trait ChangesetLog {
     /// Appends `changeset` and returns its identifier, its address. Appending moves no ref.
     ///
@@ -22,6 +24,7 @@ pub trait ChangesetLog {
     /// [`ChangesetLogError::Encode`] where the changeset has no encoding.
     fn append(
         &self,
+        repository: RepositoryId,
         changeset: Changeset,
     ) -> impl Future<Output = Result<Address, ChangesetLogError>> + Send;
 
@@ -30,8 +33,11 @@ pub trait ChangesetLog {
     /// # Errors
     ///
     /// [`ChangesetLogError::NotFound`] where the log holds no such changeset.
-    fn get(&self, id: Address)
-    -> impl Future<Output = Result<Changeset, ChangesetLogError>> + Send;
+    fn get(
+        &self,
+        repository: RepositoryId,
+        id: Address,
+    ) -> impl Future<Output = Result<Changeset, ChangesetLogError>> + Send;
 
     /// The changeset `name` points at; `None` before it is first set.
     ///
@@ -40,6 +46,7 @@ pub trait ChangesetLog {
     /// The log's [`ChangesetLogError`].
     fn read_ref(
         &self,
+        repository: RepositoryId,
         name: Ref,
     ) -> impl Future<Output = Result<Option<Address>, ChangesetLogError>> + Send;
 
@@ -51,6 +58,7 @@ pub trait ChangesetLog {
     /// [`ChangesetLogError::RefMoved`] where `name` no longer points at `expected`.
     fn compare_and_swap(
         &self,
+        repository: RepositoryId,
         name: Ref,
         expected: Option<Address>,
         new: Address,
