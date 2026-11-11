@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+adapter-authzen = { path = "../adapter-authzen" }
 adapter-http = { path = "../adapter-http" }
 adapter-introspection = { path = "../adapter-introspection" }
 adapter-oidc = { path = "../adapter-oidc" }
@@ -18,6 +19,7 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sig
 [dev-dependencies]
 reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio"] }
 test-support = { path = "../test-support" }
 tokio = { workspace = true, features = ["macros", "rt"] }
 

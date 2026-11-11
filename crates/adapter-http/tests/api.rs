@@ -436,6 +436,112 @@ async fn rejects_a_removal_with_a_missing_or_malformed_query_parameter() {
     );
 }
 
+/// A router in the external administration mode, over the stores of `api`.
+#[cfg(test)]
+fn external_router(api: &Api) -> axum::Router {
+    use app::use_case::administration::Administration;
+    use app::use_case::authentication::AuthenticationService;
+    use app::use_case::members::MembersService;
+    use app::use_case::repositories::RepositoriesService;
+    use app::use_case::source_control::SourceControlService;
+    let stores = api.stores;
+    adapter_http::router(
+        AuthenticationService::new(&stores.identity),
+        RepositoriesService::new(
+            &stores.directory,
+            &stores.authorisation,
+            &stores.membership,
+            &(),
+            Administration::External,
+        ),
+        MembersService::new(
+            &stores.directory,
+            &stores.authorisation,
+            &stores.membership,
+            Administration::External,
+        ),
+        SourceControlService::new(
+            &stores.objects,
+            &stores.log,
+            &stores.derived,
+            &stores.drafts,
+            &stores.directory,
+            &stores.authorisation,
+            common::MAX_UPLOAD_SIZE,
+        ),
+    )
+}
+
+#[tokio::test]
+async fn refuses_every_member_operation_in_external_mode_with_403_saying_so() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    api.repository(&ada, "acme").await;
+    let grant =
+        json!({"issuer": "https://id.test", "subject": "bob", "prefix": "", "access": "write"});
+    let operations = [
+        (
+            Method::PUT,
+            "/v1/orgs/acme/members".to_owned(),
+            Some(json!({"issuer": "https://id.test", "subject": "bob", "role": "member"})),
+        ),
+        (
+            Method::DELETE,
+            "/v1/orgs/acme/members?issuer=https://id.test&subject=bob".to_owned(),
+            None,
+        ),
+        (
+            Method::PUT,
+            "/v1/orgs/acme/repos/app/grants".to_owned(),
+            Some(grant),
+        ),
+        (
+            Method::DELETE,
+            "/v1/orgs/acme/repos/app/grants?issuer=https://id.test&subject=bob&prefix=&access=write"
+                .to_owned(),
+            None,
+        ),
+    ];
+    for (method, uri, body) in operations {
+        let request = |token: Option<&str>| {
+            let mut builder = axum::http::Request::builder()
+                .method(method.clone())
+                .uri(&uri)
+                .header(axum::http::header::CONTENT_TYPE, "application/json");
+            if let Some(token) = token {
+                builder =
+                    builder.header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"));
+            }
+            builder
+                .body(axum::body::Body::from(
+                    body.as_ref().map(ToString::to_string).unwrap_or_default(),
+                ))
+                .unwrap()
+        };
+        let response = tower::ServiceExt::oneshot(external_router(&api), request(Some(&ada)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let problem: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            problem["detail"], "members are administered outside codehub",
+            "{method} {uri}"
+        );
+        // The control: without a token the same request is 401, not 403.
+        let response = tower::ServiceExt::oneshot(external_router(&api), request(None))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri}"
+        );
+    }
+}
+
 /// A repositories port whose directory fails with a description that must stay inside.
 struct Failing;
 
