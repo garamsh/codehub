@@ -2,4 +2,8 @@
 
 pub mod history;
 pub mod land;
+pub mod read_file;
+pub mod repositories;
 pub mod source_control;
+pub mod stage;
+pub mod upload;

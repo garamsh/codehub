@@ -1,4 +1,4 @@
-//! Workspace paths: non-empty lists of components, ordered component by component.
+//! Repository paths: non-empty lists of components, ordered component by component.
 
 use std::fmt;
 use std::num::NonZeroUsize;
@@ -56,7 +56,7 @@ impl Component {
     }
 }
 
-/// A path from the workspace root down. Paths order component by component, a proper prefix first.
+/// A path from the repository root down. Paths order component by component, a proper prefix first.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Path(Vec<Component>);
 

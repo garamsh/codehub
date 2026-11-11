@@ -5,11 +5,12 @@ mod common;
 
 use app::domain::address::Address;
 use app::port::driving::source_control::SourceControl;
-use common::Workspace;
+use common::{Harness, draft_id};
 
 #[tokio::test]
 async fn a_path_history_query_returns_its_version_chain_newest_first() {
-    let workspace = Workspace::default();
+    let harness = Harness::default();
+    let repo = harness.repository("acme").await;
     let mut landed = Vec::new();
     for (message, files) in [
         ("1", &[("a", "a1"), ("b", "b1")][..]),
@@ -18,17 +19,17 @@ async fn a_path_history_query_returns_its_version_chain_newest_first() {
         ("4", &[("b", "b4")]),
         ("5", &[("a", "a5")]),
     ] {
-        let draft = workspace
-            .draft(workspace.main().await, message, files)
-            .await;
-        landed.push(workspace.land(draft).await.unwrap());
+        let draft = draft_id("ada", message);
+        repo.stage(&draft, files).await;
+        landed.push(repo.land(&draft, message).await.unwrap());
     }
-    let main = workspace.main().await.unwrap();
+    let main = repo.main().await.unwrap();
     assert_eq!(landed.last(), Some(&main));
+    assert_eq!(repo.read("a").await.as_deref(), Some("a5"));
 
-    let a = workspace
+    let a = harness
         .source_control()
-        .history(main, &"a".parse().unwrap())
+        .history(repo.id, main, &"a".parse().unwrap())
         .await
         .unwrap();
     assert_eq!(
@@ -40,9 +41,9 @@ async fn a_path_history_query_returns_its_version_chain_newest_first() {
         [Address::of(b"a5"), Address::of(b"a3"), Address::of(b"a1")]
     );
 
-    let b = workspace
+    let b = harness
         .source_control()
-        .history(main, &"b".parse().unwrap())
+        .history(repo.id, main, &"b".parse().unwrap())
         .await
         .unwrap();
     assert_eq!(
