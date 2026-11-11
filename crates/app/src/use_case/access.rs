@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::domain::name::OrganisationName;
+use crate::domain::name::{OrganisationName, RepositoryName};
 use crate::domain::path::Path;
 use crate::domain::principal::Principal;
 use crate::domain::repository::RepositoryId;
@@ -73,7 +73,7 @@ const fn action(access: Access) -> Action {
     }
 }
 
-async fn allowed<A: AuthorisationDecision>(
+pub(crate) async fn allowed<A: AuthorisationDecision>(
     authorisation: &A,
     subject: &Principal,
     action: Action,
@@ -96,23 +96,24 @@ pub(crate) async fn require<A: AuthorisationDecision>(
     }
 }
 
-/// The organisation holding `repository`, where `subject` may read it.
+/// The organisation holding `repository` and the name it has there, where `subject` may read it.
 pub(crate) async fn readable_repository<R: RepositoryDirectory, A: AuthorisationDecision>(
     directory: &R,
     authorisation: &A,
     subject: &Principal,
     repository: RepositoryId,
-) -> Result<OrganisationName, AccessError> {
+) -> Result<(OrganisationName, RepositoryName), AccessError> {
     let not_found = AccessError::RepositoryNotFound(repository);
-    let Some(organisation) = directory.organisation_of(repository).await? else {
+    let Some((organisation, name)) = directory.names_of(repository).await? else {
         return Err(not_found);
     };
     let resource = Resource::Repository {
         organisation: organisation.clone(),
+        name: name.clone(),
         repository,
     };
     if allowed(authorisation, subject, Action::Read, &resource).await? {
-        Ok(organisation)
+        Ok((organisation, name))
     } else {
         Err(not_found)
     }
@@ -124,6 +125,7 @@ pub(crate) async fn require_paths<'p, A: AuthorisationDecision>(
     authorisation: &A,
     subject: &Principal,
     organisation: &OrganisationName,
+    name: &RepositoryName,
     repository: RepositoryId,
     access: Access,
     paths: impl IntoIterator<Item = &'p Path>,
@@ -132,6 +134,7 @@ pub(crate) async fn require_paths<'p, A: AuthorisationDecision>(
     for path in paths {
         let resource = Resource::Path {
             organisation: organisation.clone(),
+            name: name.clone(),
             repository,
             path: path.clone(),
         };

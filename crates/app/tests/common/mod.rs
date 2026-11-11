@@ -2,8 +2,9 @@
 //! ports.
 
 use adapter_memory::{
-    MemoryAuthorisationDecision, MemoryChangesetLog, MemoryDerivedData, MemoryDraftStore,
-    MemoryIdentityVerification, MemoryMembership, MemoryObjectStore, MemoryRepositoryDirectory,
+    MemoryAuthorisationDecision, MemoryChangesetLog, MemoryDerivedData, MemoryDirectoryChanges,
+    MemoryDraftStore, MemoryIdentityVerification, MemoryMembership, MemoryObjectStore,
+    MemoryRepositoryDirectory,
 };
 use app::domain::address::Address;
 use app::domain::changeset::Change;
@@ -20,6 +21,7 @@ use app::port::driven::object_store::ObjectStore;
 use app::port::driving::authentication::Authentication;
 use app::port::driving::repositories::Repositories;
 use app::port::driving::source_control::{SourceControl, SourceControlError};
+use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
 use app::use_case::land::Landing;
 use app::use_case::repositories::RepositoriesService;
@@ -46,6 +48,8 @@ pub struct Harness {
     pub membership: MemoryMembership,
     /// The authorisation decision, derived from the membership.
     pub authorisation: MemoryAuthorisationDecision,
+    /// The directory changes reported.
+    pub changes: MemoryDirectoryChanges,
 }
 
 impl Default for Harness {
@@ -59,6 +63,7 @@ impl Default for Harness {
             directory: MemoryRepositoryDirectory::default(),
             identity: MemoryIdentityVerification::default(),
             authorisation: membership.authorisation_decision(),
+            changes: MemoryDirectoryChanges::default(),
             membership,
         }
     }
@@ -81,12 +86,25 @@ pub type Repos<'a> = RepositoriesService<
     MemoryRepositoryDirectory,
     MemoryAuthorisationDecision,
     MemoryMembership,
+    MemoryDirectoryChanges,
 >;
 
 impl Harness {
-    /// The repositories port over this harness's adapters.
+    /// The repositories port over this harness's adapters, administered by codehub.
     pub const fn repositories(&self) -> Repos<'_> {
-        RepositoriesService::new(&self.directory, &self.authorisation, &self.membership)
+        self.administered(Administration::BuiltIn)
+    }
+
+    /// The repositories port over this harness's adapters, with members administered as
+    /// `administration` says.
+    pub const fn administered(&self, administration: Administration) -> Repos<'_> {
+        RepositoriesService::new(
+            &self.directory,
+            &self.authorisation,
+            &self.membership,
+            &self.changes,
+            administration,
+        )
     }
 
     /// The authentication port over this harness's identity verification.

@@ -15,6 +15,7 @@ use app::port::driven::repository_directory::RepositoryDirectory;
 use app::port::driving::members::Members;
 use app::port::driving::repositories::Repositories;
 use app::port::driving::source_control::SourceControl;
+use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
 use app::use_case::members::MembersService;
 use app::use_case::repositories::RepositoriesService;
@@ -97,7 +98,12 @@ where
 }
 
 fn members(stores: &'static Stores) -> impl Members + Send + Sync + 'static {
-    MembersService::new(&stores.directory, &stores.authorisation, &stores.membership)
+    MembersService::new(
+        &stores.directory,
+        &stores.authorisation,
+        &stores.membership,
+        Administration::BuiltIn,
+    )
 }
 
 fn source_control(stores: &'static Stores) -> impl SourceControl + Send + Sync + 'static {
@@ -115,8 +121,13 @@ fn source_control(stores: &'static Stores) -> impl SourceControl + Send + Sync +
 impl Default for Api {
     fn default() -> Self {
         let stores = Stores::leaked();
-        let repositories =
-            RepositoriesService::new(&stores.directory, &stores.authorisation, &stores.membership);
+        let repositories = RepositoriesService::new(
+            &stores.directory,
+            &stores.authorisation,
+            &stores.membership,
+            &(),
+            Administration::BuiltIn,
+        );
         Self {
             stores,
             router: router_with(stores, repositories),

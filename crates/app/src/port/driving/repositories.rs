@@ -11,7 +11,8 @@ use crate::use_case::access::AccessError;
 
 /// What the outside asks of the application's organisations and repositories.
 pub trait Repositories {
-    /// Creates the organisation `name`, with `caller` as its admin.
+    /// Creates the organisation `name`; where codehub administers members, `caller` becomes its
+    /// admin.
     ///
     /// # Errors
     ///
@@ -27,9 +28,12 @@ pub trait Repositories {
     ///
     /// # Errors
     ///
-    /// [`RepositoriesError::Access`] where `caller` is not an admin of `organisation`, which
-    /// holds for an organisation that does not exist; [`RepositoriesError::Directory`] with
-    /// [`DirectoryError::RepositoryExists`] where it already holds a repository of that name.
+    /// [`RepositoriesError::Access`] where `caller` may not create repositories in
+    /// `organisation`, which holds for an organisation that does not exist where codehub
+    /// administers members; [`RepositoriesError::Directory`] with
+    /// [`DirectoryError::RepositoryExists`] where it already holds a repository of that name, and
+    /// with [`DirectoryError::OrganisationNotFound`] where it does not exist and `caller` may not
+    /// create it.
     fn create_repository(
         &self,
         caller: &Caller,

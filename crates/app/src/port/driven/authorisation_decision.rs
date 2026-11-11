@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use crate::domain::name::OrganisationName;
+use crate::domain::name::{OrganisationName, RepositoryName};
 use crate::domain::path::Path;
 use crate::domain::principal::Principal;
 use crate::domain::repository::RepositoryId;
@@ -32,6 +32,8 @@ pub enum Resource {
     Repository {
         /// The organisation holding it.
         organisation: OrganisationName,
+        /// The repository's name in the organisation, by which an outside decision point knows it.
+        name: RepositoryName,
         /// The repository.
         repository: RepositoryId,
     },
@@ -39,6 +41,8 @@ pub enum Resource {
     Path {
         /// The organisation holding the repository.
         organisation: OrganisationName,
+        /// The repository's name in the organisation, by which an outside decision point knows it.
+        name: RepositoryName,
         /// The repository.
         repository: RepositoryId,
         /// The path in it.

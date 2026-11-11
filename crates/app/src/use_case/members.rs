@@ -9,6 +9,7 @@ use crate::port::driven::membership::{Access, Grant, Membership, Role};
 use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driving::members::{Members, MembersError};
 use crate::use_case::access::require;
+use crate::use_case::administration::Administration;
 
 /// Members kept in the membership the composition site passes to it, administered by the callers
 /// the authorisation decision allows.
@@ -16,16 +17,24 @@ pub struct MembersService<'a, R, A, M> {
     directory: &'a R,
     authorisation: &'a A,
     membership: &'a M,
+    administration: Administration,
 }
 
 impl<'a, R, A, M> MembersService<'a, R, A, M> {
     /// Members kept in `membership`, with repositories looked up in `directory` and callers
-    /// checked with `authorisation`.
-    pub const fn new(directory: &'a R, authorisation: &'a A, membership: &'a M) -> Self {
+    /// checked with `authorisation`, where `administration` says whether members are kept here
+    /// at all.
+    pub const fn new(
+        directory: &'a R,
+        authorisation: &'a A,
+        membership: &'a M,
+        administration: Administration,
+    ) -> Self {
         Self {
             directory,
             authorisation,
             membership,
+            administration,
         }
     }
 }
@@ -35,11 +44,15 @@ where
     R: RepositoryDirectory + Sync,
     A: AuthorisationDecision + Sync,
 {
+    /// Requires that members are kept here and that `caller` administers them in `organisation`.
     async fn require_admin(
         &self,
         caller: &Caller,
         organisation: &OrganisationName,
     ) -> Result<(), MembersError> {
+        if self.administration == Administration::External {
+            return Err(MembersError::ExternallyAdministered);
+        }
         let resource = Resource::Organisation(organisation.clone());
         Ok(require(
             self.authorisation,

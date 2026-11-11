@@ -68,14 +68,18 @@ impl RepositoryDirectory for MemoryRepositoryDirectory {
             })
     }
 
-    async fn organisation_of(
+    async fn names_of(
         &self,
         repository: RepositoryId,
-    ) -> Result<Option<OrganisationName>, DirectoryError> {
+    ) -> Result<Option<(OrganisationName, RepositoryName)>, DirectoryError> {
         Ok(lock(&self.directory)
             .organisations
             .iter()
-            .find(|(_, repositories)| repositories.values().any(|id| *id == repository))
-            .map(|(name, _)| name.clone()))
+            .find_map(|(organisation, repositories)| {
+                repositories
+                    .iter()
+                    .find(|(_, id)| **id == repository)
+                    .map(|(name, _)| (organisation.clone(), name.clone()))
+            }))
     }
 }

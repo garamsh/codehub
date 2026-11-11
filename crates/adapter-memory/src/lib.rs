@@ -4,6 +4,7 @@
 mod authorisation_decision;
 mod changeset_log;
 mod derived_data;
+mod directory_changes;
 mod draft_store;
 mod identity_verification;
 mod membership;
@@ -15,6 +16,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 pub use authorisation_decision::MemoryAuthorisationDecision;
 pub use changeset_log::MemoryChangesetLog;
 pub use derived_data::MemoryDerivedData;
+pub use directory_changes::MemoryDirectoryChanges;
 pub use draft_store::MemoryDraftStore;
 pub use identity_verification::MemoryIdentityVerification;
 pub use membership::MemoryMembership;

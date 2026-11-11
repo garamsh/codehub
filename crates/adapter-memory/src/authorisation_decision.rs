@@ -12,13 +12,27 @@ use crate::membership::{Member, Members};
 /// The ADR 0021 policy evaluated over the memberships of a [`crate::MemoryMembership`]: an admin
 /// may take every action in its organisation; a member's grants allow `read` and `write` on the
 /// paths they cover, and a member holding any grant on a repository may read it as a whole.
+/// [`MemoryAuthorisationDecision::answer`] fixes the decision for an action ahead of that policy,
+/// as an outside decision point that keeps its own entities would.
 pub struct MemoryAuthorisationDecision {
     state: Arc<Mutex<Members>>,
+    answers: Mutex<Vec<(Action, Decision)>>,
 }
 
 impl MemoryAuthorisationDecision {
     pub(crate) const fn new(state: Arc<Mutex<Members>>) -> Self {
-        Self { state }
+        Self {
+            state,
+            answers: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// From now on decides `action` as `decision`, on every resource and for every subject,
+    /// replacing an answer given before for it.
+    pub fn answer(&self, action: Action, decision: Decision) {
+        let mut answers = lock(&self.answers);
+        answers.retain(|(answered, _)| *answered != action);
+        answers.push((action, decision));
     }
 }
 
@@ -66,6 +80,13 @@ impl AuthorisationDecision for MemoryAuthorisationDecision {
         action: Action,
         resource: &Resource,
     ) -> Result<Decision, AuthorisationError> {
+        let answered = lock(&self.answers)
+            .iter()
+            .find(|(answered, _)| *answered == action)
+            .map(|(_, decision)| *decision);
+        if let Some(decision) = answered {
+            return Ok(decision);
+        }
         if action == Action::CreateOrganisation {
             return Ok(match resource {
                 Resource::Organisation(_) => Decision::Allow,

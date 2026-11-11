@@ -6,7 +6,7 @@ use crate::domain::address::Address;
 use crate::domain::changeset::Change;
 use crate::domain::draft::DraftId;
 use crate::domain::file_version::FileVersionNode;
-use crate::domain::name::{DraftName, OrganisationName};
+use crate::domain::name::{DraftName, OrganisationName, RepositoryName};
 use crate::domain::path::Path;
 use crate::domain::principal::Caller;
 use crate::domain::repository::RepositoryId;
@@ -67,12 +67,12 @@ where
     R: RepositoryDirectory + Sync,
     A: AuthorisationDecision + Sync,
 {
-    /// The organisation of `repository`, where `caller` may read it.
-    async fn organisation(
+    /// The organisation of `repository` and its name there, where `caller` may read it.
+    async fn names(
         &self,
         caller: &Caller,
         repository: RepositoryId,
-    ) -> Result<OrganisationName, AccessError> {
+    ) -> Result<(OrganisationName, RepositoryName), AccessError> {
         readable_repository(
             self.directory,
             self.authorisation,
@@ -90,11 +90,12 @@ where
         access: Access,
         path: &Path,
     ) -> Result<(), AccessError> {
-        let organisation = self.organisation(caller, repository).await?;
+        let (organisation, name) = self.names(caller, repository).await?;
         require_paths(
             self.authorisation,
             caller.principal(),
             &organisation,
+            &name,
             repository,
             access,
             [path],
@@ -119,13 +120,14 @@ where
         address: Address,
         size: u64,
     ) -> Result<Grant, SourceControlError> {
-        let organisation = self.organisation(caller, repository).await?;
+        let (organisation, name) = self.names(caller, repository).await?;
         require(
             self.authorisation,
             caller.principal(),
             Action::Write,
             &Resource::Repository {
                 organisation,
+                name,
                 repository,
             },
         )
@@ -173,7 +175,7 @@ where
         draft: &DraftName,
         landing: Landing,
     ) -> Result<Address, SourceControlError> {
-        let organisation = self.organisation(caller, repository).await?;
+        let (organisation, name) = self.names(caller, repository).await?;
         let draft = DraftId {
             principal: caller.principal().clone(),
             name: draft.clone(),
@@ -187,6 +189,7 @@ where
             self.authorisation,
             caller.principal(),
             &organisation,
+            &name,
             repository,
             Access::Write,
             staged.changes.keys(),

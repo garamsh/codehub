@@ -10,7 +10,8 @@ use crate::port::driven::repository_directory::DirectoryError;
 use crate::use_case::access::AccessError;
 
 /// What the outside asks of an organisation's members. Each operation needs an admin of the
-/// organisation.
+/// organisation, and each is refused with [`MembersError::ExternallyAdministered`] where members
+/// are administered outside codehub.
 pub trait Members {
     /// Makes `principal` a member of `organisation` in `role`, replacing the role it held.
     ///
@@ -82,6 +83,8 @@ pub enum MembersError {
     Directory(DirectoryError),
     /// Membership refused or failed.
     Membership(MembershipError),
+    /// Members are administered outside codehub, which keeps none.
+    ExternallyAdministered,
 }
 
 impl fmt::Display for MembersError {
@@ -90,6 +93,9 @@ impl fmt::Display for MembersError {
             Self::Access(error) => write!(f, "{error}"),
             Self::Directory(error) => write!(f, "{error}"),
             Self::Membership(error) => write!(f, "{error}"),
+            Self::ExternallyAdministered => {
+                write!(f, "members are administered outside codehub")
+            }
         }
     }
 }
@@ -100,6 +106,7 @@ impl std::error::Error for MembersError {
             Self::Access(error) => Some(error),
             Self::Directory(error) => Some(error),
             Self::Membership(error) => Some(error),
+            Self::ExternallyAdministered => None,
         }
     }
 }

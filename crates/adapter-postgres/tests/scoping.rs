@@ -17,6 +17,7 @@ use app::port::driving::members::Members;
 use app::port::driving::repositories::{Repositories, RepositoriesError};
 use app::port::driving::source_control::{SourceControl, SourceControlError};
 use app::use_case::access::AccessError;
+use app::use_case::administration::Administration;
 use app::use_case::land::LandError;
 use app::use_case::members::MembersService;
 use app::use_case::read_file::ReadFileError;
@@ -249,6 +250,7 @@ async fn landing_removes_the_draft() {
         &harness.directory,
         &harness.authorisation,
         &harness.membership,
+        Administration::BuiltIn,
     )
     .add_member(&ada, &"acme".parse().unwrap(), bob.principal(), Role::Admin)
     .await
