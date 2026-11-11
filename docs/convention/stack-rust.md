@@ -31,8 +31,10 @@
 The workspace holds three kinds of package, all under `crates/`. Its
 hexagonal unit takes these names:
 
-- `crates/app` — the application crate. It holds the domain types and
-  the ports. `src/port/driving/<conversation>.rs` and
+- `crates/app` — the application crate. Its domain ring is
+  `src/domain/` and the modules under it. Its application ring is the
+  rest of the crate: the use cases, under `src/use_case/`, and the
+  ports. `src/port/driving/<conversation>.rs` and
   `src/port/driven/<conversation>.rs` each declare one trait, named for
   the conversation; a directory exists once it holds a port. The port's
   error type is declared in the same file.
