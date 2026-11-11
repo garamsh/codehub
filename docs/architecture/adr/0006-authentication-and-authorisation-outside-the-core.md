@@ -7,7 +7,7 @@ Append-only: once merged, the body below is not rewritten. A fact later found wr
 
 ## Context
 
-The decision was settled in the design session recorded in issue #1 (item 3). The system is used by people, by agents and the `ch` CLI acting for them, and by runners. The project owner intends to operate an external identity and authorisation service later, and plugging it in must not change the core. Initial deployment is a single machine, where such a service does not yet exist. Issue #1 fixes the standards; the alternative considered was identity and policy built into the core.
+The decision was settled in the design session recorded in issue #1 (item 3). The system is used by people, by agents and the `ch` CLI acting for them, and by runners. The project owner intends to operate an external identity and authorisation service later, and plugging it in must not change the core. Initial deployment is a single machine, where such a service does not yet exist. Issue #1 fixes the standards. Identity and policy built into the core is the alternative not taken.
 
 ## Decision
 
