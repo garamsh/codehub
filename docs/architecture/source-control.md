@@ -33,13 +33,16 @@ How versions of a workspace's content are stored, changed, landed and queried.
   - a true conflict rejects the landing and returns the conflicting paths for the author's agent to resolve.
 - **There is no workspace-wide lock** around landing.
 - **There is no push.** A client uploads objects; the server creates the changeset.
+- **PostgreSQL holds the metadata, the changeset log as a table, and the refs**, each behind a port (ADR 0013).
+- **Blobs are in the S3-compatible object store** (ADR 0013).
+- **The ports leave room for a distributed SQL store later:** they name no PostgreSQL feature (ADR 0013).
 
 ### Mapping onto the hexagon
 
 The ports below follow from the decisions, named for the conversation and in the application's terms (`docs/architecture/structure.md`). Whether each is earned by two adapters is settled when it is written.
 
-- **Object store** — put and get immutable objects by content address. Served by an S3-compatible adapter; the same technology also holds filesystem images, which `docs/architecture/execution.md` describes.
-- **Changeset log** — append a changeset, read the log, read a ref, and move a ref by compare-and-swap on that ref alone. Its storage is open.
+- **Object store** — put and get immutable objects by content address, and issue presigned URLs through which clients upload and download object bytes directly to and from the store, so the bytes do not pass through the server API (ADR 0015). Served by an S3-compatible adapter; the same technology also holds filesystem images, delivered the same way (`docs/architecture/execution.md`, ADR 0008).
+- **Changeset log** — append a changeset, read the log, read a ref, and move a ref by compare-and-swap on that ref alone. Served by a PostgreSQL adapter, the log as a table (ADR 0013).
 - **Derived data** — read and write computed trees, file-version nodes, blame and skip lists for a workspace.
 - **Check dispatch** — ask for the post-land checks to run and receive their results. The execution side is in `docs/architecture/runner.md`.
 - Driving adapters are the server API behind `ch` and the MCP server (`docs/architecture/interfaces.md`).
@@ -49,6 +52,7 @@ The ports below follow from the decisions, named for the conversation and in the
 - Server-centred source control, content-addressed objects, changesets and derived data follow the model in Anthropic's account of its own system (https://www.anthropic.com/engineering/redesigning-source-control); the decision and its rejected alternatives are in ADR 0003.
 - SHA-256 addressing, delta changesets, derived trees and file-version nodes, and the single derivation mechanism are ADR 0011: SHA-256 because an S3 presigned upload can carry its checksum and the store then rejects content that does not match its address; trees eager because checkout starts from them. BLAKE3, snapshot changesets and flat manifests were not taken.
 - Named refs, the absence of work branches and the landing merge are ADR 0012: line-level merge because rejecting non-overlapping edits to one file would cause retry storms among hundreds of agents; re-parenting because it keeps landing cost proportional to the change; `last-green` because a broken `main` contaminates work based on it until the revert. Work branches, path-level merge of text, a merge changeset for every landing, CI basing on `main` and server-side conflict resolution were not taken.
+- PostgreSQL for the metadata, the log and the refs, and the object store for blobs, are ADR 0013. SQLite behind a single writer, a distributed SQL database now, and log segments in the object store were not taken.
 - Tenancy that scopes the log to a workspace is ADR 0004.
 - Bundle-based export is ADR 0005.
 
@@ -56,11 +60,12 @@ The ports below follow from the decisions, named for the conversation and in the
 
 Each is undecided; the recommendation is not a decision.
 
-- **Metadata database.** Holds workspace, changeset index and ref data, unless the log store holds them.
-  - Options: PostgreSQL; SQLite behind a single writer; a distributed SQL database.
-  - Recommendation: PostgreSQL for the single-machine initial deployment, behind the port so it can change.
-- **Changeset log storage.** Options: a table in the metadata database; an append-only file or segment set in the object store with an index in the database.
-  - Recommendation: a table in the metadata database, so that the log and the refs live in one store.
+- **Where derived data is stored.** ADR 0013 places the metadata, the log and the refs, and not derived data. Options: PostgreSQL; the object store, as content-addressed objects; split by type, such as trees in the object store and skip lists in PostgreSQL.
+- **Where draft changesets are stored.** They are outside the log (ADR 0012); no option has been examined.
+- **PostgreSQL version and hosting.** Which major version is the minimum, and whether it is run by the project or consumed as a managed service. No option has been examined.
+- **Schema migration tooling.** How the schema is versioned and migrated. No option has been examined.
+- **Connection pooling.** Whether the server pools connections itself or sits behind an external pooler. No option has been examined.
+- **When the move to distributed SQL is made.** What measurement triggers it, such as write latency on the log or on `main` at a given number of concurrent agents. No option has been examined.
 - **What moves `last-green`, and on which check results.** Options: the server, when every post-land check of a changeset on `main` passes; the server, when only the checks marked blocking pass; a CI job holding a credential to move it.
 - **How release refs are created and moved, and by whom.** No option has been examined.
 - **Draft changeset lifetime.** How long a draft outside the log is kept, what removes it, and whether one agent can read another's draft. No option has been examined.

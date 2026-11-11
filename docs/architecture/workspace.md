@@ -23,7 +23,7 @@ How the system is divided into organisations and workspaces, and how a workspace
 
 ### Mapping onto the hexagon
 
-- **Workspace directory** — create, look up and delete organisations and workspaces. Its storage is the metadata database (open, `source-control.md`).
+- **Workspace directory** — create, look up and delete organisations and workspaces. Its storage is the metadata database, which is PostgreSQL (ADR 0013, `source-control.md` §Current decisions).
 - **Bundle store** — write and read export and backup bundles at a destination chosen by the operator. Possible adapters: local filesystem, S3-compatible store.
 
 ## Rationale
