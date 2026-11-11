@@ -5,7 +5,7 @@ mod file;
 use std::collections::BTreeMap;
 use std::fmt;
 
-pub use file::{FileConflict, FileKind, FileVersion, merge_file};
+pub use file::{FileConflict, FileVersion, merge_file};
 
 /// What a delta records for one path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,10 +107,11 @@ pub fn rebase<P: Ord + Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::file::FileKind;
 
     fn file(text: &str) -> FileVersion {
         FileVersion {
-            kind: FileKind::File,
+            kind: FileKind::Regular,
             content: text.as_bytes().to_vec(),
         }
     }

@@ -6,17 +6,10 @@ use std::ops::Range;
 use imara_diff::sources::byte_lines;
 use imara_diff::{Algorithm, Diff, InternedInput};
 
+use crate::domain::file::FileKind;
+
 /// How many leading bytes are searched for a NUL byte when telling binary from text.
 const BINARY_SCAN_LEN: usize = 8000;
-
-/// Whether a file is executable, the one file mode an object records (ADR 0016).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileKind {
-    /// A file that is not executable.
-    File,
-    /// An executable file.
-    Executable,
-}
 
 /// What one path holds: its kind and its content.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,7 +269,7 @@ mod tests {
 
     fn file(content: &str) -> Option<FileVersion> {
         Some(FileVersion {
-            kind: FileKind::File,
+            kind: FileKind::Regular,
             content: content.as_bytes().to_vec(),
         })
     }
