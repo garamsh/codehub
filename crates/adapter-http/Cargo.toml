@@ -1,0 +1,19 @@
+[package]
+name = "adapter-http"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+app = { path = "../app" }
+axum = { workspace = true, features = ["json", "query"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+adapter-memory = { path = "../adapter-memory" }
+tokio = { workspace = true, features = ["macros", "rt"] }
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true
