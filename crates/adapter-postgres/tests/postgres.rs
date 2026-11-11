@@ -8,10 +8,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use adapter_postgres::{Database, PostgresChangesetLog, PostgresDerivedData, PostgresDraftStore};
+use app::domain::address::Address;
 use app::domain::changeset::Changeset;
 use app::domain::draft::DraftId;
+use app::domain::file::{File, FileKind};
+use app::domain::file_version::FileVersionNode;
+use app::domain::path::Path;
+use app::domain::tree::Tree;
 use app::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
-use app::port::driven::derived_data::DerivedData;
+use app::port::driven::derived_data::{DerivedData, DerivedDataError};
 use app::port::driven::draft_store::DraftStore;
 use app::port::driving::source_control::SourceControlError;
 use app::use_case::land::LandError;
@@ -224,4 +229,82 @@ async fn a_second_pool_on_the_same_database_sees_what_the_first_wrote() {
     // The second pool writes what the first reads, and the repository numbering carries on.
     let next = log.append(repo.id, changeset(1)).await.unwrap();
     assert_eq!(harness.log.get(repo.id, next).await.unwrap(), changeset(1));
+}
+
+#[tokio::test]
+async fn a_repository_reads_nothing_another_repository_wrote() {
+    let harness = Harness::new().await;
+    let ada = harness.caller("ada").await;
+    let a = harness.repository(&ada, "acme").await.id;
+    let b = harness.repository(&ada, "bolt").await.id;
+    assert_ne!(a, b);
+
+    let id = harness.log.append(a, changeset(0)).await.unwrap();
+    let tree = Tree::default();
+    let tree_address = Address::of(&tree.encode().unwrap());
+    harness
+        .derived
+        .put_trees(a, id, tree_address, BTreeMap::from([(tree_address, tree)]))
+        .await
+        .unwrap();
+    let path: Path = "f".parse().unwrap();
+    let node = FileVersionNode {
+        changeset: id,
+        path: path.clone(),
+        file: File {
+            kind: FileKind::Regular,
+            content: Address::of(b"content"),
+        },
+        previous: Vec::new(),
+    };
+    let node_address = Address::of(&node.encode().unwrap());
+    harness
+        .derived
+        .put_file_versions(
+            a,
+            id,
+            BTreeMap::from([(path, node_address)]),
+            BTreeMap::from([(node_address, node)]),
+        )
+        .await
+        .unwrap();
+
+    // Control: repository A reads each of them back.
+    assert!(harness.log.get(a, id).await.is_ok());
+    assert_eq!(harness.derived.root(a, id).await.unwrap(), tree_address);
+    assert!(harness.derived.tree(a, tree_address).await.is_ok());
+    assert!(
+        harness
+            .derived
+            .file_versions(a, id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        harness
+            .derived
+            .file_version_node(a, node_address)
+            .await
+            .is_ok()
+    );
+
+    assert_eq!(
+        harness.log.get(b, id).await,
+        Err(ChangesetLogError::NotFound(id))
+    );
+    assert_eq!(
+        harness.derived.root(b, id).await,
+        Err(DerivedDataError::NotFound(id))
+    );
+    assert_eq!(
+        harness.derived.tree(b, tree_address).await,
+        Err(DerivedDataError::NotFound(tree_address))
+    );
+    // A set not derived is `None`: the port has no `NotFound` for it.
+    assert_eq!(harness.derived.file_versions(b, id).await, Ok(None));
+    assert_eq!(
+        harness.derived.file_version_node(b, node_address).await,
+        Err(DerivedDataError::NotFound(node_address))
+    );
 }
