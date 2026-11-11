@@ -46,4 +46,4 @@ case "$status" in
         exit 1
         ;;
 esac
-echo "services-up: postgres, s3, dex and keycloak healthy; bucket ${CODEHUB_TEST_S3_BUCKET} present"
+echo "services-up: postgres, s3, dex, keycloak and cerbos healthy; bucket ${CODEHUB_TEST_S3_BUCKET} present"

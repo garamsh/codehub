@@ -1,0 +1,31 @@
+# Who may act on an organisation. A principal is the pair (issuer, subject) (ADR 0027), so each
+# rule tests both, through the variables of principals.yaml.
+---
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  variables:
+    import:
+      - principals
+  resource: organisation
+  rules:
+    # alice: every action in acme, and creating repositories in beta. Creating organisation beta
+    # is not granted, nor is creating any organisation the policy does not name.
+    - actions: [create_organisation, create_repository, administer_members]
+      effect: EFFECT_ALLOW
+      roles: ["*"]
+      condition:
+        match:
+          all:
+            of:
+              - expr: V.is_alice
+              - expr: R.id == "acme"
+    - actions: [create_repository]
+      effect: EFFECT_ALLOW
+      roles: ["*"]
+      condition:
+        match:
+          all:
+            of:
+              - expr: V.is_alice
+              - expr: R.id == "beta"

@@ -7,6 +7,7 @@ name: codehub
 #   s3        19000   (MinIO)
 #   dex       18080
 #   keycloak  18081   (second identity provider: introspection, token exchange)
+#   cerbos    18082   (AuthZEN 1.0 decision point, policy in dev/cerbos/policies)
 #
 # Images are pinned by digest (tag kept for the reader). Mover: Dependabot's
 # docker-compose updates (.github/dependabot.yml), merged by the PM. The s3 image
@@ -61,3 +62,24 @@ services:
       - ./dev/keycloak/codehub-realm.json:/opt/keycloak/data/import/codehub-realm.json:ro
     ports:
       - "127.0.0.1:18081:8080"
+
+  # An AuthZEN 1.0 decision point (Access Evaluation at /access/v1/evaluation, HTTP on 3592). It
+  # holds no authentication of its own: the adapter's bearer token is presented and not verified.
+  cerbos:
+    image: ghcr.io/cerbos/cerbos:0.57.0@sha256:e5e3b150b3cb0090975605254f255164567d67e233634199fb20972e3eaff300
+    command:
+      - server
+      - --set=storage.driver=disk
+      - --set=storage.disk.directory=/policies
+      - --set=storage.disk.watchForChanges=false
+    environment:
+      CERBOS_NO_TELEMETRY: "1"
+    volumes:
+      - ./dev/cerbos/policies:/policies:ro
+    ports:
+      - "127.0.0.1:18082:3592"
+    healthcheck:
+      test: ["CMD", "/cerbos", "healthcheck", "--kind=http"]
+      interval: 1s
+      timeout: 3s
+      retries: 60

@@ -274,6 +274,20 @@
         "standard.token.exchange.enabled": "true"
       },
       "protocolMappers": []
+    },
+    {
+      "clientId": "codehub-authzen",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "codehub-authzen-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "attributes": {},
+      "protocolMappers": []
     }
   ]
 }

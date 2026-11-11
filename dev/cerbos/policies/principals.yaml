@@ -1,0 +1,9 @@
+# The two principals the policies name: users alice and bob of the Keycloak realm codehub, whose
+# ids dev/keycloak/codehub-realm.json fixes and whose issuer is CODEHUB_TEST_KEYCLOAK_ISSUER.
+---
+apiVersion: api.cerbos.dev/v1
+exportVariables:
+  name: principals
+  definitions:
+    is_alice: 'P.id == "00000000-0000-4000-8000-00000000a11c" && P.attr.issuer == "http://127.0.0.1:18081/realms/codehub"'
+    is_bob: 'P.id == "00000000-0000-4000-8000-0000000000b0" && P.attr.issuer == "http://127.0.0.1:18081/realms/codehub"'
