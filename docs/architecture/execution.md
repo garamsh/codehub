@@ -8,7 +8,7 @@ How a job's environment is built from workspace data: caches, images, their deli
 
 - Users see only the workspace. A cache is versioned workspace data; workspace objects are the source of truth.
 - A read-only filesystem image used for mounting is derived data: rebuildable, cacheable anywhere, excluded from export.
-- A job's filesystem is layers, bottom to top: the organisation base, the workspace cache, the source at a changeset, and a per-job writable scratch layer. The scratch layer is discarded with the job's environment.
+- An organisation holds a base layer shared by its workspaces (`workspace.md`). How it and other layers combine in a job is open.
 - Promoting a new cache version is a server policy limited to trusted jobs, because an untrusted job writing the cache would poison later jobs.
 
 ### Delivery (ADR 0008)
@@ -42,7 +42,7 @@ Declared in the application's terms (`docs/architecture/structure.md`); the adap
 
 - **VMM for the microvm driver.** Options: Firecracker, Cloud Hypervisor, QEMU microvm. Recommendation: choose after the image attach mechanism is fixed, because it decides which VMMs qualify.
 - **Image filesystem format.** Options: EROFS, SquashFS, ext4. Recommendation: EROFS for read-only layers, if the driver kernels support it; to be confirmed by measurement.
-- **Layer stacking mechanism.** Options: overlay of read-only images with a writable layer, or one merged image per job. Recommendation: overlay, since layers change at different rates.
+- **Layer composition in a job.** Which layers a job sees (organisation base, workspace cache, source at a changeset, a per-job writable scratch layer) and how they combine. Options: overlay of read-only images with a writable scratch layer; one merged image per job. Recommendation: the four layers above, combined by overlay, since they change at different rates; the scratch layer is discarded with the job's environment.
 - **Chunking and lazy fetch.** Options: whole-file fetch, chunked images fetched on demand. Recommendation: whole-file first, chunking when image size makes fetch time dominate.
 - **Cache eviction.** Options: least recently used per host, a fixed per-host budget, explicit retention per workspace. Recommendation: least recently used within a per-host budget.
 - **Scheduling by cache locality.** Options: ignore, prefer runners already holding the version, require it. Recommendation: prefer; expressed through the label and pool routing in `runner.md`.
