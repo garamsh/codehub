@@ -1,0 +1,24 @@
+[package]
+name = "codehub"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+adapter-http = { path = "../adapter-http" }
+adapter-oidc = { path = "../adapter-oidc" }
+adapter-postgres = { path = "../adapter-postgres" }
+adapter-s3 = { path = "../adapter-s3" }
+app = { path = "../app" }
+axum = { workspace = true, features = ["http1", "tokio"] }
+clap = { workspace = true, features = ["derive", "env", "error-context", "help", "std", "usage"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal"] }
+
+[dev-dependencies]
+reqwest = { workspace = true, features = ["json"] }
+serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio"] }
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "time"] }
+
+[lints]
+workspace = true
