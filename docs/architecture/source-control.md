@@ -13,9 +13,10 @@ How versions of a workspace's content are stored, changed, landed and queried.
 - **Trees, history and blame are derived data.** Trees, path history, blame and ancestry queries are computed on the server from the log and the objects. Derived data is rebuildable and is not a source of truth.
 - **One derivation mechanism.** Every derived type is computed recursively from its values for the parents, and each type is flagged eager or deferred (ADR 0011). The types and their flags:
   - **Merkle directory trees** — eager, computed at landing, because checkout and sparse fetch start from a root tree and request missing subtrees and blobs recursively. The tree format reserves a place for a chunked large-file entry (content-defined chunking); chunking is not implemented.
-  - **File-version nodes** — one per changed file, pointing at the previous version node of the same path.
+  - **File-version nodes** — deferred, one per changed file, pointing at the previous version node of the same path.
   - **Blame** — deferred, derived from the file-version nodes.
   - **Skip lists** — over the changeset graph, answering ancestry queries.
+- **A path's history follows each node's first previous node:** from the path's file-version node in a changeset back through the first entry of each node's previous list, newest first. The other entries of a merge's previous list are kept and not walked.
 - **A workspace has named refs** (ADR 0012):
   - `main` — what agents base their work on, and what landing advances;
   - release refs;
@@ -156,8 +157,9 @@ Each is undecided; the recommendation is not a decision.
   - Recommendation: only checks marked blocking.
 - **Revert of a landing that later changesets depend on.** Options: revert as a new changeset and rebase dependants; refuse the revert while dependants exist.
   - Recommendation: revert as a new changeset.
-- **Flags of file-version nodes and skip lists.** ADR 0011 makes the flag per type and fixes trees as eager and blame as deferred; it does not flag these two. Options for each: eager at landing; deferred to the first query.
+- **Flag of skip lists.** ADR 0011 makes the flag per type and fixes trees as eager and blame as deferred; it does not flag skip lists. Options: eager at landing; deferred to the first query.
   - Recommendation: deferred, with the first query paying for the computation.
+- **History through a merge.** Whether a path's history walks the versions a merge's other parents reached it by, and in what order. Options: only the first previous node, as now; every previous node, in an order still to be chosen.
 - **Compression of stored objects**, and whether the address covers the stored or the original bytes. The object store verifies the checksum of the bytes it receives, so compressing before upload with the address over the original bytes forgoes that check. No option has been examined.
 - **Objects uploaded in parts.** S3 verifies SHA-256 for a multipart upload only as a composite of part checksums (https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html, "Multipart uploads"), so such an object is not checked against its address by the store. Options: a size limit that keeps every object a single-part upload; server-side verification after a multipart upload.
 - **Chunking parameters.** The content-defined chunking algorithm, its target, minimum and maximum chunk sizes, and the file size above which a file is chunked. No option has been examined.
