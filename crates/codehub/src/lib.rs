@@ -24,7 +24,7 @@ use tokio::signal::unix::{SignalKind, signal};
 
 /// The server's settings. Each is a flag and has an environment variable of the same name,
 /// upper-cased, with the prefix `CODEHUB_`.
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(version, about = "The codehub server")]
 pub struct Config {
     /// The address to listen on; port 0 takes any free port.
@@ -66,6 +66,97 @@ pub struct Config {
     /// The shortest time between two fetches of the issuer's key set, in seconds.
     #[arg(long, env = "CODEHUB_JWKS_MIN_REFETCH_SECONDS", default_value_t = 60)]
     pub jwks_min_refetch_seconds: u64,
+}
+
+/// Prints every field but the secrets, which print as `<redacted>`. The impl destructures
+/// `Config` without `..`, so a field added later does not compile until it is listed here, and
+/// listing it is the moment to decide whether it is a secret.
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            listen,
+            postgres_url,
+            postgres_pool_size,
+            s3_endpoint,
+            s3_region,
+            s3_bucket,
+            s3_access_key,
+            s3_secret_key: _,
+            max_object_size,
+            grant_expiry_seconds,
+            oidc_issuer,
+            oidc_audience,
+            jwks_min_refetch_seconds,
+        } = self;
+        f.debug_struct("Config")
+            .field("listen", listen)
+            .field("postgres_url", &redact_url(postgres_url))
+            .field("postgres_pool_size", postgres_pool_size)
+            .field("s3_endpoint", s3_endpoint)
+            .field("s3_region", s3_region)
+            .field("s3_bucket", s3_bucket)
+            .field("s3_access_key", s3_access_key)
+            .field("s3_secret_key", &REDACTED)
+            .field("max_object_size", max_object_size)
+            .field("grant_expiry_seconds", grant_expiry_seconds)
+            .field("oidc_issuer", oidc_issuer)
+            .field("oidc_audience", oidc_audience)
+            .field("jwks_min_refetch_seconds", jwks_min_refetch_seconds)
+            .finish()
+    }
+}
+
+/// What stands where a secret would print.
+const REDACTED: &str = "<redacted>";
+
+/// The URL with the password of its userinfo, and any `password` query parameter, replaced by
+/// `<redacted>`. A string that is not `scheme://authority...` is returned as `<redacted>` whole,
+/// since it cannot be told where a secret sits in it.
+fn redact_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return REDACTED.to_owned();
+    };
+    // The userinfo is everything up to the last `@`, so a password holding an unencoded `#`, `?`
+    // or `/` is still inside it; the query and fragment are looked for only after the host.
+    let (userinfo, rest) = match rest.rsplit_once('@') {
+        Some((userinfo, rest)) => (format!("{}@", redact_userinfo(userinfo)), rest),
+        None => (String::new(), rest),
+    };
+    let (location, fragment) = match rest.split_once('#') {
+        Some((location, fragment)) => (location, Some(fragment)),
+        None => (rest, None),
+    };
+    let (location, query) = match location.split_once('?') {
+        Some((location, query)) => (location, Some(query)),
+        None => (location, None),
+    };
+    let mut redacted = format!("{scheme}://{userinfo}{location}");
+    if let Some(query) = query {
+        let parameters: Vec<String> = query
+            .split('&')
+            .map(|parameter| match parameter.split_once('=') {
+                Some((name, _)) if name.eq_ignore_ascii_case("password") => {
+                    format!("{name}={REDACTED}")
+                }
+                _ => parameter.to_owned(),
+            })
+            .collect();
+        redacted.push('?');
+        redacted.push_str(&parameters.join("&"));
+    }
+    if let Some(fragment) = fragment {
+        redacted.push('#');
+        redacted.push_str(fragment);
+    }
+    redacted
+}
+
+/// The userinfo with everything after its first `:` replaced by `<redacted>`.
+fn redact_userinfo(userinfo: &str) -> String {
+    match userinfo.split_once(':') {
+        Some((user, _)) => format!("{user}:{REDACTED}"),
+        None => userinfo.to_owned(),
+    }
 }
 
 /// Why the server did not start or stopped serving.
@@ -189,4 +280,78 @@ pub async fn run(config: Config) -> Result<(), Error> {
         })
         .await
         .map_err(Error::Serve)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(postgres_url: &str) -> Config {
+        Config {
+            listen: SocketAddr::from(([127, 0, 0, 1], 8080)),
+            postgres_url: postgres_url.to_owned(),
+            postgres_pool_size: 10,
+            s3_endpoint: "http://objects.example:9000".to_owned(),
+            s3_region: "eu-test-1".to_owned(),
+            s3_bucket: "bucket-visible".to_owned(),
+            s3_access_key: "access-visible".to_owned(),
+            s3_secret_key: "s3-secret-value".to_owned(),
+            max_object_size: 1,
+            grant_expiry_seconds: 1,
+            oidc_issuer: "http://issuer.example".to_owned(),
+            oidc_audience: "audience-visible".to_owned(),
+            jwks_min_refetch_seconds: 1,
+        }
+    }
+
+    #[test]
+    fn debug_output_hides_the_secrets_and_keeps_the_rest() {
+        let shown = format!(
+            "{:?}",
+            config("postgres://dbuser:pg-secret-value@db.example:5432/codehub")
+        );
+        assert!(!shown.contains("s3-secret-value"), "{shown}");
+        assert!(!shown.contains("pg-secret-value"), "{shown}");
+        assert!(shown.contains("bucket-visible"), "{shown}");
+        assert!(shown.contains("access-visible"), "{shown}");
+        assert!(
+            shown.contains("postgres://dbuser:<redacted>@db.example:5432/codehub"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn redacts_a_password_given_as_a_query_parameter() {
+        let shown = redact_url("postgres://db.example/codehub?sslmode=require&password=qp-secret");
+        assert!(!shown.contains("qp-secret"), "{shown}");
+        assert_eq!(
+            shown,
+            "postgres://db.example/codehub?sslmode=require&password=<redacted>"
+        );
+    }
+
+    #[test]
+    fn redacts_a_password_holding_an_unencoded_delimiter() {
+        assert_eq!(
+            redact_url("postgres://u:p#w@h/db"),
+            "postgres://u:<redacted>@h/db"
+        );
+        assert_eq!(
+            redact_url("postgres://u:p/w@h/db"),
+            "postgres://u:<redacted>@h/db"
+        );
+        assert_eq!(
+            redact_url("postgres://u:p?w@h/db"),
+            "postgres://u:<redacted>@h/db"
+        );
+    }
+
+    #[test]
+    fn keeps_a_url_without_a_password_and_redacts_one_that_does_not_parse() {
+        assert_eq!(
+            redact_url("postgres://dbuser@db.example/codehub"),
+            "postgres://dbuser@db.example/codehub"
+        );
+        assert_eq!(redact_url("not a url with pw-secret"), "<redacted>");
+    }
 }
