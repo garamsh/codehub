@@ -14,11 +14,23 @@ How versions of a workspace's content are stored, changed, landed and queried.
   - **File-version nodes** — one per changed file, pointing at the previous version node of the same path.
   - **Blame** — deferred, derived from the file-version nodes.
   - **Skip lists** — over the changeset graph, answering ancestry queries.
+- **A workspace has named refs** (ADR 0012):
+  - `main` — what agents base their work on, and what landing advances;
+  - release refs;
+  - `last-green` — what CI and deployment base on.
+  - Only `main` is implemented first; the format admits more refs.
+- **There are no work branches.** Pending work is a server-side draft changeset outside the log (ADR 0012).
+- **Moving a ref is a compare-and-swap on that ref alone**, comparing the ref's current changeset identifier, and is separate from creating the changeset (ADR 0012).
 - **Landing is performed on the server**, in this order:
-  - rebase the changeset onto the current tip;
-  - advance the tip by compare-and-swap, so a landing that lost a race to another landing is not applied;
+  - rebase the changeset onto the current `main`;
+  - advance `main` by compare-and-swap, so a landing that lost a race to another landing is not applied;
   - run the post-land checks;
   - revert the landing when a check fails.
+- **The rebase at landing merges as follows** (ADR 0012):
+  - a changeset whose paths do not overlap the changes made since its base is re-parented onto `main` with no merge;
+  - overlapping text files are merged by a line-level 3-way merge;
+  - overlapping binary files are merged at path level;
+  - a true conflict rejects the landing and returns the conflicting paths for the author's agent to resolve.
 - **There is no workspace-wide lock** around landing.
 - **There is no push.** A client uploads objects; the server creates the changeset.
 
@@ -27,7 +39,7 @@ How versions of a workspace's content are stored, changed, landed and queried.
 The ports below follow from the decisions, named for the conversation and in the application's terms (`docs/architecture/structure.md`). Whether each is earned by two adapters is settled when it is written.
 
 - **Object store** — put and get immutable objects by content address. Served by an S3-compatible adapter; the same technology also holds filesystem images, which `docs/architecture/execution.md` describes.
-- **Changeset log** — append a changeset, read the log, and move the tip by compare-and-swap. Its storage is open.
+- **Changeset log** — append a changeset, read the log, read a ref, and move a ref by compare-and-swap on that ref alone. Its storage is open.
 - **Derived data** — read and write computed trees, file-version nodes, blame and skip lists for a workspace.
 - **Check dispatch** — ask for the post-land checks to run and receive their results. The execution side is in `docs/architecture/runner.md`.
 - Driving adapters are the server API behind `ch` and the MCP server (`docs/architecture/interfaces.md`).
@@ -36,6 +48,7 @@ The ports below follow from the decisions, named for the conversation and in the
 
 - Server-centred source control, content-addressed objects, changesets and derived data follow the model in Anthropic's account of its own system (https://www.anthropic.com/engineering/redesigning-source-control); the decision and its rejected alternatives are in ADR 0003.
 - SHA-256 addressing, delta changesets, derived trees and file-version nodes, and the single derivation mechanism are ADR 0011: SHA-256 because an S3 presigned upload can carry its checksum and the store then rejects content that does not match its address; trees eager because checkout starts from them. BLAKE3, snapshot changesets and flat manifests were not taken.
+- Named refs, the absence of work branches and the landing merge are ADR 0012: line-level merge because rejecting non-overlapping edits to one file would cause retry storms among hundreds of agents; re-parenting because it keeps landing cost proportional to the change; `last-green` because a broken `main` contaminates work based on it until the revert. Work branches, path-level merge of text, a merge changeset for every landing, CI basing on `main` and server-side conflict resolution were not taken.
 - Tenancy that scopes the log to a workspace is ADR 0004.
 - Bundle-based export is ADR 0005.
 
@@ -43,15 +56,18 @@ The ports below follow from the decisions, named for the conversation and in the
 
 Each is undecided; the recommendation is not a decision.
 
-- **Metadata database.** Holds workspace, changeset index and tip data, unless the log store holds them.
+- **Metadata database.** Holds workspace, changeset index and ref data, unless the log store holds them.
   - Options: PostgreSQL; SQLite behind a single writer; a distributed SQL database.
   - Recommendation: PostgreSQL for the single-machine initial deployment, behind the port so it can change.
 - **Changeset log storage.** Options: a table in the metadata database; an append-only file or segment set in the object store with an index in the database.
-  - Recommendation: a table in the metadata database, because compare-and-swap on the tip and the append then share one transaction.
-- **What the compare-and-swap compares.** Options: the tip changeset identifier; a per-workspace sequence number.
-  - Recommendation: the tip changeset identifier, which needs no second counter.
-- **Conflict policy at landing.** What happens when the rebase onto the tip conflicts. Options: reject the landing and return the conflicting paths to the author; hand the conflict to the author's agent to resolve and retry; a server-side resolution policy per path.
-  - Recommendation: reject and return the conflict, since it decides nothing about resolution.
+  - Recommendation: a table in the metadata database, so that the log and the refs live in one store.
+- **What moves `last-green`, and on which check results.** Options: the server, when every post-land check of a changeset on `main` passes; the server, when only the checks marked blocking pass; a CI job holding a credential to move it.
+- **How release refs are created and moved, and by whom.** No option has been examined.
+- **Draft changeset lifetime.** How long a draft outside the log is kept, what removes it, and whether one agent can read another's draft. No option has been examined.
+- **Rename and move detection in the landing merge.** Whether a path renamed on one side and edited on the other is merged or is a conflict. No option has been examined.
+- **Line-merge algorithm.** Which 3-way line merge, and whether whitespace-only differences count. No option has been examined.
+- **Text or binary.** How the merge decides a file is text: by content, by a per-path attribute, or both. No option has been examined.
+- **Which overlaps are true conflicts beyond overlapping lines**, such as a deletion on one side against an edit on the other, or the same path added on both sides with different content. No option has been examined.
 - **Which checks run after landing, and who configures them.** Options: per workspace configuration stored as workspace data; a server-wide set.
   - Recommendation: per workspace.
 - **When revert is automatic.** Options: any failing check reverts; only checks marked blocking revert; a person or agent decides.
