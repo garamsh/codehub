@@ -1,6 +1,8 @@
 #!/bin/sh
 # Starts the check services (compose.yaml) and waits until they are healthy,
 # then creates the S3 bucket if it is missing. Safe to run repeatedly.
+# Running containers are kept; pick up a changed image or configuration with
+# `make services-down` and then `make services`.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -8,7 +10,7 @@ set -a
 . dev/check-env.sh
 set +a
 
-docker compose up --detach --wait
+docker compose up --detach --wait --no-recreate
 
 # The S3 image has no healthcheck of its own; wait for the store to be ready.
 tries=0
