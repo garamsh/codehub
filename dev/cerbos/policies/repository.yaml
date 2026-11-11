@@ -10,6 +10,7 @@ resourcePolicy:
     import:
       - principals
     local:
+      no_path: '!("path" in R.attr)'
       in_docs: '"path" in R.attr && (R.attr.path == "docs" || R.attr.path.startsWith("docs/"))'
   rules:
     # alice: everything in acme.
@@ -22,7 +23,9 @@ resourcePolicy:
             of:
               - expr: V.is_alice
               - expr: R.attr.organisation == "acme"
-    # bob: read acme/app, and write under docs/ in it.
+    # bob: read acme/app, and write under docs/ in it. A request without a path asks whether the
+    # principal may write somewhere in the repository (the question before an upload), so bob
+    # is allowed it: it is the same meaning the built-in adapter gives it.
     - actions: [read]
       effect: EFFECT_ALLOW
       roles: ["*"]
@@ -41,4 +44,4 @@ resourcePolicy:
             of:
               - expr: V.is_bob
               - expr: R.id == "acme/app"
-              - expr: V.in_docs
+              - expr: V.no_path || V.in_docs

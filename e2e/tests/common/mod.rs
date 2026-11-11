@@ -429,15 +429,25 @@ impl TokenUser {
         self.run(&extra, arguments).await
     }
 
+    /// Runs `ch put` of `content` at `path` in the draft `draft`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the file cannot be written.
+    pub async fn put(&self, draft: &str, path: &str, content: &str) -> Run {
+        let file = self.ch.home().join(unique("upload"));
+        std::fs::write(&file, content).unwrap();
+        self.ch(&["put", path, file.to_str().unwrap(), "--draft", draft])
+            .await
+    }
+
     /// Stages `content` at `path` in the draft `draft` and expects it to succeed.
     ///
     /// # Panics
     ///
     /// Panics if the file cannot be written or `ch put` exits with anything but 0.
     pub async fn stage(&self, draft: &str, path: &str, content: &str) {
-        let file = self.ch.home().join(unique("upload"));
-        std::fs::write(&file, content).unwrap();
-        self.ok(&["put", path, file.to_str().unwrap(), "--draft", draft])
-            .await;
+        let run = self.put(draft, path, content).await;
+        assert_eq!(run.code, Some(0), "ch put {path}: {}", run.stderr);
     }
 }

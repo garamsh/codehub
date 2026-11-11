@@ -107,35 +107,25 @@ async fn applies_the_decision_points_allow_to_land_and_deny_naming_the_denied_pa
     alice.ok(&["use", "acme/app"]).await;
     bob.ok(&["use", "acme/app"]).await;
 
-    // bob's `put` of content is refused, because the upload is decided on the repository and the
-    // policy gives bob write only where a path is named, so the changes under test are
-    // deletions, which name their paths.
-    alice.stage("seed", "docs/a.txt", "a\n").await;
-    alice.stage("seed", "docs/b.txt", "b\n").await;
     alice.stage("seed", "src/c.txt", "c\n").await;
     alice.ok(&["land", "-m", "seed", "--draft", "seed"]).await;
 
-    // Allowed: bob lands a change under docs/.
-    bob.ok(&["put", "docs/a.txt", "--delete", "--draft", "docs"])
-        .await;
+    // Allowed: bob puts content under docs/ and lands it.
+    bob.stage("docs", "docs/a.txt", "a\n").await;
     bob.ok(&["land", "-m", "docs", "--draft", "docs"]).await;
-    assert_ne!(alice.ch(&["read", "docs/a.txt"]).await.code, Some(0));
+    assert_eq!(alice.ok(&["read", "docs/a.txt"]).await, "a\n");
 
-    // Denied: bob may not change src/, and the refusal names that path and not docs/. It comes at
-    // staging, which asks the decision point about each path before a landing can hold it.
-    bob.ok(&["put", "docs/b.txt", "--delete", "--draft", "mixed"])
-        .await;
-    let denied = bob
-        .ch(&["put", "src/c.txt", "--delete", "--draft", "mixed"])
-        .await;
+    // Denied: bob may not put under src/, and the refusal names that path and not docs/. It
+    // comes at staging, which asks the decision point about each path.
+    bob.stage("mixed", "docs/b.txt", "b\n").await;
+    let denied = bob.put("mixed", "src/d.txt", "d\n").await;
     assert_eq!(denied.code, Some(5), "{}", denied.stderr);
-    assert!(denied.stderr.lines().any(|line| line == "src/c.txt"));
+    assert!(denied.stderr.lines().any(|line| line == "src/d.txt"));
     assert!(!denied.stderr.contains("docs/b.txt"), "{}", denied.stderr);
-    // Nothing of it landed, and the part under docs/ lands.
-    assert_eq!(alice.ok(&["read", "src/c.txt"]).await, "c\n");
+    // Nothing of it was staged, and the part under docs/ lands.
     bob.ok(&["land", "-m", "mixed", "--draft", "mixed"]).await;
-    assert_ne!(alice.ch(&["read", "docs/b.txt"]).await.code, Some(0));
-    assert_eq!(alice.ok(&["read", "src/c.txt"]).await, "c\n");
+    assert_eq!(alice.ok(&["read", "docs/b.txt"]).await, "b\n");
+    assert_ne!(alice.ch(&["read", "src/d.txt"]).await.code, Some(0));
 }
 
 #[tokio::test]

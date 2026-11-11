@@ -13,6 +13,9 @@
 //! | a repository | resource `{"type": "repository", "id": "<organisation>/<name>", "properties": {"organisation": <organisation>, "repository": <name>}}` |
 //! | a path in a repository | the repository resource with `"path": <path>` added to its properties |
 //!
+//! A `repository` resource without `path` is asked for an upload and means "anywhere in the
+//! repository".
+//!
 //! The numeric repository id is never sent: the decision point knows repositories by name.
 //!
 //! The bearer token is obtained from a token endpoint by the OAuth 2.0 client credentials grant
