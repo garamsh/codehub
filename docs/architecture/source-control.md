@@ -6,6 +6,8 @@ How versions of a workspace's content are stored, changed, landed and queried.
 
 - **The server holds the truth.** Clients (`ch`, the MCP server, runners) keep at most a bounded cache of objects. Everything that creates a changeset, rebases, lands or reverts runs on the server (ADR 0003).
 - **Objects are content-addressed and immutable.** An object is identified by the SHA-256 of its content, written with an algorithm prefix (`sha256:<hex>`) so that a later algorithm can coexist, and is never modified (ADR 0011).
+- **Changesets, trees and file-version nodes have exactly one encoding each**, specified in §Object encoding, and an object's address is the SHA-256 of its encoded bytes (ADR 0016).
+- **A changeset is identified by its address**, the SHA-256 of its encoding, and not by anything the log assigns (ADR 0016).
 - **The changeset is the unit of work.** A changeset is an entry in the workspace's changeset log (one log per workspace, ADR 0004).
 - **A changeset is a delta against its first parent:** the parent, the changed paths each with its content address or a deletion, and metadata. The delta log is the source of truth (ADR 0011).
 - **Trees, history and blame are derived data.** Trees, path history, blame and ancestry queries are computed on the server from the log and the objects. Derived data is rebuildable and is not a source of truth.
@@ -44,6 +46,72 @@ How versions of a workspace's content are stored, changed, landed and queried.
 - **Blobs are in the S3-compatible object store** (ADR 0013).
 - **The ports leave room for a distributed SQL store later:** they name no PostgreSQL feature (ADR 0013).
 
+### Object encoding
+
+Format version 1 of the encoding of ADR 0016. A value has exactly one encoding; a decoder rejects input that is not it.
+
+Field types:
+
+| Type | Bytes |
+|---|---|
+| `u8` | one unsigned byte |
+| `u32` | four bytes, unsigned, big-endian |
+| `i64` | eight bytes, two's complement, big-endian |
+| `bytes` | a `u32` length, then that many bytes |
+| `text` | `bytes` holding valid UTF-8 |
+| `list<T>` | a `u32` count, then that many `T` |
+| `address` | a `u8` algorithm (`0x01` = SHA-256), then the digest as `bytes` (32 for SHA-256) |
+| `component` | `bytes`, non-empty, holding no `/` (`0x2F`) and no NUL (`0x00`), and neither `.` nor `..` |
+| `path` | a `list<component>` with at least one component, from the workspace root down |
+
+Ordering: components compare by unsigned bytes, a proper prefix first; paths compare component by component, a proper prefix first.
+
+Every encoded object opens with a header of two `u8`: the format version (`0x01`), then the object kind (`0x01` changeset, `0x02` tree, `0x03` file-version node).
+
+Entry kinds, one `u8`:
+
+| Code | Kind | Followed by | Allowed in |
+|---|---|---|---|
+| `0x00` | deletion | nothing | changeset change |
+| `0x01` | file | the blob's `address` | changeset change, tree entry, file-version node |
+| `0x02` | executable file | the blob's `address` | changeset change, tree entry, file-version node |
+| `0x03` | directory | the subtree's `address` | tree entry |
+| `0x04` | chunked file | reserved; rejected until chunking is specified | none in format version 1 |
+
+The executable bit is the only file mode. Symbolic links are not represented in format version 1.
+
+Changeset, fields in order:
+
+1. Header, kind `0x01`.
+2. Parents: `list<address>` of changeset identifiers. The first is the parent the delta is against; the list is empty for a workspace's first changeset.
+3. Author: `text`.
+4. Timestamp: `i64`, seconds since 1970-01-01T00:00:00Z.
+5. Message: `text`.
+6. Changes: `list` of change, sorted by path, no path twice. A change is a `path`, an entry kind (`0x00`, `0x01` or `0x02`), and what that kind is followed by.
+
+Tree, fields in order:
+
+1. Header, kind `0x02`.
+2. Entries: `list` of entry, sorted by name, no name twice. An entry is a name (`component`), an entry kind (`0x01`, `0x02` or `0x03`), and what that kind is followed by.
+
+Only a root tree has no entries; a directory left with none is removed from its parent.
+
+File-version node, fields in order:
+
+1. Header, kind `0x03`.
+2. Changeset: the `address` of the changeset that introduced this version.
+3. Path: `path`.
+4. Content: an entry kind (`0x01` or `0x02`) and what that kind is followed by.
+5. Previous: `list<address>` of the file-version nodes of the same path in the parent changesets, in parent order; empty where no parent has the path.
+
+A deletion creates no file-version node.
+
+Addresses:
+
+- An encoded object's address is the SHA-256 of all its encoded bytes, header included.
+- A blob's address is the SHA-256 of the file content as given; a blob has no header.
+- A changeset's identifier is its address.
+
 ### Mapping onto the hexagon
 
 The ports below follow from the decisions, named for the conversation and in the application's terms (`docs/architecture/structure.md`). Whether each is earned by two adapters is settled when it is written.
@@ -60,6 +128,7 @@ The ports below follow from the decisions, named for the conversation and in the
 - SHA-256 addressing, delta changesets, derived trees and file-version nodes, and the single derivation mechanism are ADR 0011: SHA-256 because an S3 presigned upload can carry its checksum and the store then rejects content that does not match its address; trees eager because checkout starts from them. BLAKE3, snapshot changesets and flat manifests were not taken.
 - Named refs, the absence of work branches and the landing merge are ADR 0012: line-level merge because rejecting non-overlapping edits to one file would cause retry storms among hundreds of agents; re-parenting because it keeps landing cost proportional to the change; `last-green` because a broken `main` contaminates work based on it until the revert. Work branches, path-level merge of text, a merge changeset for every landing, CI basing on `main` and server-side conflict resolution were not taken.
 - The merge details are ADR 0017: Histogram because, as a patience variant, it misaligns lines less often than Myers, which in a 3-way merge means fewer spurious conflicts; text by content because it needs no configuration; no rename detection because a wrong pairing merges edits into the wrong file. Myers diff, rename detection in M1, whitespace-insensitive merge and a per-path text attribute were not taken.
+- The project-defined encoding and the changeset identifier are ADR 0016: one encoding per value, because an address is a hash of bytes; the identifier as the address, so a changeset is checked like any other object and is named before it is appended. Deterministic CBOR and an identifier assigned by the log were not taken.
 - PostgreSQL for the metadata, the log and the refs, and the object store for blobs, are ADR 0013. SQLite behind a single writer, a distributed SQL database now, and log segments in the object store were not taken.
 - Tenancy that scopes the log to a workspace is ADR 0004.
 - Bundle-based export is ADR 0005.
@@ -85,8 +154,6 @@ Each is undecided; the recommendation is not a decision.
   - Recommendation: revert as a new changeset.
 - **Flags of file-version nodes and skip lists.** ADR 0011 makes the flag per type and fixes trees as eager and blame as deferred; it does not flag these two. Options for each: eager at landing; deferred to the first query.
   - Recommendation: deferred, with the first query paying for the computation.
-- **Serialisation of trees, changesets and file-version nodes.** The byte layout each is hashed and stored in, including the reserved chunked-file entry of a tree. No option has been examined.
-- **Changeset identifier.** Options: the SHA-256 address of the serialised changeset; an identifier assigned by the log.
 - **Compression of stored objects**, and whether the address covers the stored or the original bytes. The object store verifies the checksum of the bytes it receives, so compressing before upload with the address over the original bytes forgoes that check. No option has been examined.
 - **Objects uploaded in parts.** S3 verifies SHA-256 for a multipart upload only as a composite of part checksums (https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html, "Multipart uploads"), so such an object is not checked against its address by the store. Options: a size limit that keeps every object a single-part upload; server-side verification after a multipart upload.
 - **Chunking parameters.** The content-defined chunking algorithm, its target, minimum and maximum chunk sizes, and the file size above which a file is chunked. No option has been examined.
