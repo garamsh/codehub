@@ -9,7 +9,7 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 
 use crate::Services;
-use crate::extract::{Authenticated, Body, Params, PrincipalBody, parse, parse_prefix};
+use crate::extract::{Authenticated, Body, Params, PrincipalBody, Queried, parse, parse_prefix};
 use crate::problem::Problem;
 
 #[derive(Deserialize)]
@@ -63,7 +63,7 @@ pub async fn remove_member<P: Services>(
     State(ports): State<Arc<P>>,
     Authenticated(caller): Authenticated,
     Params(organisation): Params<String>,
-    Body(member): Body<PrincipalBody>,
+    Queried(member): Queried<PrincipalBody>,
 ) -> Result<StatusCode, Problem> {
     let organisation = parse("organisation name", &organisation)?;
     ports
@@ -99,7 +99,7 @@ pub async fn remove_grant<P: Services>(
     State(ports): State<Arc<P>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository)): Params<(String, String)>,
-    Body(grant): Body<GrantBody>,
+    Queried(grant): Queried<GrantBody>,
 ) -> Result<StatusCode, Problem> {
     let organisation = parse("organisation name", &organisation)?;
     let repository = parse("repository name", &repository)?;

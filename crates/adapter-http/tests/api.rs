@@ -11,7 +11,7 @@ use app::domain::repository::RepositoryId;
 use app::port::driven::repository_directory::DirectoryError;
 use app::port::driving::repositories::{Repositories, RepositoriesError};
 use axum::http::{Method, StatusCode};
-use common::{Api, router_with, send};
+use common::{Api, Reply, router_with, send};
 use serde_json::{Value, json};
 
 const PROBLEM: &str = "application/problem+json";
@@ -178,10 +178,20 @@ async fn add_member(api: &Api, admin: &str, org: &str, name: &str, role: &str) -
 }
 
 #[cfg(test)]
+async fn delete(api: &Api, token: &str, uri: &str) -> Reply {
+    api.send(Method::DELETE, uri, Some(token), None).await
+}
+
+#[cfg(test)]
 async fn grant(api: &Api, method: Method, admin: &str, name: &str, prefix: &str) -> StatusCode {
+    let path = "/v1/orgs/acme/repos/app/grants";
+    if method == Method::DELETE {
+        let query = format!("issuer=https://id.test&subject={name}&prefix={prefix}&access=write");
+        return delete(api, admin, &format!("{path}?{query}")).await.status;
+    }
     api.send(
         method,
-        "/v1/orgs/acme/repos/app/grants",
+        path,
         Some(admin),
         Some(json!({
             "issuer": "https://id.test",
@@ -381,19 +391,49 @@ async fn adds_and_removes_members_named_by_issuer_and_subject() {
     let remove = |name: &'static str| {
         let (api, ada) = (&api, &ada);
         async move {
-            api.send(
-                Method::DELETE,
-                "/v1/orgs/acme/members",
-                Some(ada),
-                Some(json!({"issuer": "https://id.test", "subject": name})),
-            )
-            .await
+            let uri = format!("/v1/orgs/acme/members?issuer=https://id.test&subject={name}");
+            delete(api, ada, &uri).await
         }
     };
     assert_eq!(remove("bob").await.status, StatusCode::NO_CONTENT);
     assert_eq!(read().await.status, StatusCode::NOT_FOUND);
     // Removing someone who is not a member is not found.
     assert_eq!(remove("bob").await.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn rejects_a_removal_with_a_missing_or_malformed_query_parameter() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    api.repository(&ada, "acme").await;
+    add_member(&api, &ada, "acme", "bob", "member").await;
+    let grants = "/v1/orgs/acme/repos/app/grants";
+    for uri in [
+        "/v1/orgs/acme/members".to_owned(),
+        "/v1/orgs/acme/members?issuer=https://id.test".to_owned(),
+        "/v1/orgs/acme/members?subject=bob".to_owned(),
+        "/v1/orgs/acme/members?issuer=&subject=bob".to_owned(),
+        grants.to_owned(),
+        format!("{grants}?issuer=https://id.test&subject=bob&prefix="),
+        format!("{grants}?issuer=https://id.test&subject=bob&access=write"),
+        format!("{grants}?issuer=https://id.test&subject=bob&prefix=&access=owner"),
+    ] {
+        let reply = delete(&api, &ada, &uri).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri}");
+        assert_eq!(reply.content_type, PROBLEM, "{uri}");
+    }
+
+    // The control: the complete queries are served.
+    let grant = format!("{grants}?issuer=https://id.test&subject=bob&prefix=&access=write");
+    assert_eq!(
+        delete(&api, &ada, &grant).await.status,
+        StatusCode::NO_CONTENT
+    );
+    let member = "/v1/orgs/acme/members?issuer=https://id.test&subject=bob";
+    assert_eq!(
+        delete(&api, &ada, member).await.status,
+        StatusCode::NO_CONTENT
+    );
 }
 
 /// A repositories port whose directory fails with a description that must stay inside.
@@ -483,6 +523,21 @@ fn documented() -> BTreeSet<(String, String)> {
         }
     }
     operations
+}
+
+#[tokio::test]
+async fn documents_no_request_body_on_a_delete_operation() {
+    let document = committed_document();
+    let mut deletes = 0;
+    for item in document["paths"].as_object().unwrap().values() {
+        if let Some(operation) = item.get("delete") {
+            deletes += 1;
+            assert!(operation.get("requestBody").is_none(), "{operation}");
+        }
+    }
+    // The control: the document has delete operations, and a put keeps its body.
+    assert_eq!(deletes, 3);
+    assert!(document["paths"]["/v1/orgs/{org}/members"]["put"]["requestBody"].is_object());
 }
 
 #[tokio::test]

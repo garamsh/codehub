@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use crate::failure::{Failure, Operation};
 use crate::state::RepositoryRef;
 use crate::wire::{
-    Created, File, Grant, History, Landed, Landing, Member, NewName, Principal, StagedFile,
+    Access, Created, File, Grant, History, Landed, Landing, Member, NewName, Principal, StagedFile,
     TransferGrant, TransferMethod, Upload,
 };
 
@@ -110,6 +110,16 @@ impl<'a> Api<'a> {
         Self::send(request, Operation::Other).await.map(|_| ())
     }
 
+    /// A DELETE that names its target in the query string; DELETE carries no body (ADR 0032).
+    async fn delete_with_query(&self, path: &str, query: &[(&str, &str)]) -> Result<(), Failure> {
+        let query: Vec<String> = query
+            .iter()
+            .map(|(name, value)| format!("{name}={}", encode(value)))
+            .collect();
+        let request = self.request(Method::DELETE, &format!("{path}?{}", query.join("&")));
+        Self::send(request, Operation::Other).await.map(|_| ())
+    }
+
     /// Creates an organisation.
     ///
     /// # Errors
@@ -158,7 +168,11 @@ impl<'a> Api<'a> {
         member: &Principal,
     ) -> Result<(), Failure> {
         let path = format!("orgs/{}/members", encode(organisation));
-        self.call_empty(Method::DELETE, &path, Some(member)).await
+        self.delete_with_query(
+            &path,
+            &[("issuer", &member.issuer), ("subject", &member.subject)],
+        )
+        .await
     }
 
     /// Adds (`add`) or removes a grant on a repository.
@@ -172,13 +186,22 @@ impl<'a> Api<'a> {
         grant: &Grant,
         add: bool,
     ) -> Result<(), Failure> {
-        let method = if add { Method::PUT } else { Method::DELETE };
-        self.call_empty(
-            method,
-            &format!("{}/grants", repo_path(repository)),
-            Some(grant),
-        )
-        .await
+        let path = format!("{}/grants", repo_path(repository));
+        if add {
+            self.call_empty(Method::PUT, &path, Some(grant)).await
+        } else {
+            let access = match grant.access {
+                Access::Read => "read",
+                Access::Write => "write",
+            };
+            let query = [
+                ("issuer", grant.issuer.as_str()),
+                ("subject", &grant.subject),
+                ("prefix", &grant.prefix),
+                ("access", access),
+            ];
+            self.delete_with_query(&path, &query).await
+        }
     }
 
     /// Asks for a grant to upload an object.
