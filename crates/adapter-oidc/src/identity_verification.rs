@@ -1,5 +1,5 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use app::domain::credential::Credential;
 use app::domain::principal::Principal;
@@ -25,11 +25,13 @@ pub struct OidcIdentityVerification {
     http: reqwest::Client,
     issuer: String,
     validation: Validation,
+    min_refetch_interval: Duration,
     keys: Mutex<Keys>,
 }
 
 #[derive(Default)]
 struct Keys {
+    fetched_at: Option<Instant>,
     jwks_uri: Option<String>,
     set: JwkSet,
 }
@@ -47,12 +49,17 @@ struct Claims {
 }
 
 impl OidcIdentityVerification {
-    /// A verifier for tokens `issuer` issued for `audience`.
+    /// A verifier for tokens `issuer` issued for `audience`. The key set is fetched again for an
+    /// unknown key id at most once per `min_refetch_interval`.
     ///
     /// # Errors
     ///
     /// [`IdentityError::Backend`] where the HTTP client cannot be built.
-    pub fn new(issuer: &str, audience: &str) -> Result<Self, IdentityError> {
+    pub fn new(
+        issuer: &str,
+        audience: &str,
+        min_refetch_interval: Duration,
+    ) -> Result<Self, IdentityError> {
         let http = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
@@ -67,6 +74,7 @@ impl OidcIdentityVerification {
             http,
             issuer: issuer.to_owned(),
             validation,
+            min_refetch_interval,
             keys: Mutex::default(),
         })
     }
@@ -77,6 +85,7 @@ impl OidcIdentityVerification {
 
     /// Discovers the key set's location once, then replaces the cached key set with the issuer's.
     async fn refresh(&self) -> Result<(), IdentityError> {
+        lock(&self.keys).fetched_at = Some(Instant::now());
         let known = lock(&self.keys).jwks_uri.clone();
         let jwks_uri = match known {
             Some(uri) => uri,
@@ -119,6 +128,10 @@ impl IdentityVerification for OidcIdentityVerification {
         let jwk = match self.cached_key(&key_id) {
             Some(jwk) => jwk,
             None => {
+                let last = lock(&self.keys).fetched_at;
+                if last.is_some_and(|at| at.elapsed() < self.min_refetch_interval) {
+                    return Err(IdentityError::Rejected);
+                }
                 self.refresh().await?;
                 self.cached_key(&key_id).ok_or(IdentityError::Rejected)?
             }

@@ -5,7 +5,7 @@
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adapter_oidc::OidcIdentityVerification;
 use app::domain::credential::Credential;
@@ -20,6 +20,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 const AUDIENCE: &str = "codehub";
+const REFETCH_INTERVAL: Duration = Duration::from_secs(10);
 
 #[cfg(test)]
 fn env(name: &str) -> String {
@@ -41,7 +42,8 @@ fn now() -> u64 {
 
 #[cfg(test)]
 fn dex() -> OidcIdentityVerification {
-    OidcIdentityVerification::new(&env("CODEHUB_TEST_OIDC_ISSUER"), AUDIENCE).unwrap()
+    OidcIdentityVerification::new(&env("CODEHUB_TEST_OIDC_ISSUER"), AUDIENCE, REFETCH_INTERVAL)
+        .unwrap()
 }
 
 /// An access token for `user` (`alice`, `bob`, `carol`) from Dex's password grant, with the
@@ -175,7 +177,11 @@ impl Stub {
     }
 
     fn verifier(&self) -> OidcIdentityVerification {
-        OidcIdentityVerification::new(&self.issuer, AUDIENCE).unwrap()
+        self.verifier_refetching_after(REFETCH_INTERVAL)
+    }
+
+    fn verifier_refetching_after(&self, interval: Duration) -> OidcIdentityVerification {
+        OidcIdentityVerification::new(&self.issuer, AUDIENCE, interval).unwrap()
     }
 
     /// Claims of a token this stub issued for `subject`, valid for an hour.
@@ -237,8 +243,12 @@ async fn rejects_a_dex_token_whose_payload_was_swapped_for_another_users() {
 #[tokio::test]
 async fn rejects_a_dex_token_for_another_audience() {
     let token = credential(&dex_token("alice").await);
-    let wrong =
-        OidcIdentityVerification::new(&env("CODEHUB_TEST_OIDC_ISSUER"), "elsewhere").unwrap();
+    let wrong = OidcIdentityVerification::new(
+        &env("CODEHUB_TEST_OIDC_ISSUER"),
+        "elsewhere",
+        REFETCH_INTERVAL,
+    )
+    .unwrap();
 
     assert_eq!(wrong.verify(&token).await, Err(IdentityError::Rejected));
     assert!(dex().verify(&token).await.is_ok());
@@ -261,7 +271,8 @@ async fn rejects_text_that_is_not_a_token() {
 #[tokio::test]
 async fn reports_an_unreachable_issuer_as_a_backend_failure() {
     let token = credential(&dex_token("alice").await);
-    let unreachable = OidcIdentityVerification::new("http://127.0.0.1:1", AUDIENCE).unwrap();
+    let unreachable =
+        OidcIdentityVerification::new("http://127.0.0.1:1", AUDIENCE, REFETCH_INTERVAL).unwrap();
 
     assert!(matches!(
         unreachable.verify(&token).await,
@@ -416,7 +427,7 @@ async fn fetches_the_key_set_again_when_a_token_names_an_unknown_key_id() {
     let old = TestKey::generate("old");
     let new = TestKey::generate("new");
     let stub = Stub::start(key_set(&[&old]), None).await;
-    let verifier = stub.verifier();
+    let verifier = stub.verifier_refetching_after(Duration::ZERO);
     let claims = stub.claims("ada");
     verifier
         .verify(&credential(&old.sign(&claims)))
@@ -443,6 +454,30 @@ async fn fetches_the_key_set_again_when_a_token_names_an_unknown_key_id() {
             .await
             .is_ok()
     );
+}
+
+#[tokio::test]
+async fn fetches_the_key_set_once_per_interval_however_many_unknown_key_ids_arrive() {
+    let key = TestKey::generate("k1");
+    let one = TestKey::generate("unknown-1");
+    let two = TestKey::generate("unknown-2");
+    let stub = Stub::start(key_set(&[&key]), None).await;
+    let verifier = stub.verifier();
+    let claims = stub.claims("ada");
+    verifier
+        .verify(&credential(&key.sign(&claims)))
+        .await
+        .unwrap();
+    assert_eq!(stub.requests(), 1);
+
+    for stranger in [&one, &two, &one] {
+        assert_eq!(
+            verifier.verify(&credential(&stranger.sign(&claims))).await,
+            Err(IdentityError::Rejected)
+        );
+    }
+
+    assert_eq!(stub.requests(), 1);
 }
 
 #[tokio::test]
