@@ -2739,6 +2739,22 @@
                 "description": "The paths the revert conflicts on; it landed nothing."
               }
             }
+          },
+          {
+            "type": "object",
+            "required": [
+              "outcome",
+              "reason"
+            ],
+            "properties": {
+              "outcome": {
+                "const": "failed"
+              },
+              "reason": {
+                "type": "string",
+                "description": "Why the revert failed after it was reserved; it landed nothing and is not tried again."
+              }
+            }
           }
         ]
       }

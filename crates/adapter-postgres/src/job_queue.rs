@@ -14,7 +14,7 @@ use crate::database::Database;
 macro_rules! job_columns {
     () => {
         "id, organisation, repository, changeset, check_name, command, check_labels, blocking, \
-         timeout_seconds, state, runner, lease_expires_at, deadline, exit_code, output, revert_landed, revert_conflicts"
+         timeout_seconds, state, runner, lease_expires_at, deadline, exit_code, output, revert_landed, revert_conflicts, revert_failed"
     };
 }
 
@@ -61,6 +61,7 @@ struct JobRow {
     output: Vec<u8>,
     revert_landed: Option<Vec<u8>>,
     revert_conflicts: Option<Vec<Vec<u8>>>,
+    revert_failed: Option<String>,
 }
 
 impl JobRow {
@@ -87,8 +88,12 @@ impl JobRow {
                 .map_err(backend)?,
             exit_code: self.exit_code,
             output: self.output,
-            revert: conversion::revert(self.revert_landed, self.revert_conflicts)
-                .map_err(backend)?,
+            revert: conversion::revert(conversion::RevertColumns {
+                landed: self.revert_landed,
+                conflicts: self.revert_conflicts,
+                failed: self.revert_failed,
+            })
+            .map_err(backend)?,
         })
     }
 }
@@ -370,15 +375,16 @@ impl JobQueue for PostgresJobQueue {
     }
 
     async fn record_revert(&self, job: JobId, revert: Revert) -> Result<Job, JobQueueError> {
-        let (landed, conflicts) = conversion::revert_columns(&revert);
+        let columns = conversion::revert_columns(&revert);
         sqlx::query_as::<_, JobRow>(concat!(
-            "update jobs set revert_landed = $2, revert_conflicts = $3, updated_at = now() \
-             where id = $1 returning ",
+            "update jobs set revert_landed = $2, revert_conflicts = $3, revert_failed = $4, \
+             updated_at = now() where id = $1 returning ",
             job_columns!()
         ))
         .bind(number(job)?)
-        .bind(landed)
-        .bind(conflicts)
+        .bind(columns.landed)
+        .bind(columns.conflicts)
+        .bind(columns.failed)
         .fetch_optional(&self.pool)
         .await
         .map_err(backend)?

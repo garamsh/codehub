@@ -286,6 +286,11 @@ pub enum Revert {
         /// The paths it conflicts on.
         paths: Vec<String>,
     },
+    /// The revert failed after it was reserved and landed nothing.
+    Failed {
+        /// Why it failed.
+        reason: String,
+    },
 }
 
 /// One check of a changeset.
