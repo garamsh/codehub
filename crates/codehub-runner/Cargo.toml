@@ -1,0 +1,20 @@
+[package]
+name = "codehub-runner"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+clap = { workspace = true, features = ["derive", "env", "error-context", "help", "std", "usage"] }
+reqwest = { workspace = true, features = ["json", "rustls"] }
+rustix = { workspace = true, features = ["process", "std"] }
+serde = { workspace = true, features = ["derive"] }
+sha2.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+axum = { workspace = true, features = ["http1", "tokio"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+
+[lints]
+workspace = true
