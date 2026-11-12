@@ -51,7 +51,7 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0027-one-kind-of-principal.md` — ADR 0027, codehub knows one kind of principal, and how a token is obtained is the issuer's and the client's
 - `adr/0028-federation-through-standards.md` — ADR 0028, codehub is federated through standards, with one audience and shared organisation names
 - `adr/0029-identity-verification-jwt-or-introspection.md` — ADR 0029, a token is verified as an OIDC JWT or by RFC 7662 introspection, selected by configuration
-- `adr/0030-authorisation-through-authzen-and-external-mode.md` — ADR 0030, authorisation may go through AuthZEN in an external mode, and directory changes are reported through a port; the clause calling a failure a deny is superseded by ADR 0033, and its one configured bearer token by ADR 0042 for the `private_key_jwt` mode
+- `adr/0030-authorisation-through-authzen-and-external-mode.md` — ADR 0030, authorisation may go through AuthZEN in an external mode, and directory changes are reported through a port; the clause calling a failure a deny is superseded by ADR 0033, and its one configured bearer token by ADR 0042 for the `private_key_jwt` mode, and at-most-once delivery of repository changes by ADR 0044
 - `adr/0031-ch-token-sources-and-exchange.md` — ADR 0031, `ch` reads a token from a file or an environment variable and may exchange it by RFC 8693
 - `adr/0032-no-request-body-on-delete.md` — ADR 0032, no HTTP operation of codehub's API takes a request body on DELETE
 - `adr/0033-failing-decision-point-is-a-server-error.md` — ADR 0033, a failing decision point fails the request as a server error and allows nothing; supersedes one clause of ADR 0030
@@ -68,4 +68,6 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0039-fair-landing-gate-per-process.md` — ADR 0039, landings of one repository pass a fair gate in each server process, and no limit is set on how many wait
 - `adr/0040-distributed-sql-trigger.md` — ADR 0040, the move to distributed SQL is triggered by a measured saturation of the PostgreSQL primary, after the cheaper steps
 - `adr/0041-access-evaluations-only-when-configured.md` — ADR 0041, the AuthZEN adapter sends Access Evaluations only when the operator turns it on; supersedes one bullet of ADR 0038
-- `adr/0042-authzen-client-by-private-key-jwt-per-organisation.md` — ADR 0042, the AuthZEN adapter may authenticate by `private_key_jwt`, with one client and one token per organisation; supersedes ADR 0030's one configured token for that mode
+- `adr/0042-authzen-client-by-private-key-jwt-per-organisation.md` — ADR 0042, the AuthZEN adapter may authenticate by `private_key_jwt`, with one client and one token per organisation; supersedes ADR 0030's one configured token for that mode; its server error for `unauthorized_client` is superseded by ADR 0043
+- `adr/0043-authzen-grn-profile.md` — ADR 0043, the AuthZEN adapter has a GRN profile speaking garam's contract, naming a repository by its id and a path as context; supersedes ADR 0042's server error for `unauthorized_client`
+- `adr/0044-directory-changes-through-an-outbox.md` — ADR 0044, repository changes are delivered at least once from an outbox written in the repository's transaction; supersedes ADR 0030's at-most-once delivery for them
