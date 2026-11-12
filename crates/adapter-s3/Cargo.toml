@@ -11,6 +11,7 @@ reqwest = { workspace = true, features = ["rustls"] }
 rusty-s3.workspace = true
 
 [dev-dependencies]
+test-support = { path = "../test-support" }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 
 [lints]

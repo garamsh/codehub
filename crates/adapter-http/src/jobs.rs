@@ -26,6 +26,7 @@ pub struct CheckBody {
 #[derive(Serialize)]
 pub struct JobFileBody {
     path: String,
+    address: String,
     size: u64,
     executable: bool,
     download: GrantBody,
@@ -65,6 +66,7 @@ impl From<ClaimedFile> for JobFileBody {
     fn from(file: ClaimedFile) -> Self {
         Self {
             path: file.path.to_string(),
+            address: file.address.to_string(),
             size: file.size,
             executable: matches!(file.kind, app::domain::file::FileKind::Executable),
             download: file.download.into(),

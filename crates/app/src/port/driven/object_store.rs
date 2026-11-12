@@ -52,6 +52,17 @@ pub trait ObjectStore {
         address: Address,
     ) -> impl Future<Output = Result<Vec<u8>, ObjectStoreError>> + Send;
 
+    /// The size in bytes of the object stored under `address`, answered without its bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`ObjectStoreError::NotFound`] where nothing is stored under `address`.
+    fn size(
+        &self,
+        repository: RepositoryId,
+        address: Address,
+    ) -> impl Future<Output = Result<u64, ObjectStoreError>> + Send;
+
     /// Whether an object is stored under `address`.
     ///
     /// # Errors

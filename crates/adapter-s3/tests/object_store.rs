@@ -234,3 +234,13 @@ async fn gives_a_grant_the_default_expiry_of_fifteen_minutes() {
     assert!((grant.expires_at - now - 900).abs() <= 2);
     assert!(grant.url.contains("X-Amz-Expires=900"));
 }
+
+#[tokio::test]
+async fn answers_the_size_of_a_stored_blob_and_not_found_for_a_missing_one() {
+    test_support::contract::object_store::answers_the_size_of_a_stored_blob_and_not_found_for_a_missing_one(
+        &store(MAX_UPLOAD_SIZE),
+        fresh_repository(),
+        fresh_repository(),
+    )
+    .await;
+}

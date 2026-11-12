@@ -828,6 +828,10 @@ async fn claims_a_job_with_a_grant_for_each_file() {
     let files = claimed.body["files"].as_array().unwrap();
     assert_eq!(files.len(), 1);
     assert_eq!(files[0]["path"], "src/a.txt");
+    assert_eq!(
+        files[0]["address"],
+        "sha256:2c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c525434806"
+    );
     assert_eq!(files[0]["executable"], false);
     assert_eq!(api.download("acme", &files[0]["download"]).await, "one\n");
 }

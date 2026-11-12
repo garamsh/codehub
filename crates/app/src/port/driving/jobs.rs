@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use crate::domain::address::Address;
 use crate::domain::file::FileKind;
 use crate::domain::job::{Heartbeat, Job, JobId, JobResult};
 use crate::domain::path::{Path, PathError};
@@ -71,6 +72,8 @@ pub struct ClaimedFile {
     pub path: Path,
     /// The file's mode.
     pub kind: FileKind,
+    /// The address of the file's bytes, which a runner checks what it downloads against.
+    pub address: Address,
     /// The file's size in bytes.
     pub size: u64,
     /// A grant to download the file's bytes.

@@ -59,6 +59,17 @@ impl ObjectStore for MemoryObjectStore {
             .ok_or(ObjectStoreError::NotFound(address))
     }
 
+    async fn size(
+        &self,
+        repository: RepositoryId,
+        address: Address,
+    ) -> Result<u64, ObjectStoreError> {
+        lock(&self.objects)
+            .get(&(repository, address))
+            .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+            .ok_or(ObjectStoreError::NotFound(address))
+    }
+
     async fn exists(
         &self,
         repository: RepositoryId,
