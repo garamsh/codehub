@@ -9,7 +9,6 @@ use app::domain::file::{File, FileKind};
 use app::domain::principal::Caller;
 use app::domain::repository::RepositoryId;
 use app::port::driven::object_store::{Grant, GrantMethod};
-use app::port::driving::repositories::Repositories;
 use app::port::driving::source_control::Landing;
 use app::port::driving::source_control::SourceControl;
 use axum::Json;
@@ -18,7 +17,7 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::Services;
-use crate::extract::{Authenticated, Body, Params, Queried, parse};
+use crate::extract::{Authenticated, Body, Params, Queried, find, parse};
 use crate::problem::Problem;
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -125,25 +124,8 @@ pub struct HistoryBody {
     versions: Vec<VersionBody>,
 }
 
-/// The repository `organisation`/`repository`, which `caller` may read.
-async fn find<P: Services>(
-    ports: &P,
-    caller: &Caller,
-    organisation: &str,
-    repository: &str,
-) -> Result<RepositoryId, Problem> {
-    Ok(ports
-        .repositories()
-        .find_repository(
-            caller,
-            &parse("organisation name", organisation)?,
-            &parse("repository name", repository)?,
-        )
-        .await?)
-}
-
 /// The server's current time, in seconds since 1970-01-01T00:00:00Z.
-fn now() -> i64 {
+pub fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| {

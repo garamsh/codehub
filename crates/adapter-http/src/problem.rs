@@ -5,13 +5,18 @@ use app::port::driven::changeset_log::ChangesetLogError;
 use app::port::driven::derived_data::DerivedDataError;
 use app::port::driven::draft_store::DraftStoreError;
 use app::port::driven::identity_verification::IdentityError;
+use app::port::driven::job_queue::JobQueueError;
 use app::port::driven::membership::{Access, MembershipError};
 use app::port::driven::object_store::ObjectStoreError;
 use app::port::driven::repository_directory::DirectoryError;
+use app::port::driven::runner_registry::RunnerRegistryError;
 use app::port::driving::access::AccessError;
 use app::port::driving::authentication::AuthenticationError;
+use app::port::driving::checks::ChecksError;
+use app::port::driving::jobs::JobsError;
 use app::port::driving::members::MembersError;
 use app::port::driving::repositories::RepositoriesError;
+use app::port::driving::runners::RunnersError;
 use app::port::driving::source_control::HistoryError;
 use app::port::driving::source_control::LandError;
 use app::port::driving::source_control::ReadFileError;
@@ -60,6 +65,11 @@ impl Problem {
     /// No valid bearer token came with the request.
     pub(crate) fn unauthorised(detail: impl Into<String>) -> Self {
         Self::new(StatusCode::UNAUTHORIZED, detail)
+    }
+
+    /// The thing the request names does not exist.
+    pub(crate) fn not_found(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::NOT_FOUND, detail)
     }
 
     /// No route answers the request.
@@ -335,6 +345,67 @@ impl From<SourceControlError> for Problem {
             SourceControlError::Land(error) => error.into(),
             SourceControlError::ReadFile(error) => error.into(),
             SourceControlError::History(error) => error.into(),
+        }
+    }
+}
+
+impl From<RunnerRegistryError> for Problem {
+    fn from(error: RunnerRegistryError) -> Self {
+        match error {
+            RunnerRegistryError::NotFound(id) => Self::new(
+                StatusCode::NOT_FOUND,
+                format!("no runner registration {id}"),
+            ),
+            RunnerRegistryError::Backend(_) => Self::internal(),
+        }
+    }
+}
+
+impl From<JobQueueError> for Problem {
+    fn from(error: JobQueueError) -> Self {
+        match error {
+            JobQueueError::NotFound(id) => Self::new(StatusCode::NOT_FOUND, format!("no job {id}")),
+            JobQueueError::Finished(id) => {
+                Self::new(StatusCode::CONFLICT, format!("job {id} has ended"))
+            }
+            JobQueueError::Backend(_) => Self::internal(),
+        }
+    }
+}
+
+impl From<RunnersError> for Problem {
+    fn from(error: RunnersError) -> Self {
+        match error {
+            RunnersError::Access(error) => error.into(),
+            RunnersError::Directory(error) => error.into(),
+            RunnersError::Registry(error) => error.into(),
+        }
+    }
+}
+
+impl From<JobsError> for Problem {
+    fn from(error: JobsError) -> Self {
+        match error {
+            JobsError::NotRegistered => Self::new(
+                StatusCode::FORBIDDEN,
+                "the caller is not a registered runner",
+            ),
+            JobsError::Queue(error) => error.into(),
+            JobsError::Registry(error) => error.into(),
+            JobsError::Objects(_)
+            | JobsError::Derived(_)
+            | JobsError::Log(_)
+            | JobsError::Path(_) => Self::internal(),
+        }
+    }
+}
+
+impl From<ChecksError> for Problem {
+    fn from(error: ChecksError) -> Self {
+        match error {
+            ChecksError::Access(error) => error.into(),
+            ChecksError::Queue(error) => error.into(),
+            ChecksError::Log(error) => error.into(),
         }
     }
 }
