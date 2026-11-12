@@ -64,6 +64,7 @@ name = "adapter-postgres"
 version = "0.0.0"
 dependencies = [
  "adapter-memory",
+ "adapter-toml",
  "app",
  "sqlx",
  "test-support",

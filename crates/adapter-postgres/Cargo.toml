@@ -10,6 +10,7 @@ sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "migrate", "
 
 [dev-dependencies]
 adapter-memory = { path = "../adapter-memory" }
+adapter-toml = { path = "../adapter-toml" }
 test-support = { path = "../test-support" }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 
