@@ -118,6 +118,10 @@ pub enum Outcome {
     Passed,
     /// The check failed.
     Failed,
+    /// The runner enforced the check's timeout and stopped it.
+    TimedOut,
+    /// The runner stopped the check because it was cancelled.
+    Cancelled,
 }
 
 impl Outcome {
@@ -127,6 +131,8 @@ impl Outcome {
         match self {
             Self::Passed => JobState::Passed,
             Self::Failed => JobState::Failed,
+            Self::TimedOut => JobState::TimedOut,
+            Self::Cancelled => JobState::Cancelled,
         }
     }
 }
@@ -136,8 +142,8 @@ impl Outcome {
 pub struct JobResult {
     /// How it ended.
     pub outcome: Outcome,
-    /// The command's exit code.
-    pub exit_code: i32,
+    /// The command's exit code; `None` where the runner never started it.
+    pub exit_code: Option<i32>,
     /// The command's output; only its tail is kept.
     pub output: Vec<u8>,
 }

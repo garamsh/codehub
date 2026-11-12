@@ -50,3 +50,13 @@ async fn a_failing_check_of_a_revert_changeset_reverts_nothing() {
 async fn a_landing_with_unreadable_definitions_is_reverted() {
     reverts::a_landing_with_unreadable_definitions_is_reverted::<Harness>().await;
 }
+
+#[tokio::test]
+async fn a_runner_reported_timeout_reverts_its_changeset() {
+    reverts::a_runner_reported_timeout_reverts_its_changeset::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_runner_reported_cancellation_reverts_nothing() {
+    reverts::a_runner_reported_cancellation_reverts_nothing::<Harness>().await;
+}

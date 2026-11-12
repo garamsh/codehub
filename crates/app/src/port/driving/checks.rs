@@ -1,4 +1,4 @@
-//! Checks, as a reader of a repository sees them: the jobs of a changeset, `last-green`, and
+//! Checks, as a reader of a repository sees them: the jobs of a changeset, its refs, and
 //! cancelling a job.
 
 use std::fmt;
@@ -7,7 +7,7 @@ use crate::domain::address::Address;
 use crate::domain::job::{Job, JobId};
 use crate::domain::principal::Caller;
 use crate::domain::repository::RepositoryId;
-use crate::port::driven::changeset_log::ChangesetLogError;
+use crate::port::driven::changeset_log::{ChangesetLogError, Ref};
 use crate::port::driven::job_queue::JobQueueError;
 use crate::port::driving::access::AccessError;
 use crate::port::driving::revert::RevertError;
@@ -28,15 +28,17 @@ pub trait Checks {
         now: i64,
     ) -> impl Future<Output = Result<Vec<Job>, ChecksError>> + Send;
 
-    /// The changeset `last-green` points at; `None` before it is first set.
+    /// The changeset the ref `name` points at, `main` or `last-green`; `None` before it is first
+    /// set.
     ///
     /// # Errors
     ///
     /// [`ChecksError::Access`] where `repository` does not exist or `caller` holds no read on it.
-    fn last_green(
+    fn reference(
         &self,
         caller: &Caller,
         repository: RepositoryId,
+        name: Ref,
     ) -> impl Future<Output = Result<Option<Address>, ChecksError>> + Send;
 
     /// Cancels `job` of `repository`, queued or running, and returns it as it now stands.

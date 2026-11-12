@@ -70,3 +70,8 @@ async fn only_a_failed_blocking_check_keeps_a_changeset_from_last_green() {
 async fn a_heartbeat_past_the_deadline_answers_timed_out() {
     checks::a_heartbeat_past_the_deadline_answers_timed_out::<Harness>().await;
 }
+
+#[tokio::test]
+async fn main_is_served_as_a_ref() {
+    checks::main_is_served_as_a_ref::<Harness>().await;
+}

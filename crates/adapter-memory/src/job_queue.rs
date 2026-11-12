@@ -135,7 +135,7 @@ impl JobQueue for MemoryJobQueue {
             })
             .ok_or(JobQueueError::NotFound(job))?;
         found.state = result.outcome.state();
-        found.exit_code = Some(result.exit_code);
+        found.exit_code = result.exit_code;
         found.output = result.output;
         Ok(found.clone())
     }

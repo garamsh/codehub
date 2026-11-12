@@ -22,7 +22,7 @@ use app::use_case::members::{MembersAdapters, MembersService};
 fn passed() -> JobResult {
     JobResult {
         outcome: Outcome::Passed,
-        exit_code: 0,
+        exit_code: Some(0),
         output: b"ok".to_vec(),
     }
 }
@@ -30,7 +30,7 @@ fn passed() -> JobResult {
 fn failed() -> JobResult {
     JobResult {
         outcome: Outcome::Failed,
-        exit_code: 1,
+        exit_code: Some(1),
         output: b"broken".to_vec(),
     }
 }
@@ -40,7 +40,11 @@ async fn last_green<H: RunnerDeployment>(
     caller: &Caller,
     repo: &crate::contract::Repo<'_, H>,
 ) -> Option<Address> {
-    harness.checks().last_green(caller, repo.id).await.unwrap()
+    harness
+        .checks()
+        .reference(caller, repo.id, Ref::LastGreen)
+        .await
+        .unwrap()
 }
 
 /// Claims each queued job in turn as `bot` at time `now` and reports each by its check name:
@@ -403,8 +407,10 @@ pub async fn checks_are_visible_to_readers_and_cancelled_by_administrators<H: Ru
     // Someone who cannot read the repository sees nothing of it.
     let seen = harness.checks().jobs_of(&eve, repo.id, landed, 0).await;
     assert!(matches!(seen, Err(ChecksError::Access(_))), "{seen:?}");
-    let green = harness.checks().last_green(&eve, repo.id).await;
-    assert!(matches!(green, Err(ChecksError::Access(_))), "{green:?}");
+    for name in [Ref::Main, Ref::LastGreen] {
+        let seen = harness.checks().reference(&eve, repo.id, name).await;
+        assert!(matches!(seen, Err(ChecksError::Access(_))), "{seen:?}");
+    }
 
     // A reader sees the jobs but may not cancel one.
     assert_eq!(jobs(&harness, &rae, &repo, landed, 0).await.len(), 1);
@@ -465,4 +471,31 @@ pub async fn a_heartbeat_past_the_deadline_answers_timed_out<H: RunnerDeployment
         harness.queue().of_changeset(repo.id, landed).await.unwrap()[0].state,
         JobState::Running { .. }
     ));
+}
+
+/// The ref `main` is served as `last-green` is: the changeset it points at, `None` before the
+/// first landing, and `last-green` stays where it is while `main` moves on.
+pub async fn main_is_served_as_a_ref<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let before = harness
+        .checks()
+        .reference(&ada, repo.id, Ref::Main)
+        .await
+        .unwrap();
+    assert_eq!(before, None);
+
+    let first = land(&repo, &ada, "first", &[("a", "1\n")]).await.unwrap();
+    land_checks(&repo, &ada, "hard", &[check("unit")]).await;
+    let head = repo.main().await;
+
+    let main = harness
+        .checks()
+        .reference(&ada, repo.id, Ref::Main)
+        .await
+        .unwrap();
+    assert_eq!(main, head);
+    assert_ne!(main, Some(first));
+    assert_eq!(last_green(&harness, &ada, &repo).await, Some(first));
 }

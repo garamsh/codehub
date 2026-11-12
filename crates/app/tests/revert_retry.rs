@@ -86,7 +86,7 @@ impl ChangesetLog for LosingLog<'_> {
 fn failed() -> JobResult {
     JobResult {
         outcome: Outcome::Failed,
-        exit_code: 1,
+        exit_code: Some(1),
         output: Vec::new(),
     }
 }

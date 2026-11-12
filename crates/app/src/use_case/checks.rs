@@ -110,10 +110,11 @@ where
         Ok(self.queue.of_changeset(repository, changeset).await?)
     }
 
-    async fn last_green(
+    async fn reference(
         &self,
         caller: &Caller,
         repository: RepositoryId,
+        name: Ref,
     ) -> Result<Option<Address>, ChecksError> {
         readable_repository(
             self.directory,
@@ -122,7 +123,7 @@ where
             repository,
         )
         .await?;
-        Ok(self.log.read_ref(repository, Ref::LastGreen).await?)
+        Ok(self.log.read_ref(repository, name).await?)
     }
 
     async fn cancel(

@@ -20,7 +20,7 @@ const BASE: &str = "1\n2\n3\n4\n5\n6\n7\n8\n";
 fn failed() -> JobResult {
     JobResult {
         outcome: Outcome::Failed,
-        exit_code: 1,
+        exit_code: Some(1),
         output: b"broken".to_vec(),
     }
 }
@@ -28,7 +28,7 @@ fn failed() -> JobResult {
 fn passed() -> JobResult {
     JobResult {
         outcome: Outcome::Passed,
-        exit_code: 0,
+        exit_code: Some(0),
         output: b"ok".to_vec(),
     }
 }
@@ -416,4 +416,70 @@ pub async fn a_landing_with_unreadable_definitions_is_reverted<H: RunnerDeployme
     assert_eq!(repo.read(&file).await, None);
     let job = job_of(&repo, &ada, bad, "checks-file").await;
     assert_eq!(job.revert, Some(Revert::Landed(reverted)));
+}
+
+/// A runner that reports it enforced the timeout, with no exit code, ends a blocking job timed out
+/// and the changeset is reverted as for a server-side timeout.
+pub async fn a_runner_reported_timeout_reverts_its_changeset<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    land(&repo, &ada, "base", &[("a", BASE)]).await.unwrap();
+    let bad = land_with_checks(
+        &repo,
+        &ada,
+        "bad",
+        &[check("unit")],
+        &[("a", "x\n2\n3\n4\n5\n6\n7\n8\n")],
+    )
+    .await;
+
+    let result = JobResult {
+        outcome: Outcome::TimedOut,
+        exit_code: None,
+        output: Vec::new(),
+    };
+    report(&harness, &bot, result, 5).await;
+
+    let ended = job_of(&repo, &ada, bad, "unit").await;
+    assert_eq!(ended.state, JobState::TimedOut);
+    assert_eq!(ended.exit_code, None);
+    let reverted = repo.main().await.unwrap();
+    assert_ne!(reverted, bad);
+    assert_eq!(
+        changeset(&repo, reverted).await.message,
+        format!("Revert {bad}: check unit timed out")
+    );
+    assert_eq!(ended.revert, Some(Revert::Landed(reverted)));
+    assert_eq!(repo.read("a").await.as_deref(), Some(BASE));
+}
+
+/// A runner that reports the job cancelled ends it cancelled, and the changeset is not reverted.
+pub async fn a_runner_reported_cancellation_reverts_nothing<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    land(&repo, &ada, "base", &[("a", BASE)]).await.unwrap();
+    let bad = land_with_checks(
+        &repo,
+        &ada,
+        "bad",
+        &[check("unit")],
+        &[("a", "x\n2\n3\n4\n5\n6\n7\n8\n")],
+    )
+    .await;
+
+    let result = JobResult {
+        outcome: Outcome::Cancelled,
+        exit_code: None,
+        output: Vec::new(),
+    };
+    report(&harness, &bot, result, 5).await;
+
+    assert_eq!(repo.main().await, Some(bad));
+    let ended = job_of(&repo, &ada, bad, "unit").await;
+    assert_eq!(ended.state, JobState::Cancelled);
+    assert_eq!(ended.revert, None);
 }
