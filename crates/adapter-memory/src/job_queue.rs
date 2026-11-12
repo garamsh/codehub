@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use app::domain::address::Address;
@@ -15,6 +15,7 @@ use crate::lock;
 struct Jobs {
     issued: u64,
     held: BTreeMap<JobId, Job>,
+    reserved: BTreeSet<(RepositoryId, Address)>,
 }
 
 impl Jobs {
@@ -156,6 +157,13 @@ impl JobQueue for MemoryJobQueue {
         }
         found.state = JobState::Cancelled;
         Ok(found.clone())
+    }
+
+    async fn reserve_revert(&self, job: JobId) -> Result<bool, JobQueueError> {
+        let mut held = lock(&self.jobs);
+        let found = held.held.get(&job).ok_or(JobQueueError::NotFound(job))?;
+        let key = (found.repository, found.changeset);
+        Ok(held.reserved.insert(key))
     }
 
     async fn record_revert(&self, job: JobId, revert: Revert) -> Result<Job, JobQueueError> {

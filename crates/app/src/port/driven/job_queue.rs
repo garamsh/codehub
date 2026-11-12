@@ -95,8 +95,22 @@ pub trait JobQueue {
         job: JobId,
     ) -> impl Future<Output = Result<Job, JobQueueError>> + Send;
 
-    /// Records `revert` with the result of `job` and returns the job as it now stands. A later
-    /// record for the same job replaces the earlier one.
+    /// Reserves the revert of the changeset `job` belongs to, for `job`. Of all the jobs of one
+    /// changeset, however many ask at once, exactly one is answered `true`; the others are
+    /// answered `false`. A reservation is never released, so a revert that failed after it is not
+    /// tried again.
+    ///
+    /// # Errors
+    ///
+    /// [`JobQueueError::NotFound`] where there is no such job.
+    fn reserve_revert(
+        &self,
+        job: JobId,
+    ) -> impl Future<Output = Result<bool, JobQueueError>> + Send;
+
+    /// Records `revert` with the result of `job` and returns the job as it now stands, which
+    /// completes the reservation of the revert. A later record for the same job replaces the
+    /// earlier one.
     ///
     /// # Errors
     ///

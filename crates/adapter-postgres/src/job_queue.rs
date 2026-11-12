@@ -22,8 +22,8 @@ macro_rules! job_columns {
 /// gaps where a queueing was undone.
 ///
 /// A claim takes the oldest matching queued job with `for update skip locked`, so concurrent
-/// claims never take one job. A claim and a heartbeat first expire the jobs whose lease or
-/// deadline passed, in their own transaction, so no background task is needed.
+/// claims never take one job. Only [`JobQueue::expire`] moves a job whose lease or deadline
+/// passed.
 pub struct PostgresJobQueue {
     pool: PgPool,
 }
@@ -204,7 +204,6 @@ impl JobQueue for PostgresJobQueue {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut transaction = self.pool.begin().await.map_err(backend)?;
-        expire_at(&mut transaction, now).await?;
         let claimed = sqlx::query_as::<_, JobRow>(concat!(
             "with next as ( \
                  select j.id as job, r.id as registration \
@@ -245,10 +244,9 @@ impl JobQueue for PostgresJobQueue {
         let id = number(job)?;
         let runners = numbers(runners)?;
         let mut transaction = self.pool.begin().await.map_err(backend)?;
-        expire_at(&mut transaction, now).await?;
         let extended = sqlx::query(
             "update jobs set lease_expires_at = $3 + $4, updated_at = now() \
-             where id = $1 and state = 'running' and runner = any($2)",
+             where id = $1 and state = 'running' and runner = any($2) and deadline > $3",
         )
         .bind(id)
         .bind(&runners)
@@ -262,10 +260,12 @@ impl JobQueue for PostgresJobQueue {
             None
         } else {
             sqlx::query_scalar::<_, String>(
-                "select state from jobs where id = $1 and runner = any($2)",
+                "select case when state = 'running' and deadline <= $3 then 'timed_out' \
+                 else state end from jobs where id = $1 and runner = any($2)",
             )
             .bind(id)
             .bind(&runners)
+            .bind(now)
             .fetch_optional(&mut *transaction)
             .await
             .map_err(backend)?
@@ -340,6 +340,33 @@ impl JobQueue for PostgresJobQueue {
         };
         transaction.commit().await.map_err(backend)?;
         cancelled.job()
+    }
+
+    async fn reserve_revert(&self, job: JobId) -> Result<bool, JobQueueError> {
+        let id = number(job)?;
+        let reserved = sqlx::query(
+            "insert into revert_reservations (repository, changeset, job) \
+             select repository, changeset, id from jobs where id = $1 on conflict do nothing",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?
+        .rows_affected();
+        if reserved == 1 {
+            return Ok(true);
+        }
+        let exists =
+            sqlx::query_scalar::<_, bool>("select exists (select 1 from jobs where id = $1)")
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(backend)?;
+        if exists {
+            Ok(false)
+        } else {
+            Err(JobQueueError::NotFound(job))
+        }
     }
 
     async fn record_revert(&self, job: JobId, revert: Revert) -> Result<Job, JobQueueError> {

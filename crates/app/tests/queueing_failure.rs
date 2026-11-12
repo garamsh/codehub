@@ -68,6 +68,10 @@ impl JobQueue for RefusingQueue {
         self.0.cancel(organisation, job).await
     }
 
+    async fn reserve_revert(&self, job: JobId) -> Result<bool, JobQueueError> {
+        self.0.reserve_revert(job).await
+    }
+
     async fn record_revert(&self, job: JobId, revert: Revert) -> Result<Job, JobQueueError> {
         self.0.record_revert(job, revert).await
     }
