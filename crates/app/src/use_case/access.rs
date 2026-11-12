@@ -67,8 +67,8 @@ pub(crate) async fn readable_repository<R: RepositoryDirectory, A: Authorisation
 }
 
 /// Requires that `subject` holds `access` on every one of `paths` in `repository`, and names all
-/// that it does not.
-pub(crate) async fn require_paths<'p, A: AuthorisationDecision>(
+/// that it does not, asking the decision port once.
+pub(crate) async fn require_paths<'p, A: AuthorisationDecision + Sync>(
     authorisation: &A,
     subject: &Principal,
     organisation: &OrganisationName,
@@ -77,18 +77,33 @@ pub(crate) async fn require_paths<'p, A: AuthorisationDecision>(
     access: Access,
     paths: impl IntoIterator<Item = &'p Path>,
 ) -> Result<(), AccessError> {
-    let mut denied = BTreeSet::new();
-    for path in paths {
-        let resource = Resource::Path {
+    let paths: Vec<&Path> = paths.into_iter().collect();
+    let resources: Vec<Resource> = paths
+        .iter()
+        .map(|path| Resource::Path {
             organisation: organisation.clone(),
             name: name.clone(),
             repository,
-            path: path.clone(),
-        };
-        if !allowed(authorisation, subject, action(access), &resource).await? {
-            denied.insert(path.clone());
-        }
+            path: (*path).clone(),
+        })
+        .collect();
+    let decisions = authorisation
+        .decide_all(subject, action(access), &resources)
+        .await?;
+    if decisions.len() != paths.len() {
+        return Err(AuthorisationError::Backend(format!(
+            "{} decisions for {} resources",
+            decisions.len(),
+            paths.len()
+        ))
+        .into());
     }
+    let denied: BTreeSet<Path> = paths
+        .into_iter()
+        .zip(decisions)
+        .filter(|(_, decision)| *decision == Decision::Deny)
+        .map(|(path, _)| path.clone())
+        .collect();
     if denied.is_empty() {
         Ok(())
     } else {
