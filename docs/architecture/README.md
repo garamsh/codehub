@@ -62,3 +62,6 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0009-runner-registration-and-job-protocol.md` — ADR 0009, runners follow the GitHub Actions self-hosted runner model; the registration token, runner credentials and mutual TLS are superseded by ADR 0034
 - `adr/0034-runners-are-principals-polling-over-http.md` — ADR 0034, a runner is a registered principal that long-polls the HTTP API and runs jobs on its host
 - `adr/0035-post-land-checks-last-green-and-revert.md` — ADR 0035, post-land checks are configured in the repository, move `last-green` and revert a blocking failure
+- `adr/0036-server-retries-a-lost-landing-swap.md` — ADR 0036, the server retries a landing that lost the compare-and-swap on `main`, up to a bound
+- `adr/0037-connection-pool-sizing.md` — ADR 0037, each server process pools 40 PostgreSQL connections by default, and the sum stays below the server's limit
+- `adr/0038-decisions-batched-through-access-evaluations.md` — ADR 0038, a request asks one decision for all its paths, through AuthZEN Access Evaluations where offered
