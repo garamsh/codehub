@@ -422,8 +422,8 @@ async fn prepare(context: &Context) -> Result<(), Failure> {
                 .await,
         )?;
     }
-    // A replica fetches the issuer's keys on its first request, and requests that arrive while it
-    // does are rejected; one request to each replica keeps that start-up out of the figures.
+    // The first request to a replica is slower than the rest: it fetches the issuer's keys. One
+    // request to each replica keeps that start-up latency out of the figures.
     for replica in 0..REPLICAS {
         context.session(replica).log("warm-up").await;
     }
@@ -456,7 +456,10 @@ async fn seed(session: &Session<'_>, files: &[(String, String)]) -> Result<(), F
             session.stage("seed", path, text.as_bytes()).await,
         )?;
     }
-    check("landing the seed", session.land("seed", "seed").await)
+    check(
+        "landing the seed",
+        session.land("seed", "seed").await.status,
+    )
 }
 
 /// What one agent does until it is told to stop; stops early on a status it did not expect.
@@ -543,8 +546,10 @@ async fn agent(context: Arc<Context>, index: usize) -> Recorder {
 }
 
 /// Stages `work` in a draft and lands it; where the landing answers 409 the work is staged again in
-/// a fresh draft, because a failed landing leaves its draft on the base it had. Every 409 is one
-/// retry. The landing stops where the run's time is up.
+/// a fresh draft. A lost swap (`main moved while landing`) leaves the draft intact, so the same
+/// draft is landed again and rebased onto the new `main`; any other 409, a conflict, stages the
+/// work again in a fresh draft, because a failed landing leaves its draft on the base it had. The
+/// two are counted apart. The landing stops where the run's time is up.
 async fn land(
     session: &Session<'_>,
     recorder: &mut Recorder,
@@ -554,32 +559,45 @@ async fn land(
     work: Work,
     context: &Context,
 ) -> Outcome {
-    let mut retries = 0;
+    let mut lost_swaps = 0;
+    let mut conflicts = 0;
+    let mut draft: Option<String> = None;
     loop {
-        *drafts += 1;
-        let draft = format!("agent-{agent}-{drafts}");
-        if !stage(session, recorder, agent, operation, &draft, work, context).await {
-            recorder.gave_up(retries);
-            return Outcome::Failed;
-        }
+        let name = if let Some(name) = &draft {
+            name.clone()
+        } else {
+            *drafts += 1;
+            let name = format!("agent-{agent}-{drafts}");
+            if !stage(session, recorder, agent, operation, &name, work, context).await {
+                recorder.gave_up(lost_swaps, conflicts);
+                return Outcome::Failed;
+            }
+            draft = Some(name.clone());
+            name
+        };
         let started = Instant::now();
-        let status = session.land(&draft, "load").await;
-        recorder.record(Kind::Land, started.elapsed(), status);
-        if succeeded(status) {
-            recorder.landed(retries);
+        let landing = session.land(&name, "load").await;
+        recorder.record(Kind::Land, started.elapsed(), landing.status);
+        if succeeded(landing.status) {
+            recorder.landed(lost_swaps, conflicts);
             return Outcome::Done;
         }
-        if status != 409 {
-            recorder.gave_up(retries);
+        if landing.status != 409 {
+            recorder.gave_up(lost_swaps, conflicts);
             return Outcome::Failed;
         }
-        retries += 1;
+        if landing.lost_swap {
+            lost_swaps += 1;
+        } else {
+            conflicts += 1;
+            draft = None;
+        }
         if context.past_deadline() {
-            recorder.gave_up(retries);
+            recorder.gave_up(lost_swaps, conflicts);
             return Outcome::Cut;
         }
-        if retries >= ATTEMPTS {
-            recorder.gave_up(retries);
+        if lost_swaps + conflicts >= ATTEMPTS {
+            recorder.gave_up(lost_swaps, conflicts);
             recorder.abandoned();
             return Outcome::Failed;
         }

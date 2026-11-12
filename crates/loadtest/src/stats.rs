@@ -66,7 +66,8 @@ pub struct Recorder {
     operations: u64,
     landings: u64,
     landings_retried: u64,
-    retries: u64,
+    lost_swaps: u64,
+    conflicts: u64,
     abandoned: u64,
 }
 
@@ -98,18 +99,21 @@ impl Recorder {
         self.operations += 1;
     }
 
-    /// Records a landing that succeeded after `retries` lost attempts.
-    pub const fn landed(&mut self, retries: u64) {
+    /// Records a landing that succeeded after `lost_swaps` lost swaps, each retried by landing the
+    /// same draft again, and `conflicts` conflicts, each retried by staging a fresh draft.
+    pub const fn landed(&mut self, lost_swaps: u64, conflicts: u64) {
         self.landings += 1;
-        self.retries += retries;
-        if retries > 0 {
+        self.lost_swaps += lost_swaps;
+        self.conflicts += conflicts;
+        if lost_swaps + conflicts > 0 {
             self.landings_retried += 1;
         }
     }
 
-    /// Records the lost attempts of a landing that did not succeed.
-    pub const fn gave_up(&mut self, retries: u64) {
-        self.retries += retries;
+    /// Records the retries of a landing that did not succeed.
+    pub const fn gave_up(&mut self, lost_swaps: u64, conflicts: u64) {
+        self.lost_swaps += lost_swaps;
+        self.conflicts += conflicts;
     }
 
     /// Records a landing given up on after losing every attempt it was allowed.
@@ -130,7 +134,8 @@ impl Recorder {
         self.operations += other.operations;
         self.landings += other.landings;
         self.landings_retried += other.landings_retried;
-        self.retries += other.retries;
+        self.lost_swaps += other.lost_swaps;
+        self.conflicts += other.conflicts;
         self.abandoned += other.abandoned;
     }
 
@@ -160,8 +165,10 @@ impl Recorder {
             latency,
             landings: self.landings,
             landings_retried: self.landings_retried,
-            retries: self.retries,
-            retries_per_landing: ratio(self.retries, self.landings as f64),
+            lost_swap_retries: self.lost_swaps,
+            conflict_retries: self.conflicts,
+            retries: self.lost_swaps + self.conflicts,
+            retries_per_landing: ratio(self.lost_swaps + self.conflicts, self.landings as f64),
             abandoned: self.abandoned,
             errors: self
                 .errors
@@ -248,6 +255,11 @@ pub struct Report {
     latency: Vec<Latency>,
     landings: u64,
     landings_retried: u64,
+    /// Retries made by landing the same draft again after `main moved while landing`.
+    lost_swap_retries: u64,
+    /// Retries made in a fresh draft after a conflict.
+    conflict_retries: u64,
+    /// `lost_swap_retries` and `conflict_retries`.
     retries: u64,
     retries_per_landing: f64,
     /// Landings given up on after losing every attempt.
@@ -293,8 +305,13 @@ impl Report {
         }
         let _ = writeln!(
             text,
-            "  landings {}, of which retried {}; retries {} ({:.3} per landing)",
-            self.landings, self.landings_retried, self.retries, self.retries_per_landing
+            "  landings {}, of which retried {}; retries {} ({:.3} per landing): {} lost swaps, {} conflicts",
+            self.landings,
+            self.landings_retried,
+            self.retries,
+            self.retries_per_landing,
+            self.lost_swap_retries,
+            self.conflict_retries
         );
         if self.abandoned > 0 {
             let _ = writeln!(
@@ -373,13 +390,13 @@ mod tests {
     fn merges_what_agents_recorded_and_derives_retries_per_landing() {
         let mut first = Recorder::default();
         first.record(Kind::Land, Duration::from_millis(10), 409);
-        first.landed(1);
+        first.landed(1, 0);
         first.operation();
         let mut second = Recorder::default();
         second.record(Kind::Land, Duration::from_millis(30), 200);
         second.record(Kind::Land, Duration::from_millis(20), 409);
         second.record(Kind::Land, Duration::from_millis(30), 409);
-        second.landed(2);
+        second.landed(1, 2);
         second.operation();
         first.merge(second);
 
@@ -387,8 +404,10 @@ mod tests {
         assert_eq!(report.operations, 2);
         assert_eq!(report.landings, 2);
         assert_eq!(report.landings_retried, 2);
-        assert_eq!(report.retries, 3);
-        assert_eq!(report.retries_per_landing, 1.5);
+        assert_eq!(report.lost_swap_retries, 2);
+        assert_eq!(report.conflict_retries, 2);
+        assert_eq!(report.retries, 4);
+        assert_eq!(report.retries_per_landing, 2.0);
         assert_eq!(report.operations_per_second, 1.0);
         let land = report.latency.iter().find(|l| l.kind == Kind::Land);
         assert_eq!(land.map(|l| l.count), Some(4));

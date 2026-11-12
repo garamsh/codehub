@@ -68,6 +68,26 @@ struct File {
     download: Grant,
 }
 
+#[derive(Deserialize)]
+struct Problem {
+    detail: String,
+}
+
+/// Whether the `detail` of a 409 says the compare-and-swap on `main` was lost: the draft is intact
+/// and landing it again rebases it onto the new `main`. The other 409s (a conflict, or a base not
+/// on `main`) need new work.
+fn is_lost_swap(detail: &str) -> bool {
+    detail.starts_with("main moved")
+}
+
+/// How a landing ended.
+pub struct Landing {
+    /// The HTTP status; 0 where no answer came.
+    pub status: Status,
+    /// A 409 that says `main` moved while landing.
+    pub lost_swap: bool,
+}
+
 /// The address of `bytes`: `sha256:` and the digest in lowercase hex.
 fn address(bytes: &[u8]) -> String {
     let mut address = String::from("sha256:");
@@ -165,15 +185,28 @@ impl Session<'_> {
     }
 
     /// Lands the draft `draft` with `message`.
-    pub async fn land(&self, draft: &str, message: &str) -> Status {
+    pub async fn land(&self, draft: &str, message: &str) -> Landing {
         let request = self
             .api
             .http
             .post(self.repository_url(&format!("drafts/{draft}/land")))
             .json(&json!({ "message": message }));
-        self.send(request)
-            .await
-            .map_or(0, |answer| answer.status().as_u16())
+        let Some(answer) = self.send(request).await else {
+            return Landing {
+                status: 0,
+                lost_swap: false,
+            };
+        };
+        let status = answer.status().as_u16();
+        let detail = if status == 409 {
+            answer.json::<Problem>().await.map(|problem| problem.detail)
+        } else {
+            Ok(String::new())
+        };
+        Landing {
+            status,
+            lost_swap: detail.is_ok_and(|detail| is_lost_swap(&detail)),
+        }
     }
 
     /// The bytes of the file at `path` on `main`: the lookup and the download from the object
@@ -239,5 +272,15 @@ mod tests {
             address(b"abc"),
             "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn tells_a_lost_swap_from_a_conflict_by_the_detail() {
+        assert!(is_lost_swap("main moved while landing; land again"));
+        assert!(is_lost_swap("main moved; try again"));
+        assert!(!is_lost_swap(
+            "the draft conflicts with changes landed on main since its base"
+        ));
+        assert!(!is_lost_swap("the draft's base is not on main"));
     }
 }
