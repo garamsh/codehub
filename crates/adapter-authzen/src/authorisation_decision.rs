@@ -18,8 +18,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const EXPIRY_MARGIN: Duration = Duration::from_secs(5);
 
 /// Authorisation by an AuthZEN 1.0 decision point. A decision is one evaluation request, and
-/// decisions on many resources are one evaluations request where the decision point's metadata
-/// advertises it, read on first use; the bearer token is held, the decision never.
+/// decisions on many resources are one evaluations request where the adapter is enabled for it
+/// and the decision point's metadata advertises it, read on first use (ADR 0041); the bearer
+/// token is held, the decision never.
 pub struct AuthzenAuthorisationDecision {
     http: reqwest::Client,
     metadata_endpoint: String,
@@ -27,6 +28,8 @@ pub struct AuthzenAuthorisationDecision {
     /// `access_evaluations_endpoint` of the metadata once it has been read successfully, `None`
     /// inside where the metadata does not advertise it.
     evaluations_endpoint: Mutex<Option<Option<String>>>,
+    /// Whether decisions on many resources may be one evaluations request (ADR 0041).
+    access_evaluations: bool,
     token_endpoint: String,
     client_id: String,
     client_secret: String,
@@ -114,11 +117,22 @@ impl AuthzenAuthorisationDecision {
             metadata_endpoint: format!("{base_url}/.well-known/authzen-configuration"),
             evaluation_endpoint: format!("{base_url}/access/v1/evaluation"),
             evaluations_endpoint: Mutex::new(None),
+            access_evaluations: false,
             token_endpoint: token_endpoint.to_owned(),
             client_id: client_id.to_owned(),
             client_secret: client_secret.to_owned(),
             token: Mutex::new(None),
         })
+    }
+
+    /// The adapter, sending decisions on many resources as one evaluations request where
+    /// `enabled` and the decision point's metadata advertises it, and one evaluation per resource
+    /// otherwise, which is the default. Enable it only for a decision point that decides each
+    /// evaluation by its own resource properties (ADR 0041).
+    #[must_use]
+    pub const fn with_access_evaluations(mut self, enabled: bool) -> Self {
+        self.access_evaluations = enabled;
+        self
     }
 
     /// The held token while it is fresh, and a newly obtained one otherwise or where `renew`.
@@ -269,7 +283,12 @@ impl AuthorisationDecision for AuthzenAuthorisationDecision {
         if resources.is_empty() {
             return Ok(Vec::new());
         }
-        let Some(endpoint) = self.evaluations_endpoint().await? else {
+        let endpoint = if self.access_evaluations {
+            self.evaluations_endpoint().await?
+        } else {
+            None
+        };
+        let Some(endpoint) = endpoint else {
             let mut decisions = Vec::with_capacity(resources.len());
             for resource in resources {
                 decisions.push(self.decide(subject, action, resource).await?);

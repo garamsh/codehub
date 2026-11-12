@@ -315,11 +315,13 @@ fn lists_every_authorisation_setting_in_help() {
         "--authzen-token-endpoint",
         "--authzen-client-id",
         "--authzen-client-secret",
+        "--authzen-evaluations",
         "CODEHUB_AUTHORISATION",
         "CODEHUB_AUTHZEN_URL",
         "CODEHUB_AUTHZEN_TOKEN_ENDPOINT",
         "CODEHUB_AUTHZEN_CLIENT_ID",
         "CODEHUB_AUTHZEN_CLIENT_SECRET",
+        "CODEHUB_AUTHZEN_EVALUATIONS",
     ] {
         assert!(help.contains(flag), "{flag} is not in --help");
     }

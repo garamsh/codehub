@@ -310,6 +310,12 @@ impl Stub {
         .unwrap()
     }
 
+    /// An adapter that sends decisions on many resources as one evaluations request where the
+    /// metadata advertises it.
+    fn adapter_with_evaluations(&self) -> AuthzenAuthorisationDecision {
+        self.adapter().with_access_evaluations(true)
+    }
+
     /// The requests received at `route`, as text.
     fn requests_to(&self, route: &str) -> Vec<String> {
         let prefix = format!("POST {route} ");
@@ -799,7 +805,7 @@ fn requests_count(stub: &Stub, start: &str) -> usize {
 #[tokio::test]
 async fn decides_many_resources_in_one_evaluations_request_where_the_metadata_advertises_it() {
     let stub = decision_point(true, answers_each_evaluation).await;
-    let adapter = stub.adapter();
+    let adapter = stub.adapter_with_evaluations();
     let resources = three_paths();
 
     let first = adapter
@@ -868,7 +874,7 @@ async fn asks_one_evaluation_per_resource_where_the_metadata_does_not_advertise_
 #[tokio::test]
 async fn decides_a_resource_given_twice_twice_and_none_without_asking() {
     let stub = decision_point(true, answers_each_evaluation).await;
-    let adapter = stub.adapter();
+    let adapter = stub.adapter_with_evaluations();
     let a = path("acme", "app", "docs/a");
 
     let none = adapter.decide_all(&user(), Action::Write, &[]).await;
@@ -899,7 +905,7 @@ async fn fails_on_an_evaluations_answer_with_another_number_of_decisions_than_re
     for evaluations in [one_decision, four_decisions] {
         let stub = decision_point(true, evaluations).await;
         let result = stub
-            .adapter()
+            .adapter_with_evaluations()
             .decide_all(&user(), Action::Write, &three_paths())
             .await;
         assert!(
@@ -911,7 +917,7 @@ async fn fails_on_an_evaluations_answer_with_another_number_of_decisions_than_re
     // The control: an answer with one decision per resource is accepted.
     let stub = decision_point(true, answers_each_evaluation).await;
     assert!(
-        stub.adapter()
+        stub.adapter_with_evaluations()
             .decide_all(&user(), Action::Write, &three_paths())
             .await
             .is_ok()
@@ -926,7 +932,7 @@ async fn fails_where_the_evaluations_call_fails() {
     let stub = decision_point(true, server_error).await;
 
     let result = stub
-        .adapter()
+        .adapter_with_evaluations()
         .decide_all(&user(), Action::Write, &three_paths())
         .await;
 
@@ -953,7 +959,7 @@ async fn reads_the_metadata_again_after_a_failed_read() {
         }
     })
     .await;
-    let adapter = stub.adapter();
+    let adapter = stub.adapter_with_evaluations();
     let resources = three_paths();
 
     let failed = adapter.decide_all(&user(), Action::Write, &resources).await;
@@ -969,32 +975,27 @@ async fn reads_the_metadata_again_after_a_failed_read() {
 }
 
 #[tokio::test]
-async fn decides_many_paths_against_the_test_decision_point_as_it_decides_each() {
+async fn denies_the_path_the_policy_denies_among_many_against_the_test_decision_point() {
     let adapter = real_adapter();
-    let resources: Vec<Resource> = ["docs/x", "src/main.rs", "docs", "docsx/y", "docs/x"]
-        .iter()
-        .map(|p| path("acme", "app", p))
-        .collect();
+    let docs = path("acme", "app", "docs/x");
+    let src = path("acme", "app", "src/main.rs");
 
     let decisions = adapter
-        .decide_all(&bob(), Action::Write, &resources)
+        .decide_all(&bob(), Action::Write, &[docs.clone(), src.clone()])
         .await
         .unwrap();
 
-    let mut each = Vec::new();
-    for resource in &resources {
-        each.push(decide(&adapter, &bob(), Action::Write, resource).await);
-    }
-    assert_eq!(decisions, each);
-    // The control: the answers are not all one decision.
+    // Cerbos 0.57.0 answers an evaluations request for resources of one id with the first
+    // decision for all of them (ADR 0041), so the default must not send one.
+    assert_eq!(decisions, [Decision::Allow, Decision::Deny]);
+    let reversed = adapter
+        .decide_all(&bob(), Action::Write, &[src, docs.clone()])
+        .await
+        .unwrap();
+    assert_eq!(reversed, [Decision::Deny, Decision::Allow]);
+    // The control: the allowed path alone is allowed.
     assert_eq!(
-        decisions,
-        [
-            Decision::Allow,
-            Decision::Deny,
-            Decision::Allow,
-            Decision::Deny,
-            Decision::Allow
-        ]
+        decide(&adapter, &bob(), Action::Write, &docs).await,
+        Decision::Allow
     );
 }

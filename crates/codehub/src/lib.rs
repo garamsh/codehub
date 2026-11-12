@@ -125,6 +125,18 @@ impl AuthorisationDecision for Decider {
             Self::Authzen(decider) => decider.decide(subject, action, resource).await,
         }
     }
+
+    async fn decide_all(
+        &self,
+        subject: &Principal,
+        action: Action,
+        resources: &[Resource],
+    ) -> Result<Vec<Decision>, AuthorisationError> {
+        match self {
+            Self::Postgres(decider) => decider.decide_all(subject, action, resources).await,
+            Self::Authzen(decider) => decider.decide_all(subject, action, resources).await,
+        }
+    }
 }
 
 /// Builds the identity verification `config` selects.
@@ -187,6 +199,7 @@ fn decider(config: &Config, database: &Database) -> Result<Decider, Error> {
                 "--authzen-client-secret (CODEHUB_AUTHZEN_CLIENT_SECRET)",
             )?,
         )
+        .map(|decider| decider.with_access_evaluations(config.authzen_evaluations))
         .map(Decider::Authzen)
         .map_err(Error::Authorisation),
     }

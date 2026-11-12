@@ -1,6 +1,7 @@
 //! Authenticating callers and authorising them per path, through the driving ports.
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::contract::{Deployment, MAX_UPLOAD_SIZE, Repo, draft};
 use app::domain::address::Address;
@@ -20,7 +21,7 @@ use app::port::driving::access::AccessError;
 use app::port::driving::authentication::{Authentication, AuthenticationError};
 use app::port::driving::members::Members;
 use app::port::driving::repositories::{Repositories, RepositoriesError};
-use app::port::driving::source_control::LandError;
+use app::port::driving::source_control::{LandError, Landing};
 use app::port::driving::source_control::{SourceControl, SourceControlError};
 use app::use_case::administration::Administration;
 use app::use_case::members::{MembersAdapters, MembersService};
@@ -514,4 +515,89 @@ pub async fn a_failing_authorisation_backend_refuses_the_call_with_its_descripti
             .await
             .is_ok()
     );
+}
+
+/// A decision over `inner` that counts the calls deciding many resources and the paths decided
+/// one at a time.
+struct CountsCalls<'a, A> {
+    inner: &'a A,
+    many: AtomicU32,
+    single_paths: AtomicU32,
+}
+
+impl<A: AuthorisationDecision + Sync> AuthorisationDecision for CountsCalls<'_, A> {
+    async fn decide(
+        &self,
+        subject: &Principal,
+        action: Action,
+        resource: &Resource,
+    ) -> Result<Decision, AuthorisationError> {
+        if matches!(resource, Resource::Path { .. }) {
+            self.single_paths.fetch_add(1, Ordering::SeqCst);
+        }
+        self.inner.decide(subject, action, resource).await
+    }
+
+    fn decide_all(
+        &self,
+        subject: &Principal,
+        action: Action,
+        resources: &[Resource],
+    ) -> impl Future<Output = Result<Vec<Decision>, AuthorisationError>> + Send
+    where
+        Self: Sync,
+    {
+        self.many.fetch_add(1, Ordering::SeqCst);
+        self.inner.decide_all(subject, action, resources)
+    }
+}
+
+/// A landing of many paths asks the decision port once.
+pub async fn a_landing_of_many_paths_asks_the_decision_port_once<H: Deployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    repo.stage(
+        &ada,
+        &draft("many"),
+        &[("a", "a\n"), ("b/c", "c\n"), ("b/d", "d\n"), ("e", "e\n")],
+    )
+    .await;
+    repo.stage(&ada, &draft("one"), &[("f", "f\n")]).await;
+    let counted = CountsCalls {
+        inner: harness.authorisation(),
+        many: AtomicU32::new(0),
+        single_paths: AtomicU32::new(0),
+    };
+    let source_control = SourceControlService::new(
+        SourceControlAdapters {
+            objects: harness.objects(),
+            log: harness.log(),
+            derived: harness.derived(),
+            drafts: harness.drafts(),
+            directory: harness.directory(),
+            authorisation: &counted,
+        },
+        MAX_UPLOAD_SIZE,
+    );
+    let landing = |message: &str| Landing {
+        message: message.to_owned(),
+        timestamp: 0,
+    };
+
+    source_control
+        .land(&ada, repo.id, &draft("many"), landing("many"))
+        .await
+        .unwrap();
+
+    assert_eq!(counted.many.load(Ordering::SeqCst), 1);
+    assert_eq!(counted.single_paths.load(Ordering::SeqCst), 0);
+    assert_eq!(repo.read("b/d").await.as_deref(), Some("d\n"));
+
+    // Control: a landing of one path asks once too, so the count does not follow the paths.
+    source_control
+        .land(&ada, repo.id, &draft("one"), landing("one"))
+        .await
+        .unwrap();
+    assert_eq!(counted.many.load(Ordering::SeqCst), 2);
 }

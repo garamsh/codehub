@@ -49,3 +49,8 @@ async fn a_failing_authorisation_backend_refuses_the_call_with_its_description()
     access::a_failing_authorisation_backend_refuses_the_call_with_its_description::<Harness>()
         .await;
 }
+
+#[tokio::test]
+async fn a_landing_of_many_paths_asks_the_decision_port_once() {
+    access::a_landing_of_many_paths_asks_the_decision_port_once::<Harness>().await;
+}
