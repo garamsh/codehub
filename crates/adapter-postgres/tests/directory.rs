@@ -7,6 +7,7 @@ use app::domain::name::{OrganisationName, RepositoryName};
 use app::domain::repository::RepositoryId;
 use app::port::driven::repository_directory::RepositoryDirectory;
 use common::Harness;
+use test_support::contract::Deployment;
 
 #[tokio::test]
 async fn answers_the_names_of_a_repository_from_its_identifier() {

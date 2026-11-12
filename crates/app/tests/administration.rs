@@ -25,7 +25,8 @@ use app::use_case::administration::Administration;
 use app::use_case::members::MembersService;
 use app::use_case::repositories::RepositoriesService;
 use app::use_case::source_control::SourceControlService;
-use common::{Harness, MAX_UPLOAD_SIZE};
+use common::Harness;
+use test_support::contract::{Deployment, MAX_UPLOAD_SIZE};
 
 #[cfg(test)]
 fn organisation(name: &str) -> OrganisationName {

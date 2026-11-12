@@ -11,9 +11,9 @@ use crate::membership::{Member, Members};
 
 /// The ADR 0021 policy evaluated over the memberships of a [`crate::MemoryMembership`]: an admin
 /// may take every action in its organisation; a member's grants allow `read` and `write` on the
-/// paths they cover, and a member holding any grant on a repository may read it as a whole.
-/// [`MemoryAuthorisationDecision::answer`] fixes the decision for an action ahead of that policy,
-/// as an outside decision point that keeps its own entities would.
+/// paths they cover, and a member holding any grant on a repository may read or write it as a
+/// whole as that grant allows. [`MemoryAuthorisationDecision::answer`] fixes the decision for an
+/// action ahead of that policy, as an outside decision point that keeps its own entities would.
 pub struct MemoryAuthorisationDecision {
     state: Arc<Mutex<Members>>,
     answers: Mutex<Vec<(Action, Decision)>>,
