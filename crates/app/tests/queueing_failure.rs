@@ -8,11 +8,13 @@ use app::domain::address::Address;
 use app::domain::job::{Heartbeat, Job, JobId, JobResult, NewJob};
 use app::domain::name::OrganisationName;
 use app::domain::repository::RepositoryId;
+use app::domain::revert::Revert;
 use app::domain::runner::{Registration, RegistrationId};
 use app::port::driven::check_definitions::CheckDefinitions;
 use app::port::driven::job_queue::{JobQueue, JobQueueError};
 use app::port::driving::source_control::{LandError, Landing, SourceControl, SourceControlError};
 use app::use_case::checked_source_control::{CheckedAdapters, CheckedSourceControl};
+use app::use_case::landing_attempts::LandingAttempts;
 use common::Harness;
 use test_support::contract::runner_deployment::{RunnerDeployment, definitions, text};
 use test_support::contract::{Deployment, draft};
@@ -66,6 +68,10 @@ impl JobQueue for RefusingQueue {
         self.0.cancel(organisation, job).await
     }
 
+    async fn record_revert(&self, job: JobId, revert: Revert) -> Result<Job, JobQueueError> {
+        self.0.record_revert(job, revert).await
+    }
+
     async fn of_changeset(
         &self,
         repository: RepositoryId,
@@ -101,6 +107,7 @@ async fn a_landing_whose_checks_cannot_be_queued_names_the_landed_changeset() {
             queue: &queue,
             definitions: harness.definitions(),
         },
+        LandingAttempts::default(),
     );
 
     let landing = Landing {

@@ -10,6 +10,7 @@ use crate::domain::repository::RepositoryId;
 use crate::port::driven::changeset_log::ChangesetLogError;
 use crate::port::driven::job_queue::JobQueueError;
 use crate::port::driving::access::AccessError;
+use crate::port::driving::revert::RevertError;
 
 /// What the outside asks of a repository's checks.
 pub trait Checks {
@@ -63,6 +64,8 @@ pub enum ChecksError {
     Queue(JobQueueError),
     /// The changeset log failed.
     Log(ChangesetLogError),
+    /// A blocking job timed out and its changeset was not reverted.
+    Revert(RevertError),
 }
 
 impl fmt::Display for ChecksError {
@@ -71,6 +74,7 @@ impl fmt::Display for ChecksError {
             Self::Access(error) => write!(f, "{error}"),
             Self::Queue(error) => write!(f, "{error}"),
             Self::Log(error) => write!(f, "{error}"),
+            Self::Revert(error) => write!(f, "{error}"),
         }
     }
 }
@@ -81,6 +85,7 @@ impl std::error::Error for ChecksError {
             Self::Access(error) => Some(error),
             Self::Queue(error) => Some(error),
             Self::Log(error) => Some(error),
+            Self::Revert(error) => Some(error),
         }
     }
 }
@@ -100,5 +105,11 @@ impl From<JobQueueError> for ChecksError {
 impl From<ChangesetLogError> for ChecksError {
     fn from(error: ChangesetLogError) -> Self {
         Self::Log(error)
+    }
+}
+
+impl From<RevertError> for ChecksError {
+    fn from(error: RevertError) -> Self {
+        Self::Revert(error)
     }
 }

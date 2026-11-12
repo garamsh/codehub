@@ -11,6 +11,7 @@ use crate::port::driven::derived_data::DerivedDataError;
 use crate::port::driven::job_queue::JobQueueError;
 use crate::port::driven::object_store::{Grant, ObjectStoreError};
 use crate::port::driven::runner_registry::RunnerRegistryError;
+use crate::port::driving::revert::RevertError;
 
 /// What a registered runner asks of the application. Each operation is refused with
 /// [`JobsError::NotRegistered`] where the caller is not registered as a runner. Each takes `now`,
@@ -93,6 +94,8 @@ pub enum JobsError {
     Log(ChangesetLogError),
     /// A file of the tree has no valid path, which the tree's derivation rules out.
     Path(PathError),
+    /// A blocking check ended in failure and its changeset was not reverted.
+    Revert(RevertError),
 }
 
 impl fmt::Display for JobsError {
@@ -105,6 +108,7 @@ impl fmt::Display for JobsError {
             Self::Derived(error) => write!(f, "{error}"),
             Self::Log(error) => write!(f, "{error}"),
             Self::Path(error) => write!(f, "{error}"),
+            Self::Revert(error) => write!(f, "{error}"),
         }
     }
 }
@@ -119,6 +123,7 @@ impl std::error::Error for JobsError {
             Self::Derived(error) => Some(error),
             Self::Log(error) => Some(error),
             Self::Path(error) => Some(error),
+            Self::Revert(error) => Some(error),
         }
     }
 }
@@ -156,5 +161,11 @@ impl From<ChangesetLogError> for JobsError {
 impl From<PathError> for JobsError {
     fn from(error: PathError) -> Self {
         Self::Path(error)
+    }
+}
+
+impl From<RevertError> for JobsError {
+    fn from(error: RevertError) -> Self {
+        Self::Revert(error)
     }
 }

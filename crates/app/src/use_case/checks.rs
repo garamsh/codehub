@@ -7,14 +7,20 @@ use crate::domain::principal::Caller;
 use crate::domain::repository::RepositoryId;
 use crate::port::driven::authorisation_decision::{Action, AuthorisationDecision, Resource};
 use crate::port::driven::changeset_log::{ChangesetLog, Ref};
+use crate::port::driven::check_definitions::CheckDefinitions;
+use crate::port::driven::derived_data::DerivedData;
 use crate::port::driven::job_queue::JobQueue;
+use crate::port::driven::object_store::ObjectStore;
 use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driving::checks::{Checks, ChecksError};
 use crate::use_case::access::{readable_repository, require};
+use crate::use_case::checked_source_control::CheckedAdapters;
 use crate::use_case::jobs::expire;
+use crate::use_case::landing_attempts::LandingAttempts;
+use crate::use_case::revert::Reverts;
 
 /// The driven ports the checks are built over.
-pub struct ChecksAdapters<'a, Q, L, R, A> {
+pub struct ChecksAdapters<'a, Q, L, R, A, O, D, C> {
     /// Holds the jobs.
     pub queue: &'a Q,
     /// Stores changesets and `last-green`.
@@ -23,40 +29,68 @@ pub struct ChecksAdapters<'a, Q, L, R, A> {
     pub directory: &'a R,
     /// Says what callers may do.
     pub authorisation: &'a A,
+    /// Stores blobs.
+    pub objects: &'a O,
+    /// Stores derived data.
+    pub derived: &'a D,
+    /// Reads the check definitions.
+    pub definitions: &'a C,
 }
 
-/// A repository's checks over the driven ports the composition site passes to it.
-pub struct ChecksService<'a, Q, L, R, A> {
+/// A repository's checks over the driven ports the composition site passes to it. A blocking job
+/// that times out where the checks are read has its changeset reverted.
+pub struct ChecksService<'a, Q, L, R, A, O, D, C> {
     queue: &'a Q,
     log: &'a L,
     directory: &'a R,
     authorisation: &'a A,
+    reverts: Reverts<'a, O, D, L, R, Q, C>,
 }
 
-impl<'a, Q, L, R, A> ChecksService<'a, Q, L, R, A> {
-    /// Checks over `adapters`.
-    pub const fn new(adapters: ChecksAdapters<'a, Q, L, R, A>) -> Self {
+impl<'a, Q, L, R, A, O, D, C> ChecksService<'a, Q, L, R, A, O, D, C> {
+    /// Checks over `adapters`, each revert tried at most `attempts` times.
+    pub const fn new(
+        adapters: ChecksAdapters<'a, Q, L, R, A, O, D, C>,
+        attempts: LandingAttempts,
+    ) -> Self {
         let ChecksAdapters {
             queue,
             log,
             directory,
             authorisation,
+            objects,
+            derived,
+            definitions,
         } = adapters;
         Self {
             queue,
             log,
             directory,
             authorisation,
+            reverts: Reverts::new(
+                CheckedAdapters {
+                    objects,
+                    derived,
+                    log,
+                    directory,
+                    queue,
+                    definitions,
+                },
+                attempts,
+            ),
         }
     }
 }
 
-impl<Q, L, R, A> Checks for ChecksService<'_, Q, L, R, A>
+impl<Q, L, R, A, O, D, C> Checks for ChecksService<'_, Q, L, R, A, O, D, C>
 where
     Q: JobQueue + Sync,
     L: ChangesetLog + Sync,
     R: RepositoryDirectory + Sync,
     A: AuthorisationDecision + Sync,
+    O: ObjectStore + Sync,
+    D: DerivedData + Sync,
+    C: CheckDefinitions + Sync,
 {
     async fn jobs_of(
         &self,
@@ -72,7 +106,7 @@ where
             repository,
         )
         .await?;
-        expire(self.queue, now).await?;
+        expire(&self.reverts, now).await?;
         Ok(self.queue.of_changeset(repository, changeset).await?)
     }
 

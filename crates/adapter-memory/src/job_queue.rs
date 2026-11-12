@@ -5,6 +5,7 @@ use app::domain::address::Address;
 use app::domain::job::{Heartbeat, Job, JobId, JobResult, JobState, NewJob, StopReason};
 use app::domain::name::OrganisationName;
 use app::domain::repository::RepositoryId;
+use app::domain::revert::Revert;
 use app::domain::runner::{Registration, RegistrationId};
 use app::port::driven::job_queue::{JobQueue, JobQueueError};
 
@@ -29,6 +30,7 @@ impl Jobs {
             runner: None,
             exit_code: None,
             output,
+            revert: None,
         };
         self.held.insert(job.id, job.clone());
         job
@@ -150,6 +152,16 @@ impl JobQueue for MemoryJobQueue {
             return Err(JobQueueError::Finished(job));
         }
         found.state = JobState::Cancelled;
+        Ok(found.clone())
+    }
+
+    async fn record_revert(&self, job: JobId, revert: Revert) -> Result<Job, JobQueueError> {
+        let mut held = lock(&self.jobs);
+        let found = held
+            .held
+            .get_mut(&job)
+            .ok_or(JobQueueError::NotFound(job))?;
+        found.revert = Some(revert);
         Ok(found.clone())
     }
 

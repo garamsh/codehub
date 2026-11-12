@@ -10,6 +10,7 @@ use crate::domain::address::Address;
 use crate::domain::job::{Heartbeat, Job, JobId, JobResult, NewJob};
 use crate::domain::name::OrganisationName;
 use crate::domain::repository::RepositoryId;
+use crate::domain::revert::Revert;
 use crate::domain::runner::{Registration, RegistrationId};
 
 /// Holds the jobs.
@@ -90,6 +91,18 @@ pub trait JobQueue {
         &self,
         organisation: &OrganisationName,
         job: JobId,
+    ) -> impl Future<Output = Result<Job, JobQueueError>> + Send;
+
+    /// Records `revert` with the result of `job` and returns the job as it now stands. A later
+    /// record for the same job replaces the earlier one.
+    ///
+    /// # Errors
+    ///
+    /// [`JobQueueError::NotFound`] where there is no such job.
+    fn record_revert(
+        &self,
+        job: JobId,
+        revert: Revert,
     ) -> impl Future<Output = Result<Job, JobQueueError>> + Send;
 
     /// The jobs of `changeset` in `repository`, oldest first.

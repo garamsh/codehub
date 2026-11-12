@@ -6,6 +6,7 @@ use crate::domain::address::Address;
 use crate::domain::check::CheckDefinition;
 use crate::domain::name::OrganisationName;
 use crate::domain::repository::RepositoryId;
+use crate::domain::revert::Revert;
 use crate::domain::runner::RegistrationId;
 
 /// The most output a job keeps, in bytes: the tail of what the runner reported.
@@ -105,6 +106,9 @@ pub struct Job {
     pub exit_code: Option<i32>,
     /// The tail of the output the runner reported, at most [`OUTPUT_LIMIT`] bytes.
     pub output: Vec<u8>,
+    /// What came of reverting the changeset because this check failed or timed out; `None` where
+    /// no revert was attempted for this job.
+    pub revert: Option<Revert>,
 }
 
 /// How a runner says a job ended.
