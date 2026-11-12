@@ -46,7 +46,7 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0010-cli-and-mcp-interfaces.md` — ADR 0010, the CLI and the MCP server are first-class interfaces over server-side work; the MCP part is superseded by ADR 0026
 - `adr/0015-server-api-transport.md` — ADR 0015, the server API is HTTP with JSON described by OpenAPI, and object bytes move by presigned URL
 - `access.md` — identity, authorisation and provisioning ports and the standards their default adapters speak
-- `adr/0006-authentication-and-authorisation-outside-the-core.md` — ADR 0006, authentication and authorisation are separated from the core and speak standards; the agent and Token Exchange parts are superseded by ADR 0027
+- `adr/0006-authentication-and-authorisation-outside-the-core.md` — ADR 0006, authentication and authorisation are separated from the core and speak standards; the agent and Token Exchange parts are superseded by ADR 0027, and mutual TLS for runners by ADR 0034
 - `adr/0026-no-mcp-server-in-codehub.md` — ADR 0026, codehub builds no MCP server, and its first-class interfaces are `ch` and the HTTP API
 - `adr/0027-one-kind-of-principal.md` — ADR 0027, codehub knows one kind of principal, and how a token is obtained is the issuer's and the client's
 - `adr/0028-federation-through-standards.md` — ADR 0028, codehub is federated through standards, with one audience and shared organisation names
@@ -59,4 +59,6 @@ Current architecture of the system and the decisions behind it. This file is the
 - `runner.md` — runner registration, polling, labels, pools, job lifecycle
 - `adr/0007-cache-model-c.md` — ADR 0007, caches are versioned workspace data with images derived from them
 - `adr/0008-image-delivery-and-executor-drivers.md` — ADR 0008, images delivered through object storage, environment known only to executor drivers
-- `adr/0009-runner-registration-and-job-protocol.md` — ADR 0009, runners follow the GitHub Actions self-hosted runner model
+- `adr/0009-runner-registration-and-job-protocol.md` — ADR 0009, runners follow the GitHub Actions self-hosted runner model; the registration token, runner credentials and mutual TLS are superseded by ADR 0034
+- `adr/0034-runners-are-principals-polling-over-http.md` — ADR 0034, a runner is a registered principal that long-polls the HTTP API and runs jobs on its host
+- `adr/0035-post-land-checks-last-green-and-revert.md` — ADR 0035, post-land checks are configured in the repository, move `last-green` and revert a blocking failure

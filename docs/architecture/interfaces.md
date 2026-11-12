@@ -11,6 +11,7 @@ The ways clients reach the system, which are the `ch` CLI and the HTTP API behin
 - **`ch` exits with a code that tells the failure apart:** 0 success, 1 any other failure, 2 usage, 3 not logged in or 401, 4 landing rejected (409 or 403 on `land`), 5 denied or not found on any other operation (403 or 404). `ch --help` lists them.
 - **The CLI is named `ch`.** `hub` was rejected because Debian ships a package of that name, GitHub's old CLI.
 - **The server API is HTTP with JSON, described by OpenAPI** (ADR 0015). `ch` and any other client call it; its bodies carry metadata, not object bytes.
+- **Runners call the same HTTP JSON API** under `/v1/runner/`, as principals (ADR 0034, `runner.md`).
 - **Object bytes move by presigned URL** (ADR 0015). The API issues a short-lived presigned URL and the client uploads or downloads the bytes directly to or from the S3-compatible object store, as runners already fetch images (`execution.md`, ADR 0008).
 - **The CLI keeps three items of local state**: the server URL, the token and the selected `<org>/<repo>`, in `$XDG_CONFIG_HOME/ch/` with mode 0600. Its output is human text by default and JSON with `--json`. It holds no PostgreSQL or S3 driver and moves object bytes with plain HTTP to presigned URLs (ADR 0025).
 - **The API is versioned in the path and described by OpenAPI 3.1** (ADR 0024). Its prefix is `/v1`, resources are under `/v1/orgs/{org}/repos/{repo}/…`, errors are RFC 9457 problem details, and callers present bearer tokens.
@@ -37,4 +38,3 @@ Each is settled in an ADR when the project takes a side (`docs/architecture/READ
 
 - **Further verbs of `ch`** beyond those in M2 (ADR 0025), such as `find` and `run`, and whether `edit` is a verb. Options: a fixed small set; a small set plus an alias or plugin mechanism. Recommendation: a fixed small set.
 - **Streaming and long-running operations**, such as reporting a landing and its post-land checks. Options: long-poll; server-sent events; a status resource the client polls. Recommendation: none yet; ADR 0010 counts repeated polling around one workflow as a sign of a wrong unit of work, so the choice is made per operation with that in view.
-- **Whether runners use the same endpoint.** Options: runners call the same HTTP JSON API; runners use a separate endpoint and transport (`runner.md`, runner-to-server transport). Recommendation: none yet; ADR 0015 does not decide it, and runner identity is mutual TLS (`access.md`), which may favour a separate listener.

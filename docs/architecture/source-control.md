@@ -21,7 +21,7 @@ How versions of a repository's content are stored, changed, landed and queried.
   - `main` — what agents base their work on, and what landing advances;
   - release refs;
   - `last-green` — what CI and deployment base on.
-  - Only `main` is implemented first; the format admits more refs.
+  - `main` and `last-green` are implemented; release refs are not.
 - **PostgreSQL holds the directory, the changeset log, refs, drafts, derived data and grants** in one schema shared by all organisations, with a repository identifier on every row below the directory. The minimum major version is 18, the server takes a connection URL, migrations are forward-only SQL files in `crates/adapter-postgres` applied at server start, and connections are pooled in process (ADR 0022).
 - **A draft is identified by repository, principal and draft name** (ADR 0022).
 - **A landing that lost the compare-and-swap leaves its changeset and derived rows**, which a retry reuses because they are content-addressed; removal waits for the retention decision (ADR 0022).
@@ -31,9 +31,11 @@ How versions of a repository's content are stored, changed, landed and queried.
 - **Landing is performed on the server**, in this order:
   - rebase the changeset onto the current `main`;
   - advance `main` by compare-and-swap, so a landing that lost a race to another landing is not applied;
-  - run the post-land checks;
-  - revert the landing when a check fails.
-  - The checks and the revert are not implemented yet.
+  - queue the post-land checks;
+  - revert the landing when a blocking check fails.
+- **Post-land checks are configured in the repository** (ADR 0035). `.codehub/checks.toml` in the landed tree lists checks, each with a name, a command, labels, `blocking` (default true) and a timeout (default 600 s). Each landing on `main` queues one job per check (`runner.md`). A file that does not parse counts as one failed blocking check.
+- **`last-green` moves forward only**, by compare-and-swap, to a changeset on `main` whose blocking checks have all passed; a changeset with no blocking checks passes on landing (ADR 0035).
+- **A blocking check that fails or times out reverts its changeset** as a new changeset on `main`, made by the landing merge, authored by the server and naming the changeset and the check. A changeset is reverted at most once, an automatic revert is not itself reverted, and a revert that conflicts lands nothing and is recorded with the check result. Cancelled and non-blocking checks revert nothing (ADR 0035).
 - **The rebase at landing merges as follows** (ADR 0012):
   - a changeset whose paths do not overlap the changes made since its base is re-parented onto `main` with no merge;
   - overlapping text files are merged by a line-level 3-way merge;
@@ -129,7 +131,8 @@ The ports below follow from the decisions, named for the conversation and in the
 - **Changeset log** — append a changeset, read the log, read a ref, and move a ref by compare-and-swap on that ref alone. Served by a PostgreSQL adapter, the log as a table (ADR 0013, ADR 0022).
 - **Derived data** — read and write computed trees, file-version nodes, blame and skip lists for a repository. Served by PostgreSQL (ADR 0022).
 - **Draft store** — put and get draft changesets, held outside the log until they land (ADR 0012). Served by PostgreSQL (ADR 0022).
-- **Check dispatch** — ask for the post-land checks to run and receive their results. The execution side is in `docs/architecture/runner.md`.
+- **Check dispatch** — ask for the post-land checks to run and receive their results. Served by the job queue port (`docs/architecture/runner.md`).
+- **Check definitions** — read the checks a changeset declares from the bytes of `.codehub/checks.toml`. Served by a TOML adapter, and an in-memory adapter for tests (ADR 0035).
 - Driving adapters are the server API behind `ch` (`docs/architecture/interfaces.md`). They reach the application through four driving ports: **source control** (stage a change into a draft, grant an upload, land a draft on `main`, read a file and read a path's history), **repositories** (create organisations and repositories), **members** (add and remove members and grants) and **authentication** (verify the credential presented with a request).
 
 ## Rationale
@@ -143,6 +146,7 @@ The ports below follow from the decisions, named for the conversation and in the
 - PostgreSQL for the metadata, the log and the refs, and the object store for blobs, are ADR 0013. SQLite behind a single writer, a distributed SQL database now, and log segments in the object store were not taken.
 - Where derived data and drafts live, how PostgreSQL is run, and what a lost landing leaves: ADR 0022. A shared schema was taken over a schema per organisation, and the object store for derived data was not taken.
 - The object key, checksum verification, no compression and single-part uploads are ADR 0023: per-repository keys because export and deletion are per repository; compression and multipart upload not taken because each forgoes the store's check of the bytes against the address. Facts checked on 2026-11-11 are cited there.
+- Checks in the repository, `last-green` on blocking checks only, and automatic revert as a new changeset: ADR 0035, with the alternatives not taken.
 - Tenancy that scopes the log to a repository is ADR 0004.
 - Bundle-based export is ADR 0005.
 
@@ -151,15 +155,9 @@ The ports below follow from the decisions, named for the conversation and in the
 Each is undecided; the recommendation is not a decision.
 
 - **When the move to distributed SQL is made.** What measurement triggers it, such as write latency on the log or on `main` at a given number of concurrent agents. No option has been examined.
-- **What moves `last-green`, and on which check results.** Options: the server, when every post-land check of a changeset on `main` passes; the server, when only the checks marked blocking pass; a CI job holding a credential to move it.
 - **How release refs are created and moved, and by whom.** No option has been examined.
 - **Draft changeset lifetime.** How long a draft outside the log is kept and what removes it. No option has been examined. A draft is keyed by its principal, so no caller can name another principal's draft.
-- **Which checks run after landing, and who configures them.** Options: per repository configuration stored as repository data; a server-wide set.
-  - Recommendation: per repository.
-- **When revert is automatic.** Options: any failing check reverts; only checks marked blocking revert; a person or agent decides.
-  - Recommendation: only checks marked blocking.
-- **Revert of a landing that later changesets depend on.** Options: revert as a new changeset and rebase dependants; refuse the revert while dependants exist.
-  - Recommendation: revert as a new changeset.
+- **Landings whose checks were never queued**, because the server stopped between the compare-and-swap and queuing (ADR 0035). Options: accept; find them at server start by comparing `main` after `last-green` with the queued jobs. Recommendation: decide when one is observed.
 - **Flag of skip lists.** ADR 0011 makes the flag per type and fixes trees as eager and blame as deferred; it does not flag skip lists. Options: eager at landing; deferred to the first query.
   - Recommendation: deferred, with the first query paying for the computation.
 - **History through a merge.** Whether a path's history walks the versions a merge's other parents reached it by, and in what order. Options: only the first previous node, as now; every previous node, in an order still to be chosen.
