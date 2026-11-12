@@ -10,9 +10,9 @@ use app::domain::name::DraftName;
 use app::domain::principal::Caller;
 use app::domain::repository::RepositoryId;
 use app::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
+use app::port::driving::source_control::{LandError, Landing, PathConflict};
 use app::port::driving::source_control::{SourceControl, SourceControlError};
-use app::use_case::land::{LandError, Landing, PathConflict};
-use app::use_case::source_control::SourceControlService;
+use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
 
 /// Lands a first changeset writing `files` and checks that `main` points at it.
 async fn seed<H: Deployment>(repo: &Repo<'_, H>, ada: &Caller, files: &[(&str, &str)]) -> Address {
@@ -210,12 +210,14 @@ pub async fn a_landing_that_loses_the_compare_and_swap_is_not_applied<H: Deploym
     };
 
     let lost = SourceControlService::new(
-        harness.objects(),
-        &racing,
-        harness.derived(),
-        harness.drafts(),
-        harness.directory(),
-        harness.authorisation(),
+        SourceControlAdapters {
+            objects: harness.objects(),
+            log: &racing,
+            derived: harness.derived(),
+            drafts: harness.drafts(),
+            directory: harness.directory(),
+            authorisation: harness.authorisation(),
+        },
         MAX_UPLOAD_SIZE,
     )
     .land(

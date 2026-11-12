@@ -2,34 +2,22 @@
 //! `main` advanced to it by compare-and-swap (ADR 0012).
 
 use std::collections::BTreeMap;
-use std::fmt;
 
 use crate::domain::address::Address;
 use crate::domain::changeset::{Change, Changeset};
 use crate::domain::derivation::{self, DerivationError, Step};
 use crate::domain::draft::Draft;
-use crate::domain::encoding::EncodeError;
 use crate::domain::file::File;
-use crate::domain::merge::{self, FileConflict, FileVersion, Rebase};
+use crate::domain::merge::{self, FileVersion, Rebase};
 use crate::domain::path::Path;
 use crate::domain::principal::Principal;
 use crate::domain::repository::RepositoryId;
 use crate::domain::tree::{DeriveError, Tree, Trees};
 use crate::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
-use crate::port::driven::derived_data::{DerivedData, DerivedDataError};
-use crate::port::driven::draft_store::DraftStoreError;
-use crate::port::driven::object_store::{ObjectStore, ObjectStoreError};
-use crate::use_case::access::AccessError;
+use crate::port::driven::derived_data::DerivedData;
+use crate::port::driven::object_store::ObjectStore;
+use crate::port::driving::source_control::{LandError, Landing, PathConflict};
 use crate::use_case::read_file::file_at;
-
-/// What a landing records beyond the draft's changes.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Landing {
-    /// Why.
-    pub message: String,
-    /// When, in seconds since 1970-01-01T00:00:00Z.
-    pub timestamp: i64,
-}
 
 /// Lands the staged draft `staged` of `repository` on its `main` and returns the landed
 /// changeset's identifier. The changeset's author is `author`, the draft's principal.
@@ -245,101 +233,5 @@ async fn derive_trees<D: DerivedData>(
                 | DerivationError::Step(DeriveError::NotFound(_) | DeriveError::Encode(_))),
             ) => return Err(LandError::Tree(error)),
         }
-    }
-}
-
-/// Why a path conflicts.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PathConflict {
-    /// The two sides' versions of the file do not merge.
-    File(FileConflict),
-    /// The path holds a file where the other side has a directory, or lies under one.
-    FileAgainstDirectory,
-}
-
-/// Why a draft did not land.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum LandError {
-    /// Paths conflict with what `main` changed since the draft's base; each with its reason.
-    Conflicts(BTreeMap<Path, PathConflict>),
-    /// `main` moved between the landing's read and its compare-and-swap; the landing was not
-    /// applied.
-    MainMoved {
-        /// Where `main` points.
-        current: Option<Address>,
-    },
-    /// The draft's base is not `main` or a first-parent ancestor of it.
-    BaseNotOnMain,
-    /// The draft's tree could not be derived.
-    Tree(DerivationError<DeriveError>),
-    /// The object store failed.
-    Objects(ObjectStoreError),
-    /// The changeset log failed.
-    Log(ChangesetLogError),
-    /// Derived data failed.
-    Derived(DerivedDataError),
-    /// The draft store failed.
-    Drafts(DraftStoreError),
-    /// The landed changeset has no encoding.
-    Encode(EncodeError),
-    /// The caller may not land the draft.
-    Access(AccessError),
-}
-
-impl fmt::Display for LandError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Conflicts(paths) => write!(f, "{} conflicting paths", paths.len()),
-            Self::MainMoved {
-                current: Some(current),
-            } => write!(f, "main moved to {current}"),
-            Self::MainMoved { current: None } => write!(f, "main was unset"),
-            Self::BaseNotOnMain => write!(f, "the draft's base is not on main"),
-            Self::Tree(error) => write!(f, "{error}"),
-            Self::Objects(error) => write!(f, "{error}"),
-            Self::Log(error) => write!(f, "{error}"),
-            Self::Derived(error) => write!(f, "{error}"),
-            Self::Drafts(error) => write!(f, "{error}"),
-            Self::Encode(error) => write!(f, "{error}"),
-            Self::Access(error) => write!(f, "{error}"),
-        }
-    }
-}
-
-impl std::error::Error for LandError {}
-
-impl From<ObjectStoreError> for LandError {
-    fn from(error: ObjectStoreError) -> Self {
-        Self::Objects(error)
-    }
-}
-
-impl From<ChangesetLogError> for LandError {
-    fn from(error: ChangesetLogError) -> Self {
-        Self::Log(error)
-    }
-}
-
-impl From<DerivedDataError> for LandError {
-    fn from(error: DerivedDataError) -> Self {
-        Self::Derived(error)
-    }
-}
-
-impl From<DraftStoreError> for LandError {
-    fn from(error: DraftStoreError) -> Self {
-        Self::Drafts(error)
-    }
-}
-
-impl From<AccessError> for LandError {
-    fn from(error: AccessError) -> Self {
-        Self::Access(error)
-    }
-}
-
-impl From<EncodeError> for LandError {
-    fn from(error: EncodeError) -> Self {
-        Self::Encode(error)
     }
 }

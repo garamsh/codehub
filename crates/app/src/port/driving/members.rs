@@ -7,7 +7,7 @@ use crate::domain::path::Prefix;
 use crate::domain::principal::{Caller, Principal};
 use crate::port::driven::membership::{Access, MembershipError, Role};
 use crate::port::driven::repository_directory::DirectoryError;
-use crate::use_case::access::AccessError;
+use crate::port::driving::access::AccessError;
 
 /// What the outside asks of an organisation's members. Each operation needs an admin of the
 /// organisation, and each is refused with [`MembersError::ExternallyAdministered`] where members

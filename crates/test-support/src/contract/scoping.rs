@@ -11,16 +11,16 @@ use app::port::driven::draft_store::DraftStoreError;
 use app::port::driven::membership::Role;
 use app::port::driven::object_store::{GrantMethod, ObjectStore};
 use app::port::driven::repository_directory::DirectoryError;
+use app::port::driving::access::AccessError;
 use app::port::driving::members::Members;
 use app::port::driving::repositories::{Repositories, RepositoriesError};
+use app::port::driving::source_control::LandError;
+use app::port::driving::source_control::ReadFileError;
+use app::port::driving::source_control::StageError;
+use app::port::driving::source_control::UploadError;
 use app::port::driving::source_control::{SourceControl, SourceControlError};
-use app::use_case::access::AccessError;
 use app::use_case::administration::Administration;
-use app::use_case::land::LandError;
-use app::use_case::members::MembersService;
-use app::use_case::read_file::ReadFileError;
-use app::use_case::stage::StageError;
-use app::use_case::upload::UploadError;
+use app::use_case::members::{MembersAdapters, MembersService};
 
 /// Two repositories keep independent main refs.
 pub async fn two_repositories_keep_independent_main_refs<H: Deployment>() {
@@ -246,9 +246,11 @@ pub async fn landing_removes_the_draft<H: Deployment>() {
     let repo = harness.repository(&ada, "acme").await;
     let bob = harness.caller("bob").await;
     MembersService::new(
-        harness.directory(),
-        harness.authorisation(),
-        harness.membership(),
+        MembersAdapters {
+            directory: harness.directory(),
+            authorisation: harness.authorisation(),
+            membership: harness.membership(),
+        },
         Administration::BuiltIn,
     )
     .add_member(&ada, &"acme".parse().unwrap(), bob.principal(), Role::Admin)

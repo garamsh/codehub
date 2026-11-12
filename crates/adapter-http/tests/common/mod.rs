@@ -17,9 +17,9 @@ use app::port::driving::repositories::Repositories;
 use app::port::driving::source_control::SourceControl;
 use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
-use app::use_case::members::MembersService;
-use app::use_case::repositories::RepositoriesService;
-use app::use_case::source_control::SourceControlService;
+use app::use_case::members::{MembersAdapters, MembersService};
+use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
+use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
@@ -99,21 +99,25 @@ where
 
 fn members(stores: &'static Stores) -> impl Members + Send + Sync + 'static {
     MembersService::new(
-        &stores.directory,
-        &stores.authorisation,
-        &stores.membership,
+        MembersAdapters {
+            directory: &stores.directory,
+            authorisation: &stores.authorisation,
+            membership: &stores.membership,
+        },
         Administration::BuiltIn,
     )
 }
 
 fn source_control(stores: &'static Stores) -> impl SourceControl + Send + Sync + 'static {
     SourceControlService::new(
-        &stores.objects,
-        &stores.log,
-        &stores.derived,
-        &stores.drafts,
-        &stores.directory,
-        &stores.authorisation,
+        SourceControlAdapters {
+            objects: &stores.objects,
+            log: &stores.log,
+            derived: &stores.derived,
+            drafts: &stores.drafts,
+            directory: &stores.directory,
+            authorisation: &stores.authorisation,
+        },
         MAX_UPLOAD_SIZE,
     )
 }
@@ -122,10 +126,12 @@ impl Default for Api {
     fn default() -> Self {
         let stores = Stores::leaked();
         let repositories = RepositoriesService::new(
-            &stores.directory,
-            &stores.authorisation,
-            &stores.membership,
-            &(),
+            RepositoriesAdapters {
+                directory: &stores.directory,
+                authorisation: &stores.authorisation,
+                membership: &stores.membership,
+                changes: &(),
+            },
             Administration::BuiltIn,
         );
         Self {

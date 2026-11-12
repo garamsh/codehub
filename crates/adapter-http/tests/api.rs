@@ -63,15 +63,17 @@ async fn refuses_a_request_without_a_valid_token() {
 #[cfg(test)]
 fn router_for(api: &Api) -> axum::Router {
     use app::use_case::administration::Administration;
-    use app::use_case::repositories::RepositoriesService;
+    use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
     let stores = api.stores;
     router_with(
         stores,
         RepositoriesService::new(
-            &stores.directory,
-            &stores.authorisation,
-            &stores.membership,
-            &(),
+            RepositoriesAdapters {
+                directory: &stores.directory,
+                authorisation: &stores.authorisation,
+                membership: &stores.membership,
+                changes: &(),
+            },
             Administration::BuiltIn,
         ),
     )
@@ -441,32 +443,38 @@ async fn rejects_a_removal_with_a_missing_or_malformed_query_parameter() {
 fn external_router(api: &Api) -> axum::Router {
     use app::use_case::administration::Administration;
     use app::use_case::authentication::AuthenticationService;
-    use app::use_case::members::MembersService;
-    use app::use_case::repositories::RepositoriesService;
-    use app::use_case::source_control::SourceControlService;
+    use app::use_case::members::{MembersAdapters, MembersService};
+    use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
+    use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
     let stores = api.stores;
     adapter_http::router(
         AuthenticationService::new(&stores.identity),
         RepositoriesService::new(
-            &stores.directory,
-            &stores.authorisation,
-            &stores.membership,
-            &(),
+            RepositoriesAdapters {
+                directory: &stores.directory,
+                authorisation: &stores.authorisation,
+                membership: &stores.membership,
+                changes: &(),
+            },
             Administration::External,
         ),
         MembersService::new(
-            &stores.directory,
-            &stores.authorisation,
-            &stores.membership,
+            MembersAdapters {
+                directory: &stores.directory,
+                authorisation: &stores.authorisation,
+                membership: &stores.membership,
+            },
             Administration::External,
         ),
         SourceControlService::new(
-            &stores.objects,
-            &stores.log,
-            &stores.derived,
-            &stores.drafts,
-            &stores.directory,
-            &stores.authorisation,
+            SourceControlAdapters {
+                objects: &stores.objects,
+                log: &stores.log,
+                derived: &stores.derived,
+                drafts: &stores.drafts,
+                directory: &stores.directory,
+                authorisation: &stores.authorisation,
+            },
             common::MAX_UPLOAD_SIZE,
         ),
     )

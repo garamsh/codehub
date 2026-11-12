@@ -1,24 +1,14 @@
 //! Reading a file at `main`: its kind and a grant to download its content.
 
-use std::fmt;
-
 use crate::domain::address::Address;
-use crate::domain::file::{File, FileKind};
+use crate::domain::file::File;
 use crate::domain::path::Path;
 use crate::domain::repository::RepositoryId;
 use crate::domain::tree::Entry;
-use crate::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
+use crate::port::driven::changeset_log::{ChangesetLog, Ref};
 use crate::port::driven::derived_data::{DerivedData, DerivedDataError};
-use crate::port::driven::object_store::{Grant, ObjectStore, ObjectStoreError};
-
-/// A file as `main` holds it.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct FileContent {
-    /// The file's mode.
-    pub kind: FileKind,
-    /// A grant to download the file's bytes.
-    pub download: Grant,
-}
+use crate::port::driven::object_store::ObjectStore;
+use crate::port::driving::source_control::{FileContent, ReadFileError};
 
 /// The file at `path` in `repository`'s `main`.
 ///
@@ -75,49 +65,5 @@ pub(crate) async fn file_at<D: DerivedData>(
     match derived.tree(repository, tree).await?.entries.get(name) {
         Some(Entry::File(file)) => Ok(Some(*file)),
         Some(Entry::Directory(_)) | None => Ok(None),
-    }
-}
-
-/// Why a file could not be read.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum ReadFileError {
-    /// `main` holds no file at the path.
-    NotFound(Path),
-    /// The object store failed.
-    Objects(ObjectStoreError),
-    /// The changeset log failed.
-    Log(ChangesetLogError),
-    /// Derived data failed.
-    Derived(DerivedDataError),
-}
-
-impl fmt::Display for ReadFileError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotFound(path) => write!(f, "main holds no file {path}"),
-            Self::Objects(error) => write!(f, "{error}"),
-            Self::Log(error) => write!(f, "{error}"),
-            Self::Derived(error) => write!(f, "{error}"),
-        }
-    }
-}
-
-impl std::error::Error for ReadFileError {}
-
-impl From<ObjectStoreError> for ReadFileError {
-    fn from(error: ObjectStoreError) -> Self {
-        Self::Objects(error)
-    }
-}
-
-impl From<ChangesetLogError> for ReadFileError {
-    fn from(error: ChangesetLogError) -> Self {
-        Self::Log(error)
-    }
-}
-
-impl From<DerivedDataError> for ReadFileError {
-    fn from(error: DerivedDataError) -> Self {
-        Self::Derived(error)
     }
 }

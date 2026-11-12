@@ -19,9 +19,9 @@ use app::domain::principal::Principal;
 use app::port::driven::identity_verification::IdentityVerification;
 use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
-use app::use_case::members::MembersService;
-use app::use_case::repositories::RepositoriesService;
-use app::use_case::source_control::SourceControlService;
+use app::use_case::members::{MembersAdapters, MembersService};
+use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
+use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
 
 pub use test_support::{ChUser, Run, env, unique};
 
@@ -130,25 +130,31 @@ async fn bind<I: IdentityVerification + Send + Sync + 'static>(
     let router = adapter_http::router(
         AuthenticationService::new(identity),
         RepositoriesService::new(
-            &stores.directory,
-            &stores.authorisation,
-            &stores.membership,
-            &(),
+            RepositoriesAdapters {
+                directory: &stores.directory,
+                authorisation: &stores.authorisation,
+                membership: &stores.membership,
+                changes: &(),
+            },
             Administration::BuiltIn,
         ),
         MembersService::new(
-            &stores.directory,
-            &stores.authorisation,
-            &stores.membership,
+            MembersAdapters {
+                directory: &stores.directory,
+                authorisation: &stores.authorisation,
+                membership: &stores.membership,
+            },
             Administration::BuiltIn,
         ),
         SourceControlService::new(
-            &stores.objects,
-            &stores.log,
-            &stores.derived,
-            &stores.drafts,
-            &stores.directory,
-            &stores.authorisation,
+            SourceControlAdapters {
+                objects: &stores.objects,
+                log: &stores.log,
+                derived: &stores.derived,
+                drafts: &stores.drafts,
+                directory: &stores.directory,
+                authorisation: &stores.authorisation,
+            },
             MAX_UPLOAD_SIZE,
         ),
     );
