@@ -1,0 +1,9 @@
+.git
+.github
+.claude
+target
+deploy
+dev
+docs
+.env
+.env.*
