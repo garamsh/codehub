@@ -264,6 +264,29 @@ async fn posts_the_token_authenticated_as_the_client() {
 }
 
 #[tokio::test]
+async fn form_urlencodes_the_client_credentials_before_basic_encoding_them() {
+    let stub = Stub::answering(json!({"active": true, "aud": "codehub", "sub": "u1"})).await;
+    let verifier = IntrospectionIdentityVerification::new(
+        &stub.url,
+        "cli:ent",
+        "p:w%d s",
+        "https://configured.example",
+        "codehub",
+    )
+    .unwrap();
+
+    verifier.verify(&credential("t")).await.unwrap();
+
+    let requests = stub.requests.lock().unwrap();
+    let request = requests.first().unwrap();
+    // base64 of `cli%3Aent:p%3Aw%25d+s`
+    assert!(
+        request.contains("authorization: Basic Y2xpJTNBZW50OnAlM0F3JTI1ZCtz"),
+        "{request}"
+    );
+}
+
+#[tokio::test]
 async fn accepts_the_audience_as_a_string_or_in_an_array() {
     let one = Stub::answering(json!({"active": true, "aud": "codehub", "sub": "u1"})).await;
     let many = Stub::answering(json!({"active": true, "aud": ["x", "codehub"], "sub": "u1"})).await;
