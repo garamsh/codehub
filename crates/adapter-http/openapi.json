@@ -28,6 +28,36 @@
         }
       }
     },
+    "/healthz": {
+      "get": {
+        "summary": "Liveness: the process serves requests. Needs no token and depends on nothing.",
+        "responses": {
+          "200": {
+            "description": "The process is alive."
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "summary": "Readiness: PostgreSQL and the object store each answer within 2 seconds. Needs no token.",
+        "responses": {
+          "200": {
+            "description": "Both answer."
+          },
+          "503": {
+            "description": "PostgreSQL or the object store did not answer; the detail names it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/orgs": {
       "post": {
         "summary": "Create an organisation, administered by the caller.",

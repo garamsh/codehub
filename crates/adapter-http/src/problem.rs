@@ -77,6 +77,11 @@ impl Problem {
         Self::new(StatusCode::NOT_FOUND, "no such route")
     }
 
+    /// A dependency of the server does not answer.
+    pub(crate) fn unavailable(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, detail)
+    }
+
     /// A failure of ours; the body names no internals.
     fn internal() -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "the server failed")

@@ -4,6 +4,7 @@
 
 mod checks;
 mod extract;
+mod health;
 mod jobs;
 mod members;
 mod problem;
@@ -66,6 +67,20 @@ trait RunnerServices: Authenticates + Locates {
     fn checks(&self) -> &Self::Checks;
     fn settings(&self) -> &RunnerSettings;
 }
+
+/// The dependencies the readiness probe asks about.
+pub trait Readiness: Send + Sync + 'static {
+    /// Whether every dependency of the server answers now.
+    ///
+    /// # Errors
+    ///
+    /// [`NotReady`] naming the dependency that did not answer.
+    fn check(&self) -> impl Future<Output = Result<(), NotReady>> + Send;
+}
+
+/// Why the server is not ready: the short reason `/readyz` answers 503 with.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct NotReady(pub &'static str);
 
 /// A wait for a [`Duration`], which the composition site supplies from its runtime: this crate
 /// names no timer of its own.
@@ -256,6 +271,12 @@ routes! {
     "/v1/orgs/{org}/repos/{repo}/refs/{name}" => get(checks::reference::<P>);
 }
 
+routes! {
+    HEALTH_ROUTES, health_routed, Readiness;
+    "/healthz" => get(health::live);
+    "/readyz" => get(health::ready::<P>);
+}
+
 async fn openapi() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "application/json")], OPENAPI)
 }
@@ -317,4 +338,12 @@ where
         checks,
         settings,
     }))
+}
+
+/// The router serving the liveness and readiness probes, which need no token.
+///
+/// It has no fallback, so a caller merges it into [`router`]'s. `readiness` is asked on every
+/// request to `/readyz`.
+pub fn health_router<P: Readiness>(readiness: P) -> Router {
+    health_routed().with_state(Arc::new(readiness))
 }

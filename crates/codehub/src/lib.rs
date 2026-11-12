@@ -40,8 +40,10 @@ use app::use_case::source_control::{SourceControlAdapters, SourceControlService}
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 
+mod readiness;
 mod settings;
 
+use readiness::Probe;
 use settings::require;
 pub use settings::{Authorisation, Config, Identity};
 
@@ -379,7 +381,11 @@ pub async fn run(config: Config) -> Result<(), Error> {
             )),
             pause,
         },
-    ));
+    ))
+    .merge(adapter_http::health_router(Probe {
+        directory: &adapters.directory,
+        objects: &adapters.objects,
+    }));
     let listener = TcpListener::bind(config.listen)
         .await
         .map_err(|error| Error::Bind(config.listen, error))?;
