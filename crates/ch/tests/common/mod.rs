@@ -9,24 +9,43 @@ use std::time::Duration;
 
 use base64::Engine;
 
+use adapter_http::{Pause, RunnerSettings};
 use adapter_memory::{
-    MemoryAuthorisationDecision, MemoryChangesetLog, MemoryDerivedData, MemoryDraftStore,
-    MemoryIdentityVerification, MemoryMembership, MemoryRepositoryDirectory,
+    MemoryAuthorisationDecision, MemoryChangesetLog, MemoryCheckDefinitions, MemoryDerivedData,
+    MemoryDraftStore, MemoryIdentityVerification, MemoryJobQueue, MemoryMembership,
+    MemoryRepositoryDirectory, MemoryRunnerRegistry,
 };
 use adapter_oidc::OidcIdentityVerification;
 use adapter_s3::S3ObjectStore;
+use app::domain::check::{CheckDefinition, Command, Timeout};
+use app::domain::job::NewJob;
+use app::domain::name::{OrganisationName, RepositoryName};
 use app::domain::principal::Principal;
 use app::port::driven::identity_verification::IdentityVerification;
+use app::port::driven::job_queue::JobQueue;
+use app::port::driven::repository_directory::RepositoryDirectory;
+use app::port::driving::repositories::Repositories;
 use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
+use app::use_case::checks::{ChecksAdapters, ChecksService};
+use app::use_case::jobs::{JobsAdapters, JobsService};
+use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::members::{MembersAdapters, MembersService};
 use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
+use app::use_case::runners::{RunnersAdapters, RunnersService};
 use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
+use serde_json::json;
 
 pub use test_support::{ChUser, Run, env, unique};
 
 /// The largest upload the server grants.
 const MAX_UPLOAD_SIZE: u64 = 1024 * 1024;
+
+/// How long the server holds a claim that finds no job.
+const HOLD: Duration = Duration::from_millis(300);
+
+/// How long the server's jobs service holds a job between heartbeats, in seconds.
+const LEASE: i64 = 60;
 
 /// The adapters of one server.
 struct Stores {
@@ -38,6 +57,9 @@ struct Stores {
     identity: MemoryIdentityVerification,
     membership: MemoryMembership,
     authorisation: MemoryAuthorisationDecision,
+    registry: MemoryRunnerRegistry,
+    queue: MemoryJobQueue,
+    definitions: MemoryCheckDefinitions,
 }
 
 /// A user of `ch`: a configuration directory of its own, and so a state file of its own.
@@ -120,6 +142,9 @@ fn leak_stores() -> &'static Stores {
         identity: MemoryIdentityVerification::default(),
         authorisation: membership.authorisation_decision(),
         membership,
+        registry: MemoryRunnerRegistry::default(),
+        queue: MemoryJobQueue::default(),
+        definitions: MemoryCheckDefinitions::new(".codehub/checks.toml".parse().unwrap()),
     }))
 }
 
@@ -129,15 +154,7 @@ async fn bind<I: IdentityVerification + Send + Sync + 'static>(
 ) -> Server {
     let router = adapter_http::router(
         AuthenticationService::new(identity),
-        RepositoriesService::new(
-            RepositoriesAdapters {
-                directory: &stores.directory,
-                authorisation: &stores.authorisation,
-                membership: &stores.membership,
-                changes: &(),
-            },
-            Administration::BuiltIn,
-        ),
+        repositories(stores),
         MembersService::new(
             MembersAdapters {
                 directory: &stores.directory,
@@ -157,11 +174,74 @@ async fn bind<I: IdentityVerification + Send + Sync + 'static>(
             },
             MAX_UPLOAD_SIZE,
         ),
-    );
+    )
+    .merge(runner_router(stores, identity));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     Server { url, stores }
+}
+
+fn repositories(stores: &'static Stores) -> impl Repositories + Send + Sync + 'static {
+    RepositoriesService::new(
+        RepositoriesAdapters {
+            directory: &stores.directory,
+            authorisation: &stores.authorisation,
+            membership: &stores.membership,
+            changes: &(),
+        },
+        Administration::BuiltIn,
+    )
+}
+
+fn pause(duration: Duration) -> Pause {
+    Box::pin(tokio::time::sleep(duration))
+}
+
+fn runner_router<I: IdentityVerification + Send + Sync + 'static>(
+    stores: &'static Stores,
+    identity: &'static I,
+) -> axum::Router {
+    adapter_http::runner_router(
+        AuthenticationService::new(identity),
+        repositories(stores),
+        RunnersService::new(RunnersAdapters {
+            registry: &stores.registry,
+            directory: &stores.directory,
+            authorisation: &stores.authorisation,
+        }),
+        JobsService::new(
+            JobsAdapters {
+                registry: &stores.registry,
+                queue: &stores.queue,
+                objects: &stores.objects,
+                derived: &stores.derived,
+                log: &stores.log,
+                directory: &stores.directory,
+                definitions: &stores.definitions,
+            },
+            LEASE,
+            LandingAttempts::default(),
+        ),
+        ChecksService::new(
+            ChecksAdapters {
+                queue: &stores.queue,
+                log: &stores.log,
+                directory: &stores.directory,
+                authorisation: &stores.authorisation,
+                objects: &stores.objects,
+                derived: &stores.derived,
+                definitions: &stores.definitions,
+            },
+            LandingAttempts::default(),
+        ),
+        RunnerSettings {
+            hold: HOLD,
+            retry_interval: Duration::from_millis(50),
+            heartbeat_interval: Duration::from_secs(10),
+            pause,
+        },
+    )
 }
 
 impl Server {
@@ -182,6 +262,17 @@ impl Server {
     /// Panics when `name` is not a valid subject or the state file cannot be written.
     #[must_use]
     pub fn user(&self, name: &str) -> User {
+        self.user_with_token(&self.token(name))
+    }
+
+    /// The credential the server accepts for the principal `name`: a JWT in shape, so that `ch`
+    /// can read the issuer from it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `name` is not a valid subject.
+    #[must_use]
+    pub fn token(&self, name: &str) -> String {
         // A JWT in shape, so that `ch` can read the issuer from it; only the server's verification
         // means anything, and here that is the registration below.
         let claims = serde_json::json!({"iss": Self::ISSUER, "sub": name}).to_string();
@@ -193,7 +284,7 @@ impl Server {
             &token.parse().unwrap(),
             Principal::new(Self::ISSUER, name).unwrap(),
         );
-        self.user_with_token(&token)
+        token
     }
 
     /// A user whose state file holds `token`, which the server may not accept.
@@ -211,6 +302,22 @@ impl Server {
     }
 }
 
+/// Creates a repository `<org>/app` for `user` under a fresh organisation, selects it and returns
+/// the organisation's name.
+pub async fn repository(user: &User) -> String {
+    let org = unique("org");
+    user.ok(&["org", "create", &org]).await;
+    user.ok(&["repo", "create", &format!("{org}/app")]).await;
+    user.ok(&["use", &format!("{org}/app")]).await;
+    org
+}
+
+/// Stages `content` at `path` in `draft`.
+pub async fn put(user: &User, draft: &str, path: &str, content: &str) {
+    user.ok(&["put", path, &file(content.as_bytes()), "--draft", draft])
+        .await;
+}
+
 /// Writes `bytes` to a file of its own and returns the path.
 ///
 /// # Panics
@@ -221,4 +328,66 @@ pub fn file(bytes: &[u8]) -> String {
     let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(unique("ch-file"));
     std::fs::write(&path, bytes).unwrap();
     path.to_str().unwrap().to_owned()
+}
+
+impl Server {
+    /// Queues the check `name` against `changeset` of `org`/`app`, with no labels, as a blocking
+    /// check where `blocking`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the queue refuses it.
+    pub async fn queue_check(&self, org: &str, changeset: &str, name: &str, blocking: bool) {
+        let organisation: OrganisationName = org.parse().unwrap();
+        let repository: RepositoryName = "app".parse().unwrap();
+        let job = NewJob {
+            repository: self
+                .stores
+                .directory
+                .find_repository(&organisation, &repository)
+                .await
+                .unwrap(),
+            organisation,
+            changeset: changeset.parse().unwrap(),
+            check: CheckDefinition {
+                name: name.parse().unwrap(),
+                command: Command::new("true").unwrap(),
+                labels: std::collections::BTreeSet::new(),
+                blocking,
+                timeout: Timeout::new(60).unwrap(),
+            },
+        };
+        self.stores.queue.queue(vec![job]).await.unwrap();
+    }
+
+    /// Claims the oldest queued job as the runner holding `token` and ends it with `status`, one of
+    /// `passed`, `failed`, `timed_out` and `cancelled`, and `exit_code`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when there is no job to claim or the server refuses the result.
+    pub async fn finish_job(&self, token: &str, status: &str, exit_code: Option<i32>) {
+        let http = reqwest::Client::new();
+        let claimed = http
+            .post(format!("{}/v1/runner/jobs/claim", self.url))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(claimed.status(), 200, "no job to claim");
+        let job: serde_json::Value = claimed.json().await.unwrap();
+        let id = job["id"].as_u64().unwrap();
+        let mut result = json!({"status": status, "output_tail": ""});
+        if let Some(code) = exit_code {
+            result["exit_code"] = json!(code);
+        }
+        let reported = http
+            .post(format!("{}/v1/runner/jobs/{id}/result", self.url))
+            .bearer_auth(token)
+            .json(&result)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reported.status(), 204);
+    }
 }

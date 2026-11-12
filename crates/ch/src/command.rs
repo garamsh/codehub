@@ -2,6 +2,7 @@
 
 use std::fmt::Write as _;
 use std::io::Write;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -11,13 +12,16 @@ use sha2::{Digest, Sha256};
 
 use crate::api::{Api, transfer};
 use crate::cli::{
-    Cli, Command, Credentials, Land, Login, MemberCommand, OrgCommand, Put, RepoCommand,
-    Role as CliRole,
+    Checks, Cli, Command, Credentials, Land, Login, MemberCommand, OrgCommand, Put, RepoCommand,
+    Role as CliRole, RunnerCommand,
 };
 use crate::failure::Failure;
 use crate::login;
 use crate::state::{RepositoryRef, State, StateFile};
-use crate::wire::{Access, Grant, Kind, Member, Principal, Role, StagedFile, Upload};
+use crate::wire::{
+    Access, Check, CheckState, Grant, Kind, Member, NewRunner, Principal, Revert, Role, Runner,
+    StagedFile, Upload,
+};
 
 /// What the verbs run against: the HTTP client and the local state.
 pub struct Context {
@@ -55,6 +59,8 @@ pub async fn execute(
             command: RepoCommand::Create { repository },
         } => create_repository(context, &repository, json, out).await,
         Command::Member { command } => member(context, command).await,
+        Command::Runner { command } => runner(context, command, json, out).await,
+        Command::Checks(arguments) => checks(context, &arguments, json, out).await,
     }
 }
 
@@ -434,4 +440,196 @@ async fn member(context: &Context, command: MemberCommand) -> Result<(), Failure
             Ok(())
         }
     }
+}
+
+/// The scope of a registration as `runner list` prints it.
+fn scope(runner: &Runner) -> String {
+    runner.repository_id.map_or_else(
+        || "organisation".to_owned(),
+        |id| format!("repository:{id}"),
+    )
+}
+
+async fn runner(
+    context: &Context,
+    command: RunnerCommand,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<(), Failure> {
+    let session = Session::open(context).await?;
+    let organisation = &session.repository()?.organisation;
+    let api = session.api(context);
+    match command {
+        RunnerCommand::Register {
+            subject,
+            issuer,
+            labels,
+            repository,
+        } => {
+            let new = NewRunner {
+                issuer,
+                subject,
+                labels,
+                repository,
+            };
+            let runner = api.register_runner(organisation, &new).await?;
+            if json {
+                print_json(out, &runner)
+            } else {
+                writeln!(out, "{}", runner.id)?;
+                Ok(())
+            }
+        }
+        RunnerCommand::List => {
+            let runners = api.runners(organisation).await?.runners;
+            if json {
+                return print_json(out, &runners);
+            }
+            for runner in &runners {
+                let labels = if runner.labels.is_empty() {
+                    "-".to_owned()
+                } else {
+                    runner.labels.join(",")
+                };
+                writeln!(
+                    out,
+                    "{} {} {} {} {labels}",
+                    runner.id,
+                    scope(runner),
+                    runner.issuer,
+                    runner.subject
+                )?;
+            }
+            Ok(())
+        }
+        RunnerCommand::Remove { id } => api.remove_runner(organisation, id).await,
+    }
+}
+
+/// `checks --json`: `last-green` and the checks of the changeset.
+#[derive(Serialize)]
+struct ChecksOutput<'a> {
+    last_green: Option<&'a str>,
+    checks: &'a [Check],
+}
+
+/// The revert lines of `checks`: each revert changeset and each conflicting path once.
+fn reverts(checks: &[Check]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for revert in checks.iter().filter_map(|check| check.revert.as_ref()) {
+        let found = match revert {
+            Revert::Landed { changeset } => vec![format!("revert {changeset}")],
+            Revert::Conflicted { paths } => paths
+                .iter()
+                .map(|path| format!("conflict {path}"))
+                .collect(),
+        };
+        for line in found {
+            if !lines.contains(&line) {
+                lines.push(line);
+            }
+        }
+    }
+    lines
+}
+
+fn print_checks(
+    out: &mut impl Write,
+    last_green: Option<&str>,
+    checks: &[Check],
+) -> Result<(), Failure> {
+    writeln!(out, "last-green {}", last_green.unwrap_or("none"))?;
+    for check in checks {
+        let blocking = if check.blocking {
+            "blocking"
+        } else {
+            "non-blocking"
+        };
+        let exit = check
+            .exit_code
+            .map_or_else(|| "-".to_owned(), |code| code.to_string());
+        writeln!(
+            out,
+            "{} {blocking} {} {exit}",
+            check.name,
+            check.state.text()
+        )?;
+    }
+    for line in reverts(checks) {
+        writeln!(out, "{line}")?;
+    }
+    Ok(())
+}
+
+/// The names of `checks` for which `selected` holds, as one text.
+fn names(checks: &[Check], selected: impl Fn(&Check) -> bool) -> String {
+    let names: Vec<&str> = checks
+        .iter()
+        .filter(|check| selected(check))
+        .map(|check| check.name.as_str())
+        .collect();
+    names.join(", ")
+}
+
+async fn checks(
+    context: &Context,
+    arguments: &Checks,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<(), Failure> {
+    let session = Session::open(context).await?;
+    let repository = session.repository()?;
+    let api = session.api(context);
+    let changeset = match &arguments.changeset {
+        Some(changeset) => changeset.clone(),
+        None => api.reference(repository, "main").await?.changeset,
+    };
+    let started = Instant::now();
+    let timeout = Duration::from_secs(arguments.timeout);
+    let interval = Duration::from_millis(arguments.poll_interval_ms);
+    let (checks, timed_out) = loop {
+        let checks = api.checks(repository, &changeset).await?.checks;
+        if !arguments.wait || checks.iter().all(|check| check.state.ended()) {
+            break (checks, false);
+        }
+        let left = timeout.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            break (checks, true);
+        }
+        tokio::time::sleep(interval.min(left)).await;
+    };
+    // The checks listing has answered for the repository, so a ref not set is `last-green` not
+    // yet moved.
+    let last_green = match api.reference(repository, "last-green").await {
+        Ok(reference) => Some(reference.changeset),
+        Err(Failure::Denied(_)) => None,
+        Err(failure) => return Err(failure),
+    };
+    if json {
+        print_json(
+            out,
+            &ChecksOutput {
+                last_green: last_green.as_deref(),
+                checks: &checks,
+            },
+        )?;
+    } else {
+        print_checks(out, last_green.as_deref(), &checks)?;
+    }
+    if timed_out {
+        let running = names(&checks, |check| !check.state.ended());
+        return Err(Failure::ChecksNotPassed(format!(
+            "timed out after {} seconds; not ended: {running}",
+            arguments.timeout
+        )));
+    }
+    let failed = names(&checks, |check| {
+        check.blocking && check.state != CheckState::Passed
+    });
+    if arguments.wait && !failed.is_empty() {
+        return Err(Failure::ChecksNotPassed(format!(
+            "blocking checks did not pass: {failed}"
+        )));
+    }
+    Ok(())
 }

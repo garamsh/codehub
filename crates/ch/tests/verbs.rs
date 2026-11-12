@@ -6,26 +6,8 @@ pub mod common;
 use std::os::unix::fs::PermissionsExt;
 
 use app::domain::address::Address;
-use common::{User, file, serve, unique};
+use common::{User, file, put, repository, serve, unique};
 use serde_json::{Value, json};
-
-/// Creates a repository `<org>/app` for `user` under a fresh organisation, selects it and returns
-/// the organisation's name.
-#[cfg(test)]
-async fn repository(user: &User) -> String {
-    let org = unique("org");
-    user.ok(&["org", "create", &org]).await;
-    user.ok(&["repo", "create", &format!("{org}/app")]).await;
-    user.ok(&["use", &format!("{org}/app")]).await;
-    org
-}
-
-/// Stages `content` at `path` in `draft`.
-#[cfg(test)]
-async fn put(user: &User, draft: &str, path: &str, content: &str) {
-    user.ok(&["put", path, &file(content.as_bytes()), "--draft", draft])
-        .await;
-}
 
 #[cfg(test)]
 fn address(content: &str) -> String {

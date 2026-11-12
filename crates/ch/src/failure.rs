@@ -11,6 +11,8 @@ pub const EXIT_OTHER: u8 = 1;
 pub const EXIT_NOT_LOGGED_IN: u8 = 3;
 /// The exit code for a landing the server rejected.
 pub const EXIT_LANDING_REJECTED: u8 = 4;
+/// The exit code for `checks --wait` ending with a blocking check that did not pass, or timing out.
+pub const EXIT_CHECKS_NOT_PASSED: u8 = 4;
 /// The exit code for an operation other than landing that was denied or found nothing.
 pub const EXIT_DENIED: u8 = 5;
 
@@ -21,6 +23,8 @@ pub enum Failure {
     NotLoggedIn(String),
     /// A landing was answered 409 or 403.
     LandingRejected(String),
+    /// `checks --wait` ended with a blocking check that did not pass, or timed out.
+    ChecksNotPassed(String),
     /// Any other operation was answered 403 or 404.
     Denied(String),
     /// Anything else.
@@ -59,6 +63,7 @@ impl Failure {
         match self {
             Self::NotLoggedIn(_) => EXIT_NOT_LOGGED_IN,
             Self::LandingRejected(_) => EXIT_LANDING_REJECTED,
+            Self::ChecksNotPassed(_) => EXIT_CHECKS_NOT_PASSED,
             Self::Denied(_) => EXIT_DENIED,
             Self::Other(_) => EXIT_OTHER,
         }
@@ -70,6 +75,7 @@ impl fmt::Display for Failure {
         match self {
             Self::NotLoggedIn(message)
             | Self::LandingRejected(message)
+            | Self::ChecksNotPassed(message)
             | Self::Denied(message)
             | Self::Other(message) => f.write_str(message),
         }

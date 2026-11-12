@@ -49,6 +49,41 @@ fn documents_the_exit_codes_in_help() -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+fn help(args: &[&str]) -> io::Result<String> {
+    let output = ch(args)?;
+    assert!(output.status.success(), "{args:?}");
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[test]
+fn describes_the_runner_and_checks_verbs_in_help() -> io::Result<()> {
+    let top = help(&["--help"])?;
+    assert!(top.contains("runner"), "{top}");
+    assert!(top.contains("checks"), "{top}");
+    assert!(
+        top.contains("checks --wait ended with a blocking check"),
+        "{top}"
+    );
+
+    let runner = help(&["runner", "--help"])?;
+    for verb in ["register", "list", "remove"] {
+        assert!(runner.contains(verb), "{verb}");
+    }
+    let register = help(&["runner", "register", "--help"])?;
+    for flag in ["--issuer", "--label", "--repo"] {
+        assert!(register.contains(flag), "{flag}");
+    }
+    assert!(register.contains("<SUBJECT>"));
+
+    let checks = help(&["checks", "--help"])?;
+    for flag in ["--wait", "--timeout", "[CHANGESET]", "head of `main`"] {
+        assert!(checks.contains(flag), "{flag}");
+    }
+    assert!(!checks.contains("poll-interval"));
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn reports_non_unicode_argument_without_panicking() -> io::Result<()> {
