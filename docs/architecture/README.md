@@ -65,3 +65,5 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0036-server-retries-a-lost-landing-swap.md` — ADR 0036, the server retries a landing that lost the compare-and-swap on `main`, up to a bound
 - `adr/0037-connection-pool-sizing.md` — ADR 0037, each server process pools 40 PostgreSQL connections by default, and the sum stays below the server's limit
 - `adr/0038-decisions-batched-through-access-evaluations.md` — ADR 0038, a request asks one decision for all its paths, through AuthZEN Access Evaluations where offered
+- `adr/0039-fair-landing-gate-per-process.md` — ADR 0039, landings of one repository pass a fair gate in each server process, and no limit is set on how many wait
+- `adr/0040-distributed-sql-trigger.md` — ADR 0040, the move to distributed SQL is triggered by a measured saturation of the PostgreSQL primary, after the cheaper steps

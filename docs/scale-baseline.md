@@ -46,3 +46,24 @@ Commit `1cdea4a5f773cedcc53c73c44a8e99a76ffc94d2`, on 12 x AMD Ryzen 5 9600X wit
 | 40 | 19.5 | 257 | 215.6 |
 
 - `disjoint` throughput varies widely between runs at one pool size, because a few landings take most of the lost swaps. `read-heavy` throughput and `disjoint` land p50 move in one direction with the pool size.
+
+## After the server-side retry and the landing gate
+
+Two runs back to back on the same machine, with other projects loading it: load average 7 to 34 on 12 cores during both. Pool size 40 per replica.
+
+- **Before**: main at `595f4c3476ea656417705560beccb86fc3391685`, with batched decisions (ADR 0038) and no server-side retry.
+- **After**: PR #125 at `68b887dd9202134f547ab6d75b4ca2b75c375b14` merged onto it (merge `e80ee3e992fca2e59de61c62539d0a7254c55cba`), with the server-side retry (ADR 0036, 32 attempts) and the fair gate in each process (ADR 0039).
+
+| Scenario | Operations/s before → after | Landings before → after | Land p50 / p95 / p99 (ms) before | Land p50 / p95 / p99 (ms) after | Lost swaps at the client before → after |
+|---|---|---|---|---|---|
+| `disjoint` | 8.6 → 41.1 | 533 → 3237 | 780.1 / 1878.3 / 5817.0 | 1893.3 / 5488.9 / 63625.7 | 11989 → 18 |
+| `same-file` | 10.4 → 31.7 | 632 → 2361 | 637.4 / 1472.0 / 1800.9 | 2608.5 / 7635.2 / 64983.6 | 16104 → 25 |
+| `read-heavy` | 152.8 → 266.5 | 732 → 1960 | 504.0 / 1980.2 / 3482.5 | 3253.1 / 38136.4 / 65016.0 | 14687 → 14 |
+| `external` | 3.1 → 19.3 | 195 → 1443 | 861.9 / 1786.6 / 3522.8 | 3771.8 / 59266.8 / 61827.8 | 11295 → 12 |
+
+- Land latency is per request, so the two columns measure different things. Before, a landing that lost the swap was retried by the client: in `disjoint`, 79 of 533 landings took the 11989 lost swaps between them, about 152 requests each, about 2 minutes end to end. After, nearly every landing is one request, and its latency includes the wait at the gate.
+- After, land p99 is 61.8 to 65.0 s in every scenario, and each scenario ran 72.8 to 78.8 s against a window of 60 s. The tail is not explained; ADR 0039 names it among the signs to watch.
+- `same-file` conflicts: 121 before, 30 after.
+- `read-heavy` reads after: p50 1.9 ms, p95 15.0 ms, p99 66.0 ms. History: p50 19.7 ms, p95 192.3 ms, p99 394.1 ms.
+- `external` after: 59175 API requests made 205170 decision-point calls, 3.47 per request, against 11.08 before.
+- PostgreSQL CPU, sampled every 10 seconds with `docker stats` beside the harness: a median of about 2.0 cores, at most 2.7, before; a median of about 0.9 cores, at most 3.3, after. ADR 0040 reads the trigger for distributed SQL from this figure.

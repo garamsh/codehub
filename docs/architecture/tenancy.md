@@ -10,6 +10,7 @@ How the system is divided into organisations and repositories, and how a reposit
 - **One repository is one codebase**, with one changeset log (`docs/architecture/source-control.md`).
 - **An organisation holds a base layer** that its repositories share.
 - **Target scale** is hundreds of concurrent agents.
+- **A repository sets no limit on concurrent landings.** Each server process passes the landings of one repository one at a time, in arrival order, and does not bound how many wait (ADR 0039, `source-control.md`).
 - **Tenancy scopes every port that reaches stored data**: a request names its repository and, through it, its organisation.
 - **Organisation roles and path grants** are decided in ADR 0021 and described in `docs/architecture/access.md`. codehub owns organisations and repositories as tenancy containers; codehub depends on the standards and on no outside service's model (ADR 0028).
 - **Organisation names are shared with an outside layer with no mapping table** (ADR 0028). The name is the key on both sides, so an organisation is not renamed on one side alone.
@@ -37,6 +38,7 @@ How the system is divided into organisations and repositories, and how a reposit
 - Shared organisation names, lazy creation in external mode and the directory-change port: ADR 0028 and ADR 0030.
 - The term "repository" for what ADR 0004 and ADR 0005 call a workspace is in ADR 0020.
 - The bundle as the one unit for export, backup and import is in ADR 0005.
+- No limit on concurrent landings, and the gate in each process instead of a lock across replicas: ADR 0039, measured in `docs/scale-baseline.md`.
 
 ## Open questions
 
@@ -52,7 +54,6 @@ Each is undecided; the recommendation is not a decision.
   - Recommendation: a log cursor plus new objects.
 - **Metadata contents and versioning.** What the metadata in a bundle contains and how a bundle declares its version. No option examined.
 - **Consistency of a backup taken while the repository is live.** Options: snapshot at a log position; stop landing during the backup.
-  - Recommendation: snapshot at a log position, since landing has no repository-wide lock.
+  - Recommendation: snapshot at a log position, since landing holds no lock across server processes.
 - **Encryption and integrity of bundles.** Options: hash manifest only; manifest plus encryption chosen by the operator. No recommendation yet.
 - **Deleting a repository or organisation**, and whether deletion is recoverable from a bundle. No option examined.
-- **Per-repository limits** under the hundreds-of-agents target, such as concurrent landings; no figure is given in issue #1.
