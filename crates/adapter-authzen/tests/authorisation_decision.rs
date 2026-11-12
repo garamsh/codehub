@@ -534,6 +534,32 @@ async fn obtains_its_token_by_client_credentials_and_presents_it_as_a_bearer() {
 }
 
 #[tokio::test]
+async fn form_urlencodes_the_client_credentials_before_basic_encoding_them() {
+    let stub = stub_with(3600, decision_reply(true)).await;
+    let adapter = AuthzenAuthorisationDecision::new(
+        &stub.url,
+        &format!("{}/token", stub.url),
+        "cli:ent",
+        "p:w%d s",
+    )
+    .unwrap();
+    let subject = Principal::new("https://issuer.example", "user-1").unwrap();
+
+    adapter
+        .decide(&subject, Action::Read, &repository("acme", "app"))
+        .await
+        .unwrap();
+
+    let token_requests = stub.requests_to("/token");
+    let token_request = token_requests.first().unwrap();
+    // base64 of `cli%3Aent:p%3Aw%25d+s`
+    assert!(
+        token_request.contains("authorization: Basic Y2xpJTNBZW50OnAlM0F3JTI1ZCtz"),
+        "{token_request}"
+    );
+}
+
+#[tokio::test]
 async fn keeps_its_token_until_it_is_near_its_expiry() {
     let long_lived = stub_with(3600, decision_reply(true)).await;
     // Valid for less than the renewal margin, so every decision renews it.

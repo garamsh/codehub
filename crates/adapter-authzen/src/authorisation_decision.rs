@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -108,7 +109,10 @@ impl AuthzenAuthorisationDecision {
         let response: TokenResponse = self
             .http
             .post(&self.token_endpoint)
-            .basic_auth(&self.client_id, Some(&self.client_secret))
+            .basic_auth(
+                form_urlencode(&self.client_id),
+                Some(form_urlencode(&self.client_secret)),
+            )
             .form(&[("grant_type", "client_credentials")])
             .send()
             .await
@@ -229,4 +233,22 @@ fn resource_value(resource: &Resource) -> Value {
 
 fn backend(error: reqwest::Error) -> AuthorisationError {
     AuthorisationError::Backend(error.to_string())
+}
+
+/// `text` in the `application/x-www-form-urlencoded` byte serialisation, which RFC 6749 §2.3.1
+/// applies to the client id and secret before they are joined for HTTP Basic.
+fn form_urlencode(text: &str) -> String {
+    let mut encoded = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        match byte {
+            b'*' | b'-' | b'.' | b'_' => encoded.push(char::from(byte)),
+            b' ' => encoded.push('+'),
+            _ if byte.is_ascii_alphanumeric() => encoded.push(char::from(byte)),
+            // Writing to a String does not fail.
+            _ => {
+                let _ = write!(encoded, "%{byte:02X}");
+            }
+        }
+    }
+    encoded
 }
