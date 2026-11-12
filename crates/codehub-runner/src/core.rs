@@ -263,6 +263,20 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn heartbeats_are_no_closer_than_the_minimum_whatever_the_server_asks() {
+        let source = Source::default();
+        let mut asked = job();
+        asked.heartbeat_interval = Duration::from_millis(10);
+        source.claims.lock().unwrap().push_back(Ok(Some(asked)));
+        let executor = Executes {
+            after: Duration::from_secs(3),
+            end: Ok(End::Exited(0)),
+        };
+        run(&source, &executor, Mode::Once).await.unwrap();
+        assert_eq!(*source.heartbeats.lock().unwrap(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn the_job_is_heartbeated_while_it_runs() {
         let source = Source::with_job();
         let executor = Executes {

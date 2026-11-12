@@ -106,6 +106,28 @@ mod tests {
     }
 
     #[test]
+    fn the_client_credentials_come_whole() {
+        let without_secret = [
+            "--server",
+            "http://s",
+            "--token-endpoint",
+            "http://t",
+            "--client-id",
+            "id",
+        ];
+        assert!(parse(&without_secret).is_err());
+        let without_id = [
+            "--server",
+            "http://s",
+            "--token-endpoint",
+            "http://t",
+            "--client-secret-env",
+            "S",
+        ];
+        assert!(parse(&without_id).is_err());
+    }
+
+    #[test]
     fn a_source_of_tokens_is_required_and_only_one_is_allowed() {
         assert!(parse(&["--server", "http://s"]).is_err());
         let both = [
