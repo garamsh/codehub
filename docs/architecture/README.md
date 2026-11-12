@@ -64,6 +64,7 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0035-post-land-checks-last-green-and-revert.md` — ADR 0035, post-land checks are configured in the repository, move `last-green` and revert a blocking failure
 - `adr/0036-server-retries-a-lost-landing-swap.md` — ADR 0036, the server retries a landing that lost the compare-and-swap on `main`, up to a bound
 - `adr/0037-connection-pool-sizing.md` — ADR 0037, each server process pools 40 PostgreSQL connections by default, and the sum stays below the server's limit
-- `adr/0038-decisions-batched-through-access-evaluations.md` — ADR 0038, a request asks one decision for all its paths, through AuthZEN Access Evaluations where offered
+- `adr/0038-decisions-batched-through-access-evaluations.md` — ADR 0038, a request asks one decision for all its paths, through AuthZEN Access Evaluations where offered; when the batch is sent is superseded by ADR 0041
 - `adr/0039-fair-landing-gate-per-process.md` — ADR 0039, landings of one repository pass a fair gate in each server process, and no limit is set on how many wait
 - `adr/0040-distributed-sql-trigger.md` — ADR 0040, the move to distributed SQL is triggered by a measured saturation of the PostgreSQL primary, after the cheaper steps
+- `adr/0041-access-evaluations-only-when-configured.md` — ADR 0041, the AuthZEN adapter sends Access Evaluations only when the operator turns it on; supersedes one bullet of ADR 0038
