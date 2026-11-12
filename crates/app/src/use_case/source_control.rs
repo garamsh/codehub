@@ -2,11 +2,6 @@
 //! use cases over the driven ports it is given. Each operation first checks, through the
 //! authorisation decision, that the caller may do what it asks.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
-
-use futures_util::lock::Mutex as Gate;
-
 use crate::domain::address::Address;
 use crate::domain::changeset::Change;
 use crate::domain::draft::DraftId;
@@ -30,6 +25,7 @@ use crate::use_case::access::{readable_repository, require, require_paths};
 use crate::use_case::history::history;
 use crate::use_case::land::land;
 use crate::use_case::landing_attempts::LandingAttempts;
+use crate::use_case::landing_gates::LandingGates;
 use crate::use_case::read_file::read_file;
 use crate::use_case::stage::stage;
 use crate::use_case::upload::request_upload;
@@ -62,7 +58,7 @@ pub struct SourceControlService<'a, O, L, D, S, R, A> {
     attempts: LandingAttempts,
     /// One gate per repository, held while a landing of it rebases and swaps: the landings of one
     /// repository wait for one another within this service, and not across server processes.
-    gates: Mutex<HashMap<RepositoryId, Arc<Gate<()>>>>,
+    gates: LandingGates,
 }
 
 impl<'a, O, L, D, S, R, A> SourceControlService<'a, O, L, D, S, R, A> {
@@ -89,7 +85,7 @@ impl<'a, O, L, D, S, R, A> SourceControlService<'a, O, L, D, S, R, A> {
             authorisation,
             max_upload_size,
             attempts: LandingAttempts::new(LandingAttempts::DEFAULT),
-            gates: Mutex::new(HashMap::new()),
+            gates: LandingGates::new(),
         }
     }
 
@@ -235,14 +231,8 @@ where
         )
         .await
         .map_err(LandError::from)?;
-        let gate = self
-            .gates
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .entry(repository)
-            .or_default()
-            .clone();
-        let _one_at_a_time = gate.lock().await;
+        let arrival = self.gates.reach(repository);
+        let _one_at_a_time = arrival.pass().await;
         let landed = land(
             self.objects,
             self.log,
