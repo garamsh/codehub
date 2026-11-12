@@ -33,6 +33,7 @@ pub enum StateBody {
 pub enum RevertBody {
     Landed { changeset: String },
     Conflicted { paths: Vec<String> },
+    Failed { reason: String },
 }
 
 impl From<Revert> for RevertBody {
@@ -44,6 +45,7 @@ impl From<Revert> for RevertBody {
             Revert::Conflicted(paths) => Self::Conflicted {
                 paths: paths.iter().map(ToString::to_string).collect(),
             },
+            Revert::Failed { reason } => Self::Failed { reason },
         }
     }
 }

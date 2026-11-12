@@ -22,6 +22,25 @@ pub enum Revert {
     /// The revert conflicts with later changes and landed nothing; carries the conflicting
     /// paths.
     Conflicted(BTreeSet<Path>),
+    /// The revert failed after it was reserved and landed nothing; carries why, in words an
+    /// operator reads. It is not tried again.
+    Failed {
+        /// The error's text, cut to [`MAX_REASON`] characters.
+        reason: String,
+    },
+}
+
+/// The most characters of an error's text a failed revert keeps.
+pub const MAX_REASON: usize = 200;
+
+impl Revert {
+    /// A failed revert whose reason is the text of `error`, cut to [`MAX_REASON`] characters.
+    #[must_use]
+    pub fn failed(error: &impl std::fmt::Display) -> Self {
+        Self::Failed {
+            reason: error.to_string().chars().take(MAX_REASON).collect(),
+        }
+    }
 }
 
 /// The delta that undoes a changeset against its first parent.
@@ -96,6 +115,24 @@ mod tests {
             .iter()
             .map(|(name, file)| (path(name), *file))
             .collect()
+    }
+
+    #[test]
+    fn keeps_the_text_of_the_error_as_the_reason_of_a_failed_revert() {
+        assert_eq!(
+            Revert::failed(&"job queue failed: down"),
+            Revert::Failed {
+                reason: "job queue failed: down".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn cuts_a_long_reason_to_the_most_characters_it_keeps() {
+        let Revert::Failed { reason } = Revert::failed(&"é".repeat(MAX_REASON + 5)) else {
+            panic!("not a failed revert");
+        };
+        assert_eq!(reason.chars().count(), MAX_REASON);
     }
 
     #[test]

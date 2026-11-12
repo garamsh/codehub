@@ -118,29 +118,50 @@ pub(crate) fn state(
     }
 }
 
-/// The columns of a revert record: the landed changeset, or the conflicting paths.
-pub(crate) fn revert_columns(revert: &Revert) -> (Option<Vec<u8>>, Option<Vec<Vec<u8>>>) {
+/// The three columns of a revert record, of which at most one is set.
+#[derive(Default)]
+pub(crate) struct RevertColumns {
+    /// The changeset the revert landed as.
+    pub(crate) landed: Option<Vec<u8>>,
+    /// The paths the revert conflicted at.
+    pub(crate) conflicts: Option<Vec<Vec<u8>>>,
+    /// Why the revert failed.
+    pub(crate) failed: Option<String>,
+}
+
+/// The columns of a revert record: the landed changeset, the conflicting paths, or the reason.
+pub(crate) fn revert_columns(revert: &Revert) -> RevertColumns {
     match revert {
-        Revert::Landed(address) => (Some(address.digest().to_vec()), None),
-        Revert::Conflicted(paths) => (None, Some(paths.iter().map(path_column).collect())),
+        Revert::Landed(address) => RevertColumns {
+            landed: Some(address.digest().to_vec()),
+            ..RevertColumns::default()
+        },
+        Revert::Conflicted(paths) => RevertColumns {
+            conflicts: Some(paths.iter().map(path_column).collect()),
+            ..RevertColumns::default()
+        },
+        Revert::Failed { reason } => RevertColumns {
+            failed: Some(reason.clone()),
+            ..RevertColumns::default()
+        },
     }
 }
 
-/// The revert record stored in its two columns; neither set means no revert was attempted.
-pub(crate) fn revert(
-    landed: Option<Vec<u8>>,
-    conflicts: Option<Vec<Vec<u8>>>,
-) -> Result<Option<Revert>, String> {
-    match (landed, conflicts) {
-        (None, None) => Ok(None),
-        (Some(bytes), None) => address(bytes).map(Revert::Landed).map(Some),
-        (None, Some(paths)) => paths
+/// The revert record stored in its columns; none set means no revert was attempted.
+pub(crate) fn revert(columns: RevertColumns) -> Result<Option<Revert>, String> {
+    match (columns.landed, columns.conflicts, columns.failed) {
+        (None, None, None) => Ok(None),
+        (Some(bytes), None, None) => address(bytes).map(Revert::Landed).map(Some),
+        (None, Some(paths), None) => paths
             .iter()
             .map(|bytes| path(bytes))
             .collect::<Result<_, _>>()
             .map(Revert::Conflicted)
             .map(Some),
-        (Some(_), Some(_)) => Err("a stored revert is both landed and conflicted".to_owned()),
+        (None, None, Some(reason)) => Ok(Some(Revert::Failed { reason })),
+        (Some(_), _, _) | (_, Some(_), _) => {
+            Err("a stored revert is more than one of landed, conflicted and failed".to_owned())
+        }
     }
 }
 
@@ -317,17 +338,26 @@ mod tests {
     #[test]
     fn a_revert_round_trips_through_its_columns() {
         let landed = Revert::Landed(Address::from_digest([7; 32]));
-        let (column, none) = revert_columns(&landed);
-        assert_eq!(revert(column, none), Ok(Some(landed)));
+        assert_eq!(revert(revert_columns(&landed)), Ok(Some(landed)));
         let paths: BTreeSet<Path> = ["a/b", "c"]
             .iter()
             .map(|text| text.parse().unwrap())
             .collect();
         let conflicted = Revert::Conflicted(paths);
-        let (none, column) = revert_columns(&conflicted);
-        assert_eq!(revert(none, column), Ok(Some(conflicted)));
-        assert_eq!(revert(None, None), Ok(None));
-        assert!(revert(Some(vec![0; 32]), Some(Vec::new())).is_err());
+        assert_eq!(revert(revert_columns(&conflicted)), Ok(Some(conflicted)));
+        let failed = Revert::Failed {
+            reason: "job queue failed".to_owned(),
+        };
+        assert_eq!(revert(revert_columns(&failed)), Ok(Some(failed)));
+        assert_eq!(revert(RevertColumns::default()), Ok(None));
+        assert!(
+            revert(RevertColumns {
+                landed: Some(vec![0; 32]),
+                failed: Some(String::new()),
+                ..RevertColumns::default()
+            })
+            .is_err()
+        );
     }
 
     #[test]

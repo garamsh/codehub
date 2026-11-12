@@ -513,7 +513,7 @@ struct ChecksOutput<'a> {
     checks: &'a [Check],
 }
 
-/// The revert lines of `checks`: each revert changeset and each conflicting path once.
+/// The revert lines of `checks`: each revert changeset, each conflicting path and each failure once.
 fn reverts(checks: &[Check]) -> Vec<String> {
     let mut lines = Vec::new();
     for revert in checks.iter().filter_map(|check| check.revert.as_ref()) {
@@ -523,6 +523,7 @@ fn reverts(checks: &[Check]) -> Vec<String> {
                 .iter()
                 .map(|path| format!("conflict {path}"))
                 .collect(),
+            Revert::Failed { reason } => vec![format!("revert failed: {reason}")],
         };
         for line in found {
             if !lines.contains(&line) {

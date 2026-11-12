@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::domain::changeset::Change;
+use crate::domain::changeset::{Change, Changeset};
 use crate::domain::draft::Draft;
 use crate::domain::job::Job;
 use crate::domain::revert::{self, AUTHOR, Revert};
@@ -52,10 +52,12 @@ where
     ///
     /// The revert is reserved in the job queue before anything lands, and the reservation is kept
     /// where the revert then fails, so a changeset is reverted at most once. It is recorded with
-    /// `job`: as landed, or as conflicting with later changes, which lands nothing. A landed
-    /// revert has its own checks queued. Nothing is reverted where another job of the changeset
-    /// holds the reservation, where the changeset is itself a revert the server made, or where
-    /// `job` did not fail or time out.
+    /// `job`: as landed, or as conflicting with later changes, which lands nothing, or as failed
+    /// with the reason where reading or landing it fails, after which the error is returned, or
+    /// [`RevertError::Unrecorded`] with both where recording the failure fails too. A
+    /// landed revert has its own checks queued. Nothing is reverted where another job of the
+    /// changeset holds the reservation, where the changeset is itself a revert the server made, or
+    /// where `job` did not fail or time out.
     ///
     /// # Errors
     ///
@@ -79,6 +81,45 @@ where
             return Ok(());
         }
 
+        let recorded = match self.land_revert(job, changeset, message, timestamp).await {
+            Ok(recorded) => recorded,
+            Err(error) => {
+                let revert = Revert::failed(&error);
+                return Err(match adapters.queue.record_revert(job.id, revert).await {
+                    Ok(_) => error,
+                    Err(recording) => RevertError::Unrecorded {
+                        error: Box::new(error),
+                        recording,
+                    },
+                });
+            }
+        };
+
+        adapters
+            .queue
+            .record_revert(job.id, recorded.clone())
+            .await?;
+        if let Revert::Landed(landed) = recorded {
+            // The revert is never reverted in its turn, so a failed unreadable-definitions job it
+            // leaves behind needs no further action.
+            queue_checks(adapters, repository, landed)
+                .await
+                .map_err(RevertError::ChecksNotQueued)?;
+        }
+        Ok(())
+    }
+
+    /// Lands the changeset that undoes `changeset`, which `job` reserved the revert of, and
+    /// returns what came of it. Nothing is recorded.
+    async fn land_revert(
+        &self,
+        job: &Job,
+        changeset: Changeset,
+        message: String,
+        timestamp: i64,
+    ) -> Result<Revert, RevertError> {
+        let adapters = &self.adapters;
+        let repository = job.repository;
         let parent_root = match changeset.parents.first() {
             Some(parent) => Some(adapters.derived.root(repository, *parent).await?),
             None => None,
@@ -101,7 +142,7 @@ where
             changes: undo,
         };
         let landing = Landing { message, timestamp };
-        let recorded = match land(
+        match land(
             adapters.objects,
             adapters.log,
             adapters.derived,
@@ -113,24 +154,11 @@ where
         )
         .await
         {
-            Ok(landed) => Revert::Landed(landed),
+            Ok(landed) => Ok(Revert::Landed(landed)),
             Err(LandError::Conflicts(conflicts)) => {
-                Revert::Conflicted(conflicts.into_keys().collect())
+                Ok(Revert::Conflicted(conflicts.into_keys().collect()))
             }
-            Err(error) => return Err(RevertError::Land(error)),
-        };
-
-        adapters
-            .queue
-            .record_revert(job.id, recorded.clone())
-            .await?;
-        if let Revert::Landed(landed) = recorded {
-            // The revert is never reverted in its turn, so a failed unreadable-definitions job it
-            // leaves behind needs no further action.
-            queue_checks(adapters, repository, landed)
-                .await
-                .map_err(RevertError::ChecksNotQueued)?;
+            Err(error) => Err(RevertError::Land(error)),
         }
-        Ok(())
     }
 }

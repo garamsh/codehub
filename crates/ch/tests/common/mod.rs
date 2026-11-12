@@ -21,6 +21,7 @@ use app::domain::check::{CheckDefinition, Command, Timeout};
 use app::domain::job::NewJob;
 use app::domain::name::{OrganisationName, RepositoryName};
 use app::domain::principal::Principal;
+use app::domain::revert::Revert;
 use app::port::driven::identity_verification::IdentityVerification;
 use app::port::driven::job_queue::JobQueue;
 use app::port::driven::repository_directory::RepositoryDirectory;
@@ -358,6 +359,37 @@ impl Server {
             },
         };
         self.stores.queue.queue(vec![job]).await.unwrap();
+    }
+
+    /// Records the revert of the first job of `changeset` as failed with `reason`, in place of
+    /// what was recorded, which stands in for a revert whose landing failed.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the changeset has no job or the queue refuses the record.
+    pub async fn record_failed_revert(&self, org: &str, changeset: &str, reason: &str) {
+        let organisation: OrganisationName = org.parse().unwrap();
+        let repository: RepositoryName = "app".parse().unwrap();
+        let id = self
+            .stores
+            .directory
+            .find_repository(&organisation, &repository)
+            .await
+            .unwrap();
+        let jobs = self
+            .stores
+            .queue
+            .of_changeset(id, changeset.parse().unwrap())
+            .await
+            .unwrap();
+        let revert = Revert::Failed {
+            reason: reason.to_owned(),
+        };
+        self.stores
+            .queue
+            .record_revert(jobs[0].id, revert)
+            .await
+            .unwrap();
     }
 
     /// Claims the oldest queued job as the runner holding `token` and ends it with `status`, one of

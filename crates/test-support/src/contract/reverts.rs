@@ -8,14 +8,101 @@ use app::domain::address::Address;
 use app::domain::changeset::Changeset;
 use app::domain::job::{Heartbeat, Job, JobResult, JobState, Outcome, StopReason};
 use app::domain::principal::Caller;
+use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
 use app::domain::runner::{Registration, RegistrationId};
-use app::port::driven::changeset_log::{ChangesetLog, Ref};
+use app::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
 use app::port::driven::check_definitions::{CheckDefinitions, CheckFileError};
 use app::port::driven::job_queue::JobQueue;
 use app::port::driven::runner_registry::RunnerRegistry;
 use app::port::driving::checks::Checks;
-use app::port::driving::jobs::Jobs;
+use app::port::driving::jobs::{Jobs, JobsError};
+use app::port::driving::revert::RevertError;
+use app::port::driving::source_control::LandError;
+use app::use_case::jobs::{JobsAdapters, JobsService};
+use app::use_case::landing_attempts::LandingAttempts;
+
+/// What the log that fails every move of `main` says.
+const BACKEND_DOWN: &str = "log down";
+
+/// A log that fails every move of `main` as its backend failing, and otherwise is the one it wraps.
+struct FailsMainSwap<'a, L>(&'a L);
+
+impl<L: ChangesetLog + Sync> ChangesetLog for FailsMainSwap<'_, L> {
+    async fn append(
+        &self,
+        repository: RepositoryId,
+        changeset: Changeset,
+    ) -> Result<Address, ChangesetLogError> {
+        self.0.append(repository, changeset).await
+    }
+
+    async fn get(
+        &self,
+        repository: RepositoryId,
+        id: Address,
+    ) -> Result<Changeset, ChangesetLogError> {
+        self.0.get(repository, id).await
+    }
+
+    async fn read_ref(
+        &self,
+        repository: RepositoryId,
+        name: Ref,
+    ) -> Result<Option<Address>, ChangesetLogError> {
+        self.0.read_ref(repository, name).await
+    }
+
+    async fn compare_and_swap(
+        &self,
+        repository: RepositoryId,
+        name: Ref,
+        expected: Option<Address>,
+        new: Address,
+    ) -> Result<(), ChangesetLogError> {
+        if name == Ref::Main {
+            return Err(ChangesetLogError::Backend(BACKEND_DOWN.to_owned()));
+        }
+        self.0
+            .compare_and_swap(repository, name, expected, new)
+            .await
+    }
+}
+
+/// Claims the next job as `bot` at `now` and reports it as `result` to a jobs service whose log
+/// cannot move `main`, returning the job and the answer.
+async fn report_with_main_failing<H: RunnerDeployment>(
+    harness: &H,
+    bot: &Caller,
+    result: JobResult,
+    now: i64,
+) -> (Job, Result<(), JobsError>) {
+    let claimed = harness.jobs().claim(bot, now).await.unwrap().unwrap().job;
+    let log = FailsMainSwap(harness.log());
+    let service = JobsService::new(
+        JobsAdapters {
+            registry: harness.registry(),
+            queue: harness.queue(),
+            objects: harness.objects(),
+            derived: harness.derived(),
+            log: &log,
+            directory: harness.directory(),
+            definitions: harness.definitions(),
+        },
+        LEASE,
+        LandingAttempts::default(),
+    );
+    let answer = service.report(bot, claimed.id, result, now).await;
+    (claimed, answer)
+}
+
+/// The reason a revert that failed to move `main` is recorded with.
+fn main_failure_reason() -> String {
+    RevertError::Land(LandError::Log(ChangesetLogError::Backend(
+        BACKEND_DOWN.to_owned(),
+    )))
+    .to_string()
+}
 
 /// Eight lines, so that a change to the first and one to the last do not overlap.
 const BASE: &str = "1\n2\n3\n4\n5\n6\n7\n8\n";
@@ -696,4 +783,93 @@ pub async fn a_reverts_checks_are_queued_and_last_green_waits_for_them<H: Runner
     report(&harness, &bot, passed(), 2).await;
 
     assert_eq!(last_green(&repo).await, Some(reverted));
+}
+
+/// A revert that fails to land after its reservation is recorded with the job as failed, with the
+/// reason, and the error still reaches the caller.
+pub async fn a_revert_that_fails_after_its_reservation_is_recorded_as_failed<
+    H: RunnerDeployment,
+>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    land(&repo, &ada, "base", &[("a", BASE)]).await.unwrap();
+    let bad = land_with_checks(
+        &repo,
+        &ada,
+        "bad",
+        &[check("unit")],
+        &[("a", "x\n2\n3\n4\n5\n6\n7\n8\n")],
+    )
+    .await;
+
+    let (claimed, answer) = report_with_main_failing(&harness, &bot, failed(), 1).await;
+
+    assert_eq!(
+        answer,
+        Err(JobsError::Revert(RevertError::Land(LandError::Log(
+            ChangesetLogError::Backend(BACKEND_DOWN.to_owned())
+        ))))
+    );
+    assert_eq!(repo.main().await, Some(bad));
+    let job = job_of(&repo, &ada, bad, "unit").await;
+    assert_eq!(job.id, claimed.id);
+    assert_eq!(job.state, JobState::Failed);
+    assert_eq!(
+        job.revert,
+        Some(Revert::Failed {
+            reason: main_failure_reason()
+        })
+    );
+}
+
+/// A second blocking check of a changeset whose revert failed does not try the revert again, and
+/// leaves the record as it was.
+pub async fn a_second_failing_blocking_check_does_not_try_a_failed_revert_again<
+    H: RunnerDeployment,
+>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    land(&repo, &ada, "base", &[("a", BASE)]).await.unwrap();
+    let bad = land_with_checks(
+        &repo,
+        &ada,
+        "bad",
+        &[check("unit"), check("lint")],
+        &[("a", "x\n2\n3\n4\n5\n6\n7\n8\n")],
+    )
+    .await;
+    let (first, answer) = report_with_main_failing(&harness, &bot, failed(), 1).await;
+    assert!(answer.is_err());
+    let recorded = Some(Revert::Failed {
+        reason: main_failure_reason(),
+    });
+    assert_eq!(
+        jobs(&repo, &ada, bad)
+            .await
+            .iter()
+            .find(|job| job.id == first.id)
+            .map(|job| job.revert.clone()),
+        Some(recorded.clone())
+    );
+
+    // This report can move `main`, so a revert tried again would land.
+    let second = report(&harness, &bot, failed(), 2).await;
+
+    assert_ne!(second.id, first.id);
+    assert_eq!(repo.main().await, Some(bad));
+    let after = jobs(&repo, &ada, bad).await;
+    assert_eq!(after.len(), 2);
+    for job in after {
+        assert_eq!(job.state, JobState::Failed);
+        let expected = if job.id == first.id {
+            recorded.clone()
+        } else {
+            None
+        };
+        assert_eq!(job.revert, expected);
+    }
 }
