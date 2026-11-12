@@ -632,6 +632,23 @@ fn documented() -> BTreeSet<(String, String)> {
 }
 
 #[tokio::test]
+async fn documents_the_403_of_creating_an_organisation() {
+    let document = committed_document();
+    let forbidden = &document["paths"]["/v1/orgs"]["post"]["responses"]["403"];
+    assert_eq!(
+        forbidden["content"]["application/problem+json"]["schema"]["$ref"],
+        "#/components/schemas/Problem"
+    );
+    // The control: the member operations' 403 has the same schema, and the 409 sits beside it.
+    let members = &document["paths"]["/v1/orgs/{org}/members"]["put"]["responses"]["403"];
+    assert_eq!(
+        forbidden["content"]["application/problem+json"],
+        members["content"]["application/problem+json"]
+    );
+    assert!(document["paths"]["/v1/orgs"]["post"]["responses"]["409"].is_object());
+}
+
+#[tokio::test]
 async fn documents_no_request_body_on_a_delete_operation() {
     let document = committed_document();
     let mut deletes = 0;
