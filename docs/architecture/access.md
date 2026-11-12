@@ -20,7 +20,7 @@ Declared in the application's terms (`docs/architecture/structure.md`), named fo
 | Port | Direction | Conversation | Default adapter speaks |
 |---|---|---|---|
 | Identity verification | Driven by the application | Given a credential presented with a request, return who the caller is, a principal identified by issuer and subject, or reject it | Two adapters, one selected by configuration (ADR 0029): an OpenID Connect Core 1.0 JWT bearer access token verified offline as a resource server, or RFC 7662 token introspection, where the core authenticates to the endpoint with client credentials and rejects a response without `active: true` or without its audience |
-| Authorisation decision | Driven by the application | Given subject, action, resource and context, return allow or deny; the resource carries the path (ADR 0021) | Default adapter: grants evaluated in PostgreSQL. Second adapter, selected by configuration (ADR 0030): OpenID AuthZEN Authorization API 1.0, Access Evaluation, and Access Evaluations where the decision point advertises it (ADR 0038), over HTTP JSON, authenticated with a bearer token obtained by OAuth client credentials; Subject, Action and Resource are mapped in the application's terms and the path is a resource property |
+| Authorisation decision | Driven by the application | Given subject, action, resource and context, return allow or deny; the resource carries the path (ADR 0021) | Default adapter: grants evaluated in PostgreSQL. Second adapter, selected by configuration (ADR 0030): OpenID AuthZEN Authorization API 1.0, Access Evaluation, and Access Evaluations where the operator turns it on and the decision point advertises it (ADR 0038, ADR 0041), over HTTP JSON, authenticated with a bearer token obtained by OAuth client credentials; Subject, Action and Resource are mapped in the application's terms and the path is a resource property |
 | Membership | Driven by the application | Add and remove organisation members and their grants (ADR 0021); the default authorisation adapter reads them in PostgreSQL | PostgreSQL tables, the same ones the default authorisation adapter evaluates; in external mode the member endpoints are refused and the port is not used |
 | Directory change | Driven by the application | Report organisation and repository creation and deletion, so an outside layer can learn of them (ADR 0030) | An in-process adapter and a no-op; delivery is at most once; deletion events are reserved and not emitted until deletion exists |
 | Provisioning intake | Driving | Receive creation, update and deactivation of users and groups from a directory | SCIM 2.0 server (RFC 7643, RFC 7644) |
@@ -34,7 +34,7 @@ Declared in the application's terms (`docs/architecture/structure.md`), named fo
 - **Roles are `admin` and `member`** (ADR 0021). Any authenticated principal may create an organisation and becomes its admin; an admin may take every action on the organisation and its repositories, administers members and grants, and administers runners (ADR 0034).
 - **A member holds grants** of (repository, path prefix, `read` or `write`). `write` includes `read`; a prefix matches by whole components; the empty prefix is the whole repository.
 - **The core sends the path as a resource attribute.** `land` asks for `write` on every path the draft changes and rejects the whole landing, naming every denied path; `read` and `log` ask for `read` on their path.
-- **Decisions on many paths are asked in one call** (ADR 0038). The AuthZEN adapter sends one Access Evaluations request where the decision point advertises `access_evaluations_endpoint`, and one Access Evaluation per path where it does not; the other adapters decide each path. Not implemented yet: the core asks once per path.
+- **Decisions on many paths are asked in one call** (ADR 0038). The AuthZEN adapter sends one Access Evaluations request only where `CODEHUB_AUTHZEN_EVALUATIONS` is on, off by default, and the decision point advertises `access_evaluations_endpoint`; otherwise it sends one Access Evaluation per path. The other adapters decide each path (ADR 0041). Not implemented yet: the core asks once per path (#119).
 - **The default adapter keeps memberships and grants in PostgreSQL** and evaluates them there. With the AuthZEN adapter (external mode) the core keeps none and the decision point decides.
 
 ## Rationale
@@ -46,7 +46,7 @@ Declared in the application's terms (`docs/architecture/structure.md`), named fo
 - One audience, shared organisation names and no claim mapping: ADR 0028.
 - JWT or introspection, and the rules for an introspection response: ADR 0029.
 - The AuthZEN adapter, external mode, fail-closed on failure and the directory-change port: ADR 0030; a failure answered as a server error rather than a denial: ADR 0033.
-- One decision call for many paths, and the fallback where the batch endpoint is not offered: ADR 0038.
+- One decision call for many paths, and the fallback where the batch endpoint is not offered: ADR 0038. The batch only on the operator's setting, because Cerbos 0.57.0 answers every evaluation sharing a resource id with the first one's decision: ADR 0041.
 - The CLI's token sources and RFC 8693 exchange: ADR 0031.
 - Runners as registered principals, with no runner credential and no mutual TLS: ADR 0034.
 

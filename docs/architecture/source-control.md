@@ -52,11 +52,12 @@ How versions of a repository's content are stored, changed, landed and queried.
 - **The file kind and a file against a directory** (ADR 0019):
   - a path's kind, file or executable file, is merged 3-way apart from its content: a kind changed on one side is taken, and both sides setting it to different kinds is a conflict; where the content conflicts too, the content conflict is reported;
   - a delta that leaves a path holding a file while another path lies under it is rejected where the delta is applied to a tree, and the landing reports it as a conflict on the path holding the file; the per-path merge does not detect it.
-- **There is no repository-wide lock** around landing.
+- **Landings of one repository pass a gate in each server process**, one at a time and in arrival order, after authorisation and the draft read; the gate is held for the landing's attempts at the swap. There is no lock across processes, and an automatic revert does not pass the gate (ADR 0039).
 - **There is no push.** A client uploads objects; the server creates the changeset.
 - **PostgreSQL holds the metadata, the changeset log as a table, and the refs**, each behind a port (ADR 0013).
 - **Blobs are in the S3-compatible object store** (ADR 0013).
 - **The ports leave room for a distributed SQL store later:** they name no PostgreSQL feature (ADR 0013).
+- **The move to a distributed SQL store is proposed only when the PostgreSQL primary is measured as the bottleneck**, after the largest machine, an external pooler and log partitioning, and reproduced with `crates/loadtest` (ADR 0040).
 
 ### Object encoding
 
@@ -146,7 +147,8 @@ The ports below follow from the decisions, named for the conversation and in the
 - The project-defined encoding and the changeset identifier are ADR 0016: one encoding per value, because an address is a hash of bytes; the identifier as the address, so a changeset is checked like any other object and is named before it is appended. Deterministic CBOR and an identifier assigned by the log were not taken.
 - PostgreSQL for the metadata, the log and the refs, and the object store for blobs, are ADR 0013. SQLite behind a single writer, a distributed SQL database now, and log segments in the object store were not taken.
 - Where derived data and drafts live, how PostgreSQL is run, and what a lost landing leaves: ADR 0022. A shared schema was taken over a schema per organisation, and the object store for derived data was not taken.
-- The retry of a lost swap inside the server, measured against the client's retry: ADR 0036. The default pool size and the bound on the sum of pools: ADR 0037. Both rest on `docs/scale-baseline.md`.
+- The retry of a lost swap inside the server, measured against the client's retry: ADR 0036. The default pool size and the bound on the sum of pools: ADR 0037. The fair gate per process, over a lock across replicas and over a limit on waiting landings: ADR 0039. All three rest on `docs/scale-baseline.md`.
+- The trigger for distributed SQL, over moving now, a trigger by agent count and leaving it open: ADR 0040.
 - The object key, checksum verification, no compression and single-part uploads are ADR 0023: per-repository keys because export and deletion are per repository; compression and multipart upload not taken because each forgoes the store's check of the bytes against the address. Facts checked on 2026-11-11 are cited there.
 - Checks in the repository, `last-green` on blocking checks only, and automatic revert as a new changeset: ADR 0035, with the alternatives not taken.
 - Tenancy that scopes the log to a repository is ADR 0004.
@@ -156,7 +158,6 @@ The ports below follow from the decisions, named for the conversation and in the
 
 Each is undecided; the recommendation is not a decision.
 
-- **When the move to distributed SQL is made.** What measurement triggers it, such as write latency on the log or on `main` at a given number of concurrent agents. No option has been examined.
 - **How release refs are created and moved, and by whom.** No option has been examined.
 - **Draft changeset lifetime.** How long a draft outside the log is kept and what removes it. No option has been examined. A draft is keyed by its principal, so no caller can name another principal's draft.
 - **Landings whose checks were never queued**, because the server stopped between the compare-and-swap and queuing (ADR 0035). Options: accept; find them at server start by comparing `main` after `last-green` with the queued jobs. Recommendation: decide when one is observed.

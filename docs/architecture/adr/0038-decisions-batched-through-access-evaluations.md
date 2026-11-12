@@ -1,6 +1,6 @@
 # ADR 0038: A request asks one decision for all its paths, through AuthZEN Access Evaluations where the decision point offers it
 
-> Status: accepted
+> Status: accepted; the bullet on when the AuthZEN adapter sends Access Evaluations is superseded by ADR 0041
 > Date: 2026-11-12
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
