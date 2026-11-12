@@ -4,10 +4,15 @@
 use adapter_memory::{MemoryIdentityVerification, MemoryObjectStore};
 use adapter_postgres::{
     Database, PostgresAuthorisationDecision, PostgresChangesetLog, PostgresDerivedData,
-    PostgresDraftStore, PostgresMembership, PostgresRepositoryDirectory,
+    PostgresDraftStore, PostgresJobQueue, PostgresMembership, PostgresRepositoryDirectory,
+    PostgresRunnerRegistry,
 };
+use adapter_toml::TomlCheckDefinitions;
+use app::domain::check::CheckDefinition;
+use app::port::driven::check_definitions::CheckFileError;
 use test_support::TestDatabase;
 use test_support::contract::Deployment;
+use test_support::contract::runner_deployment::RunnerDeployment;
 
 /// The adapters of one deployment, holding any number of repositories in a database the harness
 /// created and drops with it. The object store and identity verification stay in memory.
@@ -28,6 +33,12 @@ pub struct Harness {
     pub membership: PostgresMembership,
     /// The authorisation decision.
     pub authorisation: PostgresAuthorisationDecision,
+    /// The runner registry.
+    pub registry: PostgresRunnerRegistry,
+    /// The job queue.
+    pub queue: PostgresJobQueue,
+    /// The check definitions, read from TOML.
+    pub definitions: TomlCheckDefinitions,
     database: TestDatabase,
 }
 
@@ -57,6 +68,9 @@ impl Harness {
             identity: MemoryIdentityVerification::default(),
             membership: PostgresMembership::new(&database),
             authorisation: PostgresAuthorisationDecision::new(&database),
+            registry: PostgresRunnerRegistry::new(&database),
+            queue: PostgresJobQueue::new(&database),
+            definitions: TomlCheckDefinitions::new().unwrap(),
             database: test_database,
         }
     }
@@ -114,5 +128,27 @@ impl Deployment for Harness {
 
     fn changes(&self) -> &() {
         &()
+    }
+}
+
+impl RunnerDeployment for Harness {
+    type Registry = PostgresRunnerRegistry;
+    type Queue = PostgresJobQueue;
+    type Definitions = TomlCheckDefinitions;
+
+    fn registry(&self) -> &PostgresRunnerRegistry {
+        &self.registry
+    }
+
+    fn queue(&self) -> &PostgresJobQueue {
+        &self.queue
+    }
+
+    fn definitions(&self) -> &TomlCheckDefinitions {
+        &self.definitions
+    }
+
+    fn teach(&self, _text: &str, _outcome: Result<Vec<CheckDefinition>, CheckFileError>) {
+        // The reader parses the file itself, so there is nothing to teach it.
     }
 }

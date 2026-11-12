@@ -9,13 +9,17 @@ mod conversion;
 mod database;
 mod derived_data;
 mod draft_store;
+mod job_queue;
 mod membership;
 mod repository_directory;
+mod runner_registry;
 
 pub use authorisation_decision::PostgresAuthorisationDecision;
 pub use changeset_log::PostgresChangesetLog;
 pub use database::{Database, DatabaseError};
 pub use derived_data::PostgresDerivedData;
 pub use draft_store::PostgresDraftStore;
+pub use job_queue::PostgresJobQueue;
 pub use membership::PostgresMembership;
 pub use repository_directory::PostgresRepositoryDirectory;
+pub use runner_registry::PostgresRunnerRegistry;

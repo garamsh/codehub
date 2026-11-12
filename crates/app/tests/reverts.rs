@@ -17,6 +17,11 @@ async fn a_timed_out_blocking_check_reverts_its_changeset() {
 }
 
 #[tokio::test]
+async fn a_blocking_check_timed_out_by_a_heartbeat_reverts_its_changeset() {
+    reverts::a_blocking_check_timed_out_by_a_heartbeat_reverts_its_changeset::<Harness>().await;
+}
+
+#[tokio::test]
 async fn a_later_non_overlapping_change_survives_the_revert() {
     reverts::a_later_non_overlapping_change_survives_the_revert::<Harness>().await;
 }

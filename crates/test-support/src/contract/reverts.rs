@@ -6,7 +6,7 @@ use crate::contract::runner_deployment::{
 use crate::contract::{Repo, draft};
 use app::domain::address::Address;
 use app::domain::changeset::Changeset;
-use app::domain::job::{Job, JobResult, JobState, Outcome};
+use app::domain::job::{Heartbeat, Job, JobResult, JobState, Outcome, StopReason};
 use app::domain::principal::Caller;
 use app::domain::revert::Revert;
 use app::port::driven::changeset_log::ChangesetLog;
@@ -182,6 +182,40 @@ pub async fn a_timed_out_blocking_check_reverts_its_changeset<H: RunnerDeploymen
     assert_eq!(landed.timestamp, 150);
     assert_eq!(repo.read("a").await.as_deref(), Some(BASE));
     assert_eq!(seen[0].id, claimed.id);
+    let job = job_of(&repo, &ada, bad, "slow").await;
+    assert_eq!(job.state, JobState::TimedOut);
+    assert_eq!(job.revert, Some(Revert::Landed(reverted)));
+}
+
+/// A blocking job that times out when a runner's heartbeat arrives past its deadline still
+/// reverts its changeset: the expiry the heartbeat triggers reaches the revert.
+pub async fn a_blocking_check_timed_out_by_a_heartbeat_reverts_its_changeset<
+    H: RunnerDeployment,
+>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    land(&repo, &ada, "base", &[("a", BASE)]).await.unwrap();
+    let bad = land_with_checks(
+        &repo,
+        &ada,
+        "bad",
+        &[check("slow").timing_out_after(100)],
+        &[("a", "x\n2\n3\n4\n5\n6\n7\n8\n")],
+    )
+    .await;
+    let claimed = harness.jobs().claim(&bot, 0).await.unwrap().unwrap().job;
+
+    let answer = harness.jobs().heartbeat(&bot, claimed.id, 150).await;
+
+    assert_eq!(answer, Ok(Heartbeat::Stop(StopReason::TimedOut)));
+    let reverted = repo.main().await.unwrap();
+    assert_ne!(reverted, bad);
+    assert_eq!(
+        changeset(&repo, reverted).await.message,
+        format!("Revert {bad}: check slow timed out")
+    );
     let job = job_of(&repo, &ada, bad, "slow").await;
     assert_eq!(job.state, JobState::TimedOut);
     assert_eq!(job.revert, Some(Revert::Landed(reverted)));
