@@ -127,7 +127,7 @@ Stop `codehub` with Ctrl-C. The services keep running; stop them and delete thei
 
 The same `ch` and `codehub`, with an external identity provider and an external decision point instead of the built-in ones: `codehub` verifies each token by introspection (RFC 7662) against Keycloak, and asks Cerbos, over AuthZEN 1.0, whether each request is allowed. Members and organisations are then administered outside `codehub`: `ch org create` and `ch member add` are not used.
 
-The output below was produced on 2026-11-12 from the commit `130a8d9fe84a00af29c69d6b0c8d84f71fa3a2da` plus this file's change, with the services of `compose.yaml` running and port 8080 free. Changeset identifiers contain a timestamp, so yours differ; every other line is the same.
+The output below was produced on 2026-11-12 from the commit `ccd033a216e799dd232531a55f496b344e38a3f4` plus this file's change, with the services of `compose.yaml` running and port 8080 free. Changeset identifiers contain a timestamp, so yours differ; every other line is the same.
 
 ### Run `codehub` federated
 
@@ -242,7 +242,7 @@ exit 0
 
 ### Run checks on a runner
 
-The output below was produced on 2026-11-13 from the commit `5ace17573d745a3f0596046e512ba5e3f63672d3` plus this file's change; changeset identifiers contain a timestamp, so yours differ, and every other line is the same. Cerbos reads `dev/cerbos/policies` when it starts, so a `make services` started before the policy granted `administer_runners` answers `ch: the action is not allowed` to step 1 until the services are started again.
+The output below was produced on 2026-11-13 from the commit `76660678f22722c791083986a3b82208c5561ff8` plus this file's change; changeset identifiers contain a timestamp, so yours differ, and every other line is the same. Cerbos reads `dev/cerbos/policies` when it starts, so a `make services` started before the policy granted `administer_runners` answers `ch: the action is not allowed` to step 1 until the services are started again.
 
 A runner is a principal registered to claim the jobs of an organisation's checks; `codehub-runner` claims them and runs each command on this machine. This section runs in federated mode, with the second terminal's `ch` configured as above and `acme/app` selected, against `codehub` started with either of the identity settings above. The runner authenticates with a token file, the same way `ch` does: bob's token from the password grant of the client `codehub-test`, because that client and bob's password are already in `dev/check-env.sh` and compose, so no client has to be created in Keycloak to get one. The other way, a token endpoint with the client-credentials grant (`--token-endpoint`, `--client-id`, `--client-secret-env`), needs a Keycloak client with a service account, which `dev/keycloak/codehub-realm.json` does not have.
 
