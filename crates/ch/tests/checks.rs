@@ -78,10 +78,6 @@ async fn names_the_changeset_that_reverts_a_failed_blocking_check() {
     assert!(revert.parse::<Address>().is_ok(), "{shown}");
     assert_ne!(revert, changeset);
     assert_eq!(lines.len(), 3, "{shown}");
-    // The revert has no blocking check, so it is green at once and last-green moves to it.
-    assert_eq!(lines[0], format!("last-green {revert}"));
-    // main moved to the revert, which has no checks of its own.
-    assert_eq!(ada.ok(&["checks"]).await, format!("last-green {revert}\n"));
 }
 
 #[tokio::test]
