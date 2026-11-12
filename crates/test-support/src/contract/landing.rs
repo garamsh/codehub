@@ -2,7 +2,8 @@
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 use futures_util::future::join;
 
@@ -436,12 +437,17 @@ pub async fn a_conflict_that_appears_on_a_retry_is_answered_naming_the_path<H: D
     );
 }
 
-/// A changeset log that lets a landing wait before its compare-and-swap, and counts the landings
-/// between their read of `main` and their compare-and-swap, and the most there were at once.
+/// How long the first landing waits for a second to read `main`.
+const OVERLAP_WAIT: Duration = Duration::from_secs(1);
+
+/// A changeset log that holds the first landing between its read of `main` and its compare-and-swap
+/// until a second landing has read `main` too, or `OVERLAP_WAIT` has passed. It counts the landings
+/// in that window, and the most there were at once.
 struct CountsLandingsInFlight<'a, L> {
     inner: &'a L,
     in_flight: AtomicU32,
     most: AtomicU32,
+    held: AtomicBool,
 }
 
 impl<L: ChangesetLog + Sync> ChangesetLog for CountsLandingsInFlight<'_, L> {
@@ -479,7 +485,12 @@ impl<L: ChangesetLog + Sync> ChangesetLog for CountsLandingsInFlight<'_, L> {
         expected: Option<Address>,
         new: Address,
     ) -> Result<(), ChangesetLogError> {
-        tokio::task::yield_now().await;
+        if !self.held.swap(true, Ordering::SeqCst) {
+            let start = Instant::now();
+            while self.most.load(Ordering::SeqCst) < 2 && start.elapsed() < OVERLAP_WAIT {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
         let swapped = self
             .inner
             .compare_and_swap(repository, name, expected, new)
@@ -500,6 +511,7 @@ async fn most_landing_at_once<H: Deployment>(
         inner: harness.log(),
         in_flight: AtomicU32::new(0),
         most: AtomicU32::new(0),
+        held: AtomicBool::new(false),
     };
     let service = SourceControlService::new(
         SourceControlAdapters {
