@@ -87,3 +87,13 @@ async fn a_heartbeat_at_a_later_time_leaves_a_timed_out_blocking_job_to_the_reve
 async fn a_reverts_checks_are_queued_and_last_green_waits_for_them() {
     reverts::a_reverts_checks_are_queued_and_last_green_waits_for_them::<Harness>().await;
 }
+
+#[tokio::test]
+async fn a_revert_that_fails_after_its_reservation_is_recorded_as_failed() {
+    reverts::a_revert_that_fails_after_its_reservation_is_recorded_as_failed::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_second_failing_blocking_check_does_not_try_a_failed_revert_again() {
+    reverts::a_second_failing_blocking_check_does_not_try_a_failed_revert_again::<Harness>().await;
+}

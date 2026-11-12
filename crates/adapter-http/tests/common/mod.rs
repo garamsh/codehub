@@ -12,10 +12,11 @@ use std::time::Duration;
 
 use app::domain::address::Address;
 use app::domain::check::{CheckDefinition, Command, Timeout};
-use app::domain::job::NewJob;
+use app::domain::job::{JobId, NewJob};
 use app::domain::name::{OrganisationName, RepositoryName};
 use app::domain::principal::Principal;
 use app::domain::repository::RepositoryId;
+use app::domain::revert::Revert;
 use app::port::driven::job_queue::JobQueue;
 use app::port::driven::object_store::ObjectStore;
 use app::port::driven::repository_directory::RepositoryDirectory;
@@ -380,6 +381,23 @@ impl Api {
             },
         };
         self.stores.queue.queue(vec![job]).await.unwrap();
+    }
+
+    /// Records the revert of job `job` as failed with `reason`, in place of what was recorded,
+    /// which stands in for a revert whose landing failed.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the queue refuses the record.
+    pub async fn record_failed_revert(&self, job: u64, reason: &str) {
+        let revert = Revert::Failed {
+            reason: reason.to_owned(),
+        };
+        self.stores
+            .queue
+            .record_revert(JobId::new(job), revert)
+            .await
+            .unwrap();
     }
 
     /// Follows a download grant: the bytes the object store holds at the address the grant names.

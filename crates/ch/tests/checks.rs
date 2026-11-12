@@ -98,6 +98,34 @@ async fn names_the_paths_of_a_revert_that_conflicts() {
 }
 
 #[tokio::test]
+async fn shows_the_reason_of_a_revert_that_failed() {
+    let server = serve().await;
+    let ada = server.user("ada");
+    let (org, changeset, runner) = landed(&server, &ada).await;
+    server.queue_check(&org, &changeset, "build", true).await;
+    server.finish_job(&runner, "failed", Some(3)).await;
+    server
+        .record_failed_revert(&org, &changeset, "revert not landed: log down")
+        .await;
+
+    let shown = ada.ok(&["checks", &changeset]).await;
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(
+        lines[1..],
+        [
+            "build blocking failed 3",
+            "revert failed: revert not landed: log down"
+        ]
+    );
+    let json: Value =
+        serde_json::from_str(&ada.ok(&["--json", "checks", &changeset]).await).unwrap();
+    assert_eq!(
+        json["checks"][0]["revert"],
+        json!({"outcome": "failed", "reason": "revert not landed: log down"})
+    );
+}
+
+#[tokio::test]
 async fn prints_the_checks_as_json() {
     let server = serve().await;
     let ada = server.user("ada");

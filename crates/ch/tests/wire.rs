@@ -293,8 +293,13 @@ fn has_the_states_and_revert_outcomes_of_the_check_schemas() {
     })
     .unwrap();
     let conflicted = serde_json::to_value(Revert::Conflicted { paths: vec![] }).unwrap();
+    let failed = serde_json::to_value(Revert::Failed {
+        reason: String::new(),
+    })
+    .unwrap();
     let variants = schemas["Revert"]["oneOf"].as_array().unwrap();
-    for (written, schema) in [landed, conflicted].iter().zip(variants) {
+    assert_eq!(variants.len(), 3);
+    for (written, schema) in [landed, conflicted, failed].iter().zip(variants) {
         let mut properties = keys(schema["properties"].as_object().unwrap());
         assert!(properties.remove("outcome"));
         let outcome = written["outcome"].as_str().unwrap();

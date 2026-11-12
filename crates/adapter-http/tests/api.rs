@@ -1004,6 +1004,15 @@ async fn lists_the_checks_of_a_changeset_through_a_run() {
     let bob = api.token("bob");
     let hidden = api.get(&uri, &bob).await;
     assert_eq!(hidden.status, StatusCode::NOT_FOUND);
+
+    // A revert that failed after its reservation is listed with its reason.
+    api.record_failed_revert(id, "revert not landed: log down")
+        .await;
+    let listed = api.get(&uri, &ada).await;
+    assert_eq!(
+        listed.body["checks"][0]["revert"],
+        json!({"outcome": "failed", "reason": "revert not landed: log down"})
+    );
 }
 
 #[tokio::test]
