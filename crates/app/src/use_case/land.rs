@@ -17,6 +17,7 @@ use crate::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
 use crate::port::driven::derived_data::DerivedData;
 use crate::port::driven::object_store::ObjectStore;
 use crate::port::driving::source_control::{LandError, Landing, PathConflict};
+use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::read_file::file_at;
 
 /// Lands the staged draft `staged` of `repository` on its `main` and returns the landed
@@ -24,13 +25,19 @@ use crate::use_case::read_file::file_at;
 /// or the server.
 ///
 /// The draft's delta is rebased onto `main` as it is read; its parent becomes `main`, and `main`
-/// advances to it only where it still points where it was read.
+/// advances to it only where it still points where it was read. Where `main` moved first, `main`
+/// is read again and the same delta rebased onto it, up to `attempts` times in all (ADR 0036).
 ///
 /// # Errors
 ///
 /// [`LandError::Conflicts`] where the draft conflicts with what `main` changed since its base,
-/// [`LandError::MainMoved`] where `main` moved before the compare-and-swap, and otherwise the
-/// failure of a port or of the tree derivation. Nothing moves `main` on an error.
+/// on any attempt, [`LandError::MainMoved`] where `main` moved before the compare-and-swap of
+/// every attempt, and otherwise the failure of a port or of the tree derivation. Nothing moves
+/// `main` on an error.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the two callers each pass the ports and the landing once; a parameter struct would be built for one call"
+)]
 pub async fn land<O, L, D>(
     objects: &O,
     log: &L,
@@ -39,6 +46,32 @@ pub async fn land<O, L, D>(
     author: &(impl Display + ?Sized),
     staged: Draft,
     landing: Landing,
+    attempts: LandingAttempts,
+) -> Result<Address, LandError>
+where
+    O: ObjectStore,
+    L: ChangesetLog,
+    D: DerivedData,
+{
+    let mut moved = LandError::MainMoved { current: None };
+    for _ in 0..attempts.get() {
+        match attempt(objects, log, derived, repository, author, &staged, &landing).await {
+            Err(error @ LandError::MainMoved { .. }) => moved = error,
+            result => return result,
+        }
+    }
+    Err(moved)
+}
+
+/// One try at landing `staged`: rebase onto `main` as read now, append, and swap.
+async fn attempt<O, L, D>(
+    objects: &O,
+    log: &L,
+    derived: &D,
+    repository: RepositoryId,
+    author: &(impl Display + ?Sized),
+    staged: &Draft,
+    landing: &Landing,
 ) -> Result<Address, LandError>
 where
     O: ObjectStore,
@@ -53,14 +86,14 @@ where
         repository,
         staged.base,
         main,
-        staged.changes,
+        staged.changes.clone(),
     )
     .await?;
     let changeset = Changeset {
         parents: main.into_iter().collect(),
         author: author.to_string(),
         timestamp: landing.timestamp,
-        message: landing.message,
+        message: landing.message.clone(),
         changes,
     };
 

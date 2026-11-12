@@ -1,9 +1,9 @@
-//! How many times a use case tries again where its landing lost the compare-and-swap on `main`.
+//! How many times a landing is tried where it lost the compare-and-swap on `main`.
 
 use std::num::NonZeroU32;
 
-/// The most times a landing made by the server itself is tried where `main` keeps moving under
-/// it; at least one. A parameter of the service that lands, not a constant.
+/// The most times a landing is tried where `main` keeps moving under it; at least one. A parameter
+/// of the service that lands, not a constant.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct LandingAttempts(NonZeroU32);
 

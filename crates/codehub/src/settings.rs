@@ -3,7 +3,9 @@
 
 use std::fmt;
 use std::net::SocketAddr;
+use std::num::NonZeroU32;
 
+use app::use_case::landing_attempts::LandingAttempts;
 use clap::{Parser, ValueEnum};
 
 use crate::Error;
@@ -37,9 +39,15 @@ pub struct Config {
     /// The URL of the PostgreSQL database holding the metadata.
     #[arg(long, env = "CODEHUB_POSTGRES_URL")]
     pub postgres_url: String,
-    /// The most connections held open to PostgreSQL.
-    #[arg(long, env = "CODEHUB_POSTGRES_POOL_SIZE", default_value_t = 10)]
+    /// The most connections this server process holds open to PostgreSQL. The sum over all server
+    /// processes must stay below PostgreSQL's `max_connections`, less the connections other
+    /// clients use (ADR 0037).
+    #[arg(long, env = "CODEHUB_POSTGRES_POOL_SIZE", default_value_t = 40)]
     pub postgres_pool_size: u32,
+    /// The most times a landing is tried where `main` keeps moving under it, at least one; when
+    /// they are spent the landing is answered as moved (ADR 0036).
+    #[arg(long, env = "CODEHUB_LANDING_ATTEMPTS", default_value_t = LandingAttempts::DEFAULT)]
+    pub landing_attempts: NonZeroU32,
     /// The URL of the S3-compatible object store.
     #[arg(long, env = "CODEHUB_S3_ENDPOINT")]
     pub s3_endpoint: String,
@@ -124,6 +132,7 @@ impl fmt::Debug for Config {
             listen,
             postgres_url,
             postgres_pool_size,
+            landing_attempts,
             s3_endpoint,
             s3_region,
             s3_bucket,
@@ -150,6 +159,7 @@ impl fmt::Debug for Config {
             .field("listen", listen)
             .field("postgres_url", &redact_url(postgres_url))
             .field("postgres_pool_size", postgres_pool_size)
+            .field("landing_attempts", landing_attempts)
             .field("s3_endpoint", s3_endpoint)
             .field("s3_region", s3_region)
             .field("s3_bucket", s3_bucket)
@@ -251,6 +261,7 @@ mod tests {
             listen: SocketAddr::from(([127, 0, 0, 1], 8080)),
             postgres_url: postgres_url.to_owned(),
             postgres_pool_size: 10,
+            landing_attempts: LandingAttempts::DEFAULT,
             s3_endpoint: "http://objects.example:9000".to_owned(),
             s3_region: "eu-test-1".to_owned(),
             s3_bucket: "bucket-visible".to_owned(),
