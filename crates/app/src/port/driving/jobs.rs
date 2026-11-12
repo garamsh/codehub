@@ -4,7 +4,7 @@ use std::fmt;
 
 use crate::domain::file::FileKind;
 use crate::domain::job::{Heartbeat, Job, JobId, JobResult};
-use crate::domain::path::Path;
+use crate::domain::path::{Path, PathError};
 use crate::domain::principal::Caller;
 use crate::port::driven::changeset_log::ChangesetLogError;
 use crate::port::driven::derived_data::DerivedDataError;
@@ -91,6 +91,8 @@ pub enum JobsError {
     Derived(DerivedDataError),
     /// The changeset log failed.
     Log(ChangesetLogError),
+    /// A file of the tree has no valid path, which the tree's derivation rules out.
+    Path(PathError),
 }
 
 impl fmt::Display for JobsError {
@@ -102,6 +104,7 @@ impl fmt::Display for JobsError {
             Self::Objects(error) => write!(f, "{error}"),
             Self::Derived(error) => write!(f, "{error}"),
             Self::Log(error) => write!(f, "{error}"),
+            Self::Path(error) => write!(f, "{error}"),
         }
     }
 }
@@ -115,6 +118,7 @@ impl std::error::Error for JobsError {
             Self::Objects(error) => Some(error),
             Self::Derived(error) => Some(error),
             Self::Log(error) => Some(error),
+            Self::Path(error) => Some(error),
         }
     }
 }
@@ -146,5 +150,11 @@ impl From<DerivedDataError> for JobsError {
 impl From<ChangesetLogError> for JobsError {
     fn from(error: ChangesetLogError) -> Self {
         Self::Log(error)
+    }
+}
+
+impl From<PathError> for JobsError {
+    fn from(error: PathError) -> Self {
+        Self::Path(error)
     }
 }

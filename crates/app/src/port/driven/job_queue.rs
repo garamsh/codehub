@@ -25,7 +25,8 @@ pub trait JobQueue {
         jobs: Vec<NewJob>,
     ) -> impl Future<Output = Result<Vec<JobId>, JobQueueError>> + Send;
 
-    /// Records `job` as failed without running it, with `output` as what it says.
+    /// Records `job` as failed without running it, with `output` as what it says, and returns it
+    /// as recorded.
     ///
     /// # Errors
     ///
@@ -34,7 +35,7 @@ pub trait JobQueue {
         &self,
         job: NewJob,
         output: Vec<u8>,
-    ) -> impl Future<Output = Result<JobId, JobQueueError>> + Send;
+    ) -> impl Future<Output = Result<Job, JobQueueError>> + Send;
 
     /// Gives the oldest queued job that one of `registrations` matches to that registration for
     /// `lease` seconds from `now`, and returns it as running. Its deadline is its check's timeout

@@ -116,6 +116,17 @@ pub enum Outcome {
     Failed,
 }
 
+impl Outcome {
+    /// The state a job ends in when a runner reports this outcome.
+    #[must_use]
+    pub const fn state(self) -> JobState {
+        match self {
+            Self::Passed => JobState::Passed,
+            Self::Failed => JobState::Failed,
+        }
+    }
+}
+
 /// What a runner reports when its job ends.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct JobResult {

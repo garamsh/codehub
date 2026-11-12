@@ -1,5 +1,5 @@
-//! The runners driving port, served by the runner registry, the directory and the authorisation
-//! decision it is given.
+//! The runners driving port, served by the runner registry, the repository directory and the
+//! authorisation decision it is given.
 
 use std::collections::BTreeSet;
 
@@ -22,7 +22,8 @@ pub struct RunnersAdapters<'a, G, R, A> {
     pub authorisation: &'a A,
 }
 
-/// Runners kept in the registry the composition site passes to it.
+/// Runners kept in the registry the composition site passes to it, administered by the callers
+/// the authorisation decision allows.
 pub struct RunnersService<'a, G, R, A> {
     registry: &'a G,
     directory: &'a R,
@@ -45,21 +46,18 @@ impl<'a, G, R, A> RunnersService<'a, G, R, A> {
     }
 }
 
-impl<G, R, A> RunnersService<'_, G, R, A>
-where
-    A: AuthorisationDecision + Sync,
-{
-    /// Requires that `caller` administers the runners of `organisation`.
+impl<G, R, A: AuthorisationDecision + Sync> RunnersService<'_, G, R, A> {
     async fn require_admin(
         &self,
         caller: &Caller,
         organisation: &OrganisationName,
     ) -> Result<(), RunnersError> {
+        let resource = Resource::Organisation(organisation.clone());
         Ok(require(
             self.authorisation,
             caller.principal(),
             Action::AdministerRunners,
-            &Resource::Organisation(organisation.clone()),
+            &resource,
         )
         .await?)
     }
