@@ -51,7 +51,7 @@ Commit `1cdea4a5f773cedcc53c73c44a8e99a76ffc94d2`, on 12 x AMD Ryzen 5 9600X wit
 
 Two runs back to back on the same machine, with other projects loading it: load average 7 to 34 on 12 cores during both. Pool size 40 per replica.
 
-- **Before**: main at `595f4c3476ea656417705560beccb86fc3391685`, with batched decisions (ADR 0038) and no server-side retry.
+- **Before**: main at `595f4c3476ea656417705560beccb86fc3391685`, with no server-side retry. Decisions are still asked once per path at both commits: ADR 0038 is decided and not yet built (#119).
 - **After**: PR #125 at `68b887dd9202134f547ab6d75b4ca2b75c375b14` merged onto it (merge `e80ee3e992fca2e59de61c62539d0a7254c55cba`), with the server-side retry (ADR 0036, 32 attempts) and the fair gate in each process (ADR 0039).
 
 | Scenario | Operations/s before → after | Landings before → after | Land p50 / p95 / p99 (ms) before | Land p50 / p95 / p99 (ms) after | Lost swaps at the client before → after |
@@ -65,5 +65,5 @@ Two runs back to back on the same machine, with other projects loading it: load 
 - After, land p99 is 61.8 to 65.0 s in every scenario, and each scenario ran 72.8 to 78.8 s against a window of 60 s. The tail is not explained; ADR 0039 names it among the signs to watch.
 - `same-file` conflicts: 121 before, 30 after.
 - `read-heavy` reads after: p50 1.9 ms, p95 15.0 ms, p99 66.0 ms. History: p50 19.7 ms, p95 192.3 ms, p99 394.1 ms.
-- `external` after: 59175 API requests made 205170 decision-point calls, 3.47 per request, against 11.08 before.
+- `external` after: 59175 API requests made 205170 decision-point calls, 3.47 per request, against 11.08 before: fewer landings are retried, so fewer requests ask for every staged path again.
 - PostgreSQL CPU, sampled every 10 seconds with `docker stats` beside the harness: a median of about 2.0 cores, at most 2.7, before; a median of about 0.9 cores, at most 3.3, after. ADR 0040 reads the trigger for distributed SQL from this figure.
