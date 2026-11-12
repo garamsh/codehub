@@ -16,7 +16,7 @@ test: services
 # Builds the binaries the e2e tests run, then runs the e2e package against the same services
 # and variables as `test`.
 e2e: services
-	cargo build --locked -p codehub -p ch
+	cargo build --locked -p codehub -p ch -p codehub-runner
 	set -a && . dev/check-env.sh && set +a && TEST_SELECTOR="-p e2e" sh scripts/test-count.sh
 
 # The load harness against two codehub replicas and the check services: a smoke run of every

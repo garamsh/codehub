@@ -39,6 +39,41 @@ impl Server {
     }
 }
 
+impl Server {
+    /// Starts the built `codehub` as [`Server::start`] does, with `settings` added to its
+    /// environment.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the process does not print the line that names its address within the bound.
+    pub fn start_with(database: &TestDatabase, settings: &[(&str, &str)]) -> Self {
+        match Self::try_start_with(database, settings) {
+            Ok(server) => server,
+            Err(line) => panic!("codehub did not start: {line}"),
+        }
+    }
+
+    /// Starts the built `codehub` as [`Server::start_with`] does, and returns the first line it
+    /// printed on stderr where it exits instead of listening.
+    ///
+    /// # Errors
+    ///
+    /// The first line of the process's stderr, where it did not start.
+    pub fn try_start_with(
+        database: &TestDatabase,
+        settings: &[(&str, &str)],
+    ) -> Result<Self, String> {
+        let mut variables = vec![("CODEHUB_OIDC_AUDIENCE", AUDIENCE)];
+        variables.extend_from_slice(settings);
+        test_support::Server::try_start_with(
+            Path::new(env!("CARGO_BIN_EXE_codehub")),
+            database,
+            &variables,
+        )
+        .map(Self)
+    }
+}
+
 impl Deref for Server {
     type Target = test_support::Server;
 
@@ -164,42 +199,61 @@ impl Client {
     ///
     /// Panics if a step is refused.
     pub async fn land_file(&self, org: &str, repo: &str, draft: &str, path: &str, content: &str) {
-        let address = Address::of(content.as_bytes()).to_string();
-        let (status, grant) = self
-            .send(
-                Method::POST,
-                &format!("/v1/orgs/{org}/repos/{repo}/uploads"),
-                Some(json!({"address": address, "size": content.len()})),
-            )
-            .await;
-        assert_eq!(status, StatusCode::OK);
-        let mut upload = self
-            .http
-            .put(grant["url"].as_str().unwrap())
-            .body(content.to_owned());
-        for header in grant["headers"].as_array().unwrap() {
-            upload = upload.header(
-                header["name"].as_str().unwrap(),
-                header["value"].as_str().unwrap(),
-            );
+        self.land_files(org, repo, draft, &[(path, content)]).await;
+    }
+
+    /// Uploads each `(path, content)` of `files`, stages them in the draft `draft` and lands the
+    /// draft, in the repository `org`/`repo`; returns the landed changeset's address.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a step is refused.
+    pub async fn land_files(
+        &self,
+        org: &str,
+        repo: &str,
+        draft: &str,
+        files: &[(&str, &str)],
+    ) -> String {
+        for (path, content) in files {
+            let address = Address::of(content.as_bytes()).to_string();
+            let (status, grant) = self
+                .send(
+                    Method::POST,
+                    &format!("/v1/orgs/{org}/repos/{repo}/uploads"),
+                    Some(json!({"address": address, "size": content.len()})),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK);
+            let mut upload = self
+                .http
+                .put(grant["url"].as_str().unwrap())
+                .body((*content).to_owned());
+            for header in grant["headers"].as_array().unwrap() {
+                upload = upload.header(
+                    header["name"].as_str().unwrap(),
+                    header["value"].as_str().unwrap(),
+                );
+            }
+            assert!(upload.send().await.unwrap().status().is_success());
+            let (status, _) = self
+                .send(
+                    Method::PUT,
+                    &format!("/v1/orgs/{org}/repos/{repo}/drafts/{draft}/files/{path}"),
+                    Some(json!({"kind": "regular", "content": address})),
+                )
+                .await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
         }
-        assert!(upload.send().await.unwrap().status().is_success());
-        let (status, _) = self
-            .send(
-                Method::PUT,
-                &format!("/v1/orgs/{org}/repos/{repo}/drafts/{draft}/files/{path}"),
-                Some(json!({"kind": "regular", "content": address})),
-            )
-            .await;
-        assert_eq!(status, StatusCode::NO_CONTENT);
-        let (status, _) = self
+        let (status, landed) = self
             .send(
                 Method::POST,
                 &format!("/v1/orgs/{org}/repos/{repo}/drafts/{draft}/land"),
-                Some(json!({"message": "add a file"})),
+                Some(json!({"message": "add files"})),
             )
             .await;
         assert_eq!(status, StatusCode::OK);
+        landed["changeset"].as_str().unwrap().to_owned()
     }
 
     /// The content of the file at `path` in the repository `org`/`repo`, read through a download
