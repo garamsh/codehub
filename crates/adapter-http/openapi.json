@@ -1951,7 +1951,7 @@
     },
     "/v1/orgs/{org}/repos/{repo}/refs/{name}": {
       "get": {
-        "summary": "Read a ref. Only `last-green` is served; no driving port yet names the changeset `main` points at.",
+        "summary": "Read a ref: `main` or `last-green`.",
         "parameters": [
           {
             "name": "org",
@@ -2600,7 +2600,8 @@
           "exit_code",
           "output_tail",
           "lease_expires_at",
-          "deadline"
+          "deadline",
+          "revert"
         ],
         "properties": {
           "id": {
@@ -2652,6 +2653,17 @@
               "null"
             ],
             "description": "While running: when the job times out, in seconds since the epoch."
+          },
+          "revert": {
+            "description": "What came of reverting the changeset because this check failed or timed out; null where no revert was attempted.",
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Revert"
+              }
+            ]
           }
         }
       },
@@ -2679,6 +2691,7 @@
           "name": {
             "type": "string",
             "enum": [
+              "main",
               "last-green"
             ]
           },
@@ -2686,6 +2699,44 @@
             "$ref": "#/components/schemas/Address"
           }
         }
+      },
+      "Revert": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "outcome",
+              "changeset"
+            ],
+            "properties": {
+              "outcome": {
+                "const": "landed"
+              },
+              "changeset": {
+                "$ref": "#/components/schemas/Address"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "outcome",
+              "paths"
+            ],
+            "properties": {
+              "outcome": {
+                "const": "conflicted"
+              },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The paths the revert conflicts on; it landed nothing."
+              }
+            }
+          }
+        ]
       }
     }
   }

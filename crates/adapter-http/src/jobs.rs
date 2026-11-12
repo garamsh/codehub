@@ -102,10 +102,6 @@ pub struct ResultBody {
     output_tail: String,
 }
 
-/// The exit code reported where a runner names none: a pass exits 0, and any other end has no
-/// code of the command's own.
-const NO_EXIT_CODE: i32 = -1;
-
 pub async fn claim<P: RunnerServices>(
     State(ports): State<Arc<P>>,
     Authenticated(caller): Authenticated,
@@ -155,15 +151,15 @@ pub async fn report<P: RunnerServices>(
     Params(job): Params<u64>,
     Body(result): Body<ResultBody>,
 ) -> Result<StatusCode, Problem> {
-    let (outcome, default_exit_code) = match result.status {
-        StatusBody::Passed => (Outcome::Passed, 0),
-        StatusBody::Failed | StatusBody::TimedOut | StatusBody::Cancelled => {
-            (Outcome::Failed, NO_EXIT_CODE)
-        }
+    let outcome = match result.status {
+        StatusBody::Passed => Outcome::Passed,
+        StatusBody::Failed => Outcome::Failed,
+        StatusBody::TimedOut => Outcome::TimedOut,
+        StatusBody::Cancelled => Outcome::Cancelled,
     };
     let result = JobResult {
         outcome,
-        exit_code: result.exit_code.unwrap_or(default_exit_code),
+        exit_code: result.exit_code,
         output: result.output_tail.into_bytes(),
     };
     ports

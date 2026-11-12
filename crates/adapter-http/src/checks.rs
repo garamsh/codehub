@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use app::domain::address::Address;
 use app::domain::job::{Job, JobId, JobState};
+use app::domain::revert::Revert;
+use app::port::driven::changeset_log::Ref;
 use app::port::driving::checks::Checks;
 use axum::Json;
 use axum::extract::State;
@@ -27,6 +29,26 @@ pub enum StateBody {
 }
 
 #[derive(Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum RevertBody {
+    Landed { changeset: String },
+    Conflicted { paths: Vec<String> },
+}
+
+impl From<Revert> for RevertBody {
+    fn from(revert: Revert) -> Self {
+        match revert {
+            Revert::Landed(changeset) => Self::Landed {
+                changeset: changeset.to_string(),
+            },
+            Revert::Conflicted(paths) => Self::Conflicted {
+                paths: paths.iter().map(ToString::to_string).collect(),
+            },
+        }
+    }
+}
+
+#[derive(Serialize)]
 pub struct ListedBody {
     id: u64,
     name: String,
@@ -37,6 +59,7 @@ pub struct ListedBody {
     output_tail: String,
     lease_expires_at: Option<i64>,
     deadline: Option<i64>,
+    revert: Option<RevertBody>,
 }
 
 #[derive(Serialize)]
@@ -73,6 +96,7 @@ impl From<Job> for ListedBody {
             output_tail: String::from_utf8_lossy(&job.output).into_owned(),
             lease_expires_at,
             deadline,
+            revert: job.revert.map(Into::into),
         }
     }
 }
@@ -112,14 +136,18 @@ pub async fn reference<P: RunnerServices>(
     Params((organisation, repository, name)): Params<(String, String, String)>,
 ) -> Result<Json<RefBody>, Problem> {
     let repository = find(&*ports, &caller, &organisation, &repository).await?;
-    let changeset = match name.as_str() {
-        "last-green" => ports.checks().last_green(&caller, repository).await?,
-        // No driving port yet names the changeset `main` points at, so `main` is not served.
+    let (name, reference) = match name.as_str() {
+        "main" => ("main", Ref::Main),
+        "last-green" => ("last-green", Ref::LastGreen),
         _ => return Err(Problem::not_found("no such ref")),
     };
+    let changeset = ports
+        .checks()
+        .reference(&caller, repository, reference)
+        .await?;
     let changeset = changeset.ok_or_else(|| Problem::not_found("the ref is not set"))?;
     Ok(Json(RefBody {
-        name: "last-green",
+        name,
         changeset: changeset.to_string(),
     }))
 }

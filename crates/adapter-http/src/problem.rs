@@ -395,7 +395,8 @@ impl From<JobsError> for Problem {
             JobsError::Objects(_)
             | JobsError::Derived(_)
             | JobsError::Log(_)
-            | JobsError::Path(_) => Self::internal(),
+            | JobsError::Path(_)
+            | JobsError::Revert(_) => Self::internal(),
         }
     }
 }
@@ -406,6 +407,7 @@ impl From<ChecksError> for Problem {
             ChecksError::Access(error) => error.into(),
             ChecksError::Queue(error) => error.into(),
             ChecksError::Log(error) => error.into(),
+            ChecksError::Revert(_) => Self::internal(),
         }
     }
 }

@@ -4,9 +4,9 @@
 
 use adapter_http::{Pause, RunnerSettings};
 use adapter_memory::{
-    MemoryAuthorisationDecision, MemoryChangesetLog, MemoryDerivedData, MemoryDraftStore,
-    MemoryIdentityVerification, MemoryJobQueue, MemoryMembership, MemoryObjectStore,
-    MemoryRepositoryDirectory, MemoryRunnerRegistry,
+    MemoryAuthorisationDecision, MemoryChangesetLog, MemoryCheckDefinitions, MemoryDerivedData,
+    MemoryDraftStore, MemoryIdentityVerification, MemoryJobQueue, MemoryMembership,
+    MemoryObjectStore, MemoryRepositoryDirectory, MemoryRunnerRegistry,
 };
 use std::time::Duration;
 
@@ -26,6 +26,7 @@ use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
 use app::use_case::checks::{ChecksAdapters, ChecksService};
 use app::use_case::jobs::{JobsAdapters, JobsService};
+use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::members::{MembersAdapters, MembersService};
 use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
 use app::use_case::runners::{RunnersAdapters, RunnersService};
@@ -67,6 +68,8 @@ pub struct Stores {
     pub registry: MemoryRunnerRegistry,
     /// The job queue.
     pub queue: MemoryJobQueue,
+    /// The check definitions.
+    pub definitions: MemoryCheckDefinitions,
 }
 
 impl Stores {
@@ -85,6 +88,7 @@ impl Stores {
             membership,
             registry: MemoryRunnerRegistry::default(),
             queue: MemoryJobQueue::default(),
+            definitions: MemoryCheckDefinitions::new(".codehub/checks.toml".parse().unwrap()),
         }))
     }
 }
@@ -151,15 +155,24 @@ fn runner_router(stores: &'static Stores) -> Router {
                 objects: &stores.objects,
                 derived: &stores.derived,
                 log: &stores.log,
+                directory: &stores.directory,
+                definitions: &stores.definitions,
             },
             LEASE,
+            LandingAttempts::default(),
         ),
-        ChecksService::new(ChecksAdapters {
-            queue: &stores.queue,
-            log: &stores.log,
-            directory: &stores.directory,
-            authorisation: &stores.authorisation,
-        }),
+        ChecksService::new(
+            ChecksAdapters {
+                queue: &stores.queue,
+                log: &stores.log,
+                directory: &stores.directory,
+                authorisation: &stores.authorisation,
+                objects: &stores.objects,
+                derived: &stores.derived,
+                definitions: &stores.definitions,
+            },
+            LandingAttempts::default(),
+        ),
         RunnerSettings {
             hold: HOLD,
             retry_interval: Duration::from_millis(50),

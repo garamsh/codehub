@@ -969,6 +969,7 @@ async fn lists_the_checks_of_a_changeset_through_a_run() {
     assert_eq!(check["labels"], json!(["linux"]));
     assert_eq!(check["state"], "queued");
     assert_eq!(check["exit_code"], Value::Null);
+    assert_eq!(check["revert"], Value::Null);
 
     let runner = register_runner(&api, &ada, "r1", &["linux"]).await;
     let id = claim(&api, &runner).await.body["id"].as_u64().unwrap();
@@ -989,6 +990,10 @@ async fn lists_the_checks_of_a_changeset_through_a_run() {
     assert_eq!(failed.body["checks"][0]["state"], "failed");
     assert_eq!(failed.body["checks"][0]["exit_code"], 3);
     assert_eq!(failed.body["checks"][0]["output_tail"], "boom\n");
+    // A failed blocking check reverts the changeset, and the listing says what landed.
+    let revert = &failed.body["checks"][0]["revert"];
+    assert_eq!(revert["outcome"], "landed");
+    assert!(revert["changeset"].is_string(), "{revert}");
 
     let malformed = api.get(&format!("{CHECKS}/nope/checks"), &ada).await;
     assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
@@ -1027,4 +1032,57 @@ async fn serves_last_green_once_the_blocking_checks_pass() {
     );
     let unknown = api.get("/v1/orgs/acme/repos/app/refs/nothing", &ada).await;
     assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn serves_main_once_a_changeset_has_landed() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    let uri = "/v1/orgs/acme/repos/app/refs/main";
+    let changeset = landed_with_a_check(&api, &ada).await;
+    let set = api.get(uri, &ada).await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.body);
+    assert_eq!(set.body, json!({"name": "main", "changeset": changeset}));
+}
+
+#[tokio::test]
+async fn reports_each_outcome_as_its_own_state() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    let changeset = landed_with_a_check(&api, &ada).await;
+    let uri = format!("{CHECKS}/{changeset}/checks");
+    let runner = register_runner(&api, &ada, "r1", &["linux"]).await;
+
+    // Each status is its own outcome; no exit code stays null rather than 0.
+    for (name, status, exit_code) in [
+        ("lint", "cancelled", Value::Null),
+        ("two", "timed_out", Value::Null),
+        ("three", "failed", json!(7)),
+    ] {
+        if name != "lint" {
+            api.queue_check("acme", &changeset, name, &["linux"]).await;
+        }
+        // The earlier jobs are finished, so the claim hands out this one.
+        let claimed = claim(&api, &runner).await;
+        assert_eq!(claimed.body["check"]["name"], name, "{}", claimed.body);
+        let id = claimed.body["id"].as_u64().unwrap();
+        let body = if exit_code.is_null() {
+            json!({"status": status, "output_tail": ""})
+        } else {
+            json!({"status": status, "exit_code": exit_code, "output_tail": ""})
+        };
+        let reported = api
+            .post(&format!("/v1/runner/jobs/{id}/result"), &runner, body)
+            .await;
+        assert_eq!(reported.status, StatusCode::NO_CONTENT, "{status}");
+        let listed = api.get(&uri, &ada).await;
+        let shown = listed.body["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == name)
+            .unwrap();
+        assert_eq!(shown["state"], status);
+        assert_eq!(shown["exit_code"], exit_code, "{status}");
+    }
 }
