@@ -65,3 +65,25 @@ async fn a_runner_reported_timeout_reverts_its_changeset() {
 async fn a_runner_reported_cancellation_reverts_nothing() {
     reverts::a_runner_reported_cancellation_reverts_nothing::<Harness>().await;
 }
+
+#[tokio::test]
+async fn two_blocking_failures_reported_together_land_one_revert() {
+    reverts::two_blocking_failures_reported_together_land_one_revert::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_claim_at_a_later_time_leaves_a_timed_out_blocking_job_to_the_revert() {
+    reverts::a_claim_at_a_later_time_leaves_a_timed_out_blocking_job_to_the_revert::<Harness>()
+        .await;
+}
+
+#[tokio::test]
+async fn a_heartbeat_at_a_later_time_leaves_a_timed_out_blocking_job_to_the_revert() {
+    reverts::a_heartbeat_at_a_later_time_leaves_a_timed_out_blocking_job_to_the_revert::<Harness>()
+        .await;
+}
+
+#[tokio::test]
+async fn a_reverts_checks_are_queued_and_last_green_waits_for_them() {
+    reverts::a_reverts_checks_are_queued_and_last_green_waits_for_them::<Harness>().await;
+}

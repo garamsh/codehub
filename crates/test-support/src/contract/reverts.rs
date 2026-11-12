@@ -1,7 +1,7 @@
 //! A changeset whose blocking check failed or timed out is reverted by a new changeset on `main`.
 
 use crate::contract::runner_deployment::{
-    RunnerDeployment, Spec, check, land, land_checks, organisation, runner, text,
+    LEASE, RunnerDeployment, Spec, check, land, land_checks, organisation, runner, text,
 };
 use crate::contract::{Repo, draft};
 use app::domain::address::Address;
@@ -9,8 +9,11 @@ use app::domain::changeset::Changeset;
 use app::domain::job::{Heartbeat, Job, JobResult, JobState, Outcome, StopReason};
 use app::domain::principal::Caller;
 use app::domain::revert::Revert;
-use app::port::driven::changeset_log::ChangesetLog;
+use app::domain::runner::{Registration, RegistrationId};
+use app::port::driven::changeset_log::{ChangesetLog, Ref};
 use app::port::driven::check_definitions::{CheckDefinitions, CheckFileError};
+use app::port::driven::job_queue::JobQueue;
+use app::port::driven::runner_registry::RunnerRegistry;
 use app::port::driving::checks::Checks;
 use app::port::driving::jobs::Jobs;
 
@@ -56,6 +59,31 @@ async fn job_of<H: RunnerDeployment>(
         .await
         .into_iter()
         .find(|job| job.check.name.as_str() == name)
+        .unwrap()
+}
+
+async fn last_green<H: RunnerDeployment>(repo: &Repo<'_, H>) -> Option<Address> {
+    repo.harness
+        .log()
+        .read_ref(repo.id, Ref::LastGreen)
+        .await
+        .unwrap()
+}
+
+/// The registrations `bot` holds.
+async fn held<H: RunnerDeployment>(harness: &H, bot: &Caller) -> Vec<RegistrationId> {
+    registrations(harness, bot)
+        .await
+        .iter()
+        .map(|registration| registration.id)
+        .collect()
+}
+
+async fn registrations<H: RunnerDeployment>(harness: &H, bot: &Caller) -> Vec<Registration> {
+    harness
+        .registry()
+        .of_principal(bot.principal())
+        .await
         .unwrap()
 }
 
@@ -393,13 +421,14 @@ pub async fn a_failing_check_of_a_revert_changeset_reverts_nothing<H: RunnerDepl
     let ada = harness.caller("ada").await;
     let repo = harness.repository(&ada, "acme").await;
     let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
-    land_checks(&repo, &ada, "base", &[check("unit")]).await;
+    let base = land_checks(&repo, &ada, "base", &[check("unit")]).await;
     report(&harness, &bot, passed(), 0).await;
     let bad = land_with_checks(&repo, &ada, "bad", &[check("unit")], &[("a", "changed\n")]).await;
 
     report(&harness, &bot, failed(), 1).await;
     let reverted = repo.main().await.unwrap();
     assert_ne!(reverted, bad);
+    assert_eq!(last_green(&repo).await, Some(base));
     // The revert restored the definitions, so its own check is queued.
     let queued = job_of(&repo, &ada, reverted, "unit").await;
     assert_eq!(queued.state, JobState::Queued);
@@ -407,6 +436,7 @@ pub async fn a_failing_check_of_a_revert_changeset_reverts_nothing<H: RunnerDepl
     report(&harness, &bot, failed(), 2).await;
 
     assert_eq!(repo.main().await, Some(reverted));
+    assert_eq!(last_green(&repo).await, Some(base));
     let ended = job_of(&repo, &ada, reverted, "unit").await;
     assert_eq!(ended.state, JobState::Failed);
     assert_eq!(ended.revert, None);
@@ -516,4 +546,154 @@ pub async fn a_runner_reported_cancellation_reverts_nothing<H: RunnerDeployment>
     let ended = job_of(&repo, &ada, bad, "unit").await;
     assert_eq!(ended.state, JobState::Cancelled);
     assert_eq!(ended.revert, None);
+}
+
+/// Two blocking checks of one changeset that fail at the same time land exactly one revert, and
+/// only one of their jobs records it.
+pub async fn two_blocking_failures_reported_together_land_one_revert<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    land(&repo, &ada, "base", &[("a", BASE)]).await.unwrap();
+    let bad = land_with_checks(
+        &repo,
+        &ada,
+        "bad",
+        &[check("unit"), check("lint")],
+        &[("a", "x\n2\n3\n4\n5\n6\n7\n8\n")],
+    )
+    .await;
+    let first = harness.jobs().claim(&bot, 1).await.unwrap().unwrap().job;
+    let second = harness.jobs().claim(&bot, 1).await.unwrap().unwrap().job;
+    assert_ne!(first.id, second.id);
+
+    let jobs_port = harness.jobs();
+    let (one, other) = tokio::join!(
+        jobs_port.report(&bot, first.id, failed(), 2),
+        jobs_port.report(&bot, second.id, failed(), 2)
+    );
+    one.unwrap();
+    other.unwrap();
+
+    let reverted = repo.main().await.unwrap();
+    assert_ne!(reverted, bad);
+    assert_eq!(changeset(&repo, reverted).await.parents, [bad]);
+    assert_eq!(repo.read("a").await.as_deref(), Some(BASE));
+    let all = jobs(&repo, &ada, bad).await;
+    assert!(all.iter().all(|job| job.state == JobState::Failed));
+    let recorded: Vec<_> = all.iter().filter_map(|job| job.revert.clone()).collect();
+    assert_eq!(recorded, [Revert::Landed(reverted)]);
+}
+
+/// A claim made with a later `now` than the call that reads the checks leaves the blocking job
+/// past its deadline to the expiry, so that call still reverts its changeset.
+pub async fn a_claim_at_a_later_time_leaves_a_timed_out_blocking_job_to_the_revert<
+    H: RunnerDeployment,
+>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let bad = slow_job_claimed(&harness, &repo, &ada, &bot).await;
+
+    let claimed = harness
+        .queue()
+        .claim(&registrations(&harness, &bot).await, 200, LEASE)
+        .await
+        .unwrap();
+
+    assert_eq!(claimed, None);
+    assert_timed_out_and_reverted(&harness, &repo, &ada, bad).await;
+}
+
+/// A heartbeat made with a later `now` than the call that reads the checks leaves the blocking
+/// job past its deadline to the expiry, so that call still reverts its changeset.
+pub async fn a_heartbeat_at_a_later_time_leaves_a_timed_out_blocking_job_to_the_revert<
+    H: RunnerDeployment,
+>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let bad = slow_job_claimed(&harness, &repo, &ada, &bot).await;
+    let job = jobs(&repo, &ada, bad).await[0].id;
+
+    let answer = harness
+        .queue()
+        .heartbeat(job, &held(&harness, &bot).await, 200, LEASE)
+        .await;
+
+    assert_eq!(answer, Ok(Heartbeat::Stop(StopReason::TimedOut)));
+    assert_timed_out_and_reverted(&harness, &repo, &ada, bad).await;
+}
+
+/// Lands a base and a changeset with a blocking check that times out after 100 seconds, which
+/// `bot` claims at 0. Returns that changeset.
+async fn slow_job_claimed<H: RunnerDeployment>(
+    harness: &H,
+    repo: &Repo<'_, H>,
+    ada: &Caller,
+    bot: &Caller,
+) -> Address {
+    land(repo, ada, "base", &[("a", BASE)]).await.unwrap();
+    let bad = land_with_checks(
+        repo,
+        ada,
+        "bad",
+        &[check("slow").timing_out_after(100)],
+        &[("a", "x\n2\n3\n4\n5\n6\n7\n8\n")],
+    )
+    .await;
+    harness.jobs().claim(bot, 0).await.unwrap().unwrap();
+    bad
+}
+
+/// Reading the checks at 150, earlier than a call that passed the job's deadline at 100, times the
+/// job out and reverts its changeset.
+async fn assert_timed_out_and_reverted<H: RunnerDeployment>(
+    harness: &H,
+    repo: &Repo<'_, H>,
+    ada: &Caller,
+    bad: Address,
+) {
+    let seen = harness
+        .checks()
+        .jobs_of(ada, repo.id, bad, 150)
+        .await
+        .unwrap();
+
+    assert_eq!(seen[0].state, JobState::TimedOut);
+    let reverted = repo.main().await.unwrap();
+    assert_ne!(reverted, bad);
+    assert_eq!(repo.read("a").await.as_deref(), Some(BASE));
+    let job = job_of(repo, ada, bad, "slow").await;
+    assert_eq!(job.revert, Some(Revert::Landed(reverted)));
+}
+
+/// The checks of a revert are queued like any landing's, and `last-green` stays where it was
+/// until they pass.
+pub async fn a_reverts_checks_are_queued_and_last_green_waits_for_them<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let base = land_checks(&repo, &ada, "base", &[check("unit")]).await;
+    report(&harness, &bot, passed(), 0).await;
+    assert_eq!(last_green(&repo).await, Some(base));
+    let bad = land_with_checks(&repo, &ada, "bad", &[check("unit")], &[("a", "changed\n")]).await;
+
+    report(&harness, &bot, failed(), 1).await;
+
+    let reverted = repo.main().await.unwrap();
+    assert_ne!(reverted, bad);
+    let queued = jobs(&repo, &ada, reverted).await;
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].check.name.as_str(), "unit");
+    assert_eq!(queued[0].state, JobState::Queued);
+    assert_eq!(last_green(&repo).await, Some(base));
+
+    report(&harness, &bot, passed(), 2).await;
+
+    assert_eq!(last_green(&repo).await, Some(reverted));
 }

@@ -1,5 +1,5 @@
-//! What only a shared database shows about the job queue: concurrent claimers, and expiry inside
-//! the claim and the heartbeat, with no call to expire first.
+//! What only a shared database shows about the job queue: concurrent claimers, and a claim and a
+//! heartbeat that leave a lapsed lease or a passed deadline to expire.
 
 #[cfg(test)]
 pub mod common;
@@ -111,7 +111,7 @@ async fn concurrent_claimers_are_handed_each_job_exactly_once() {
 }
 
 #[tokio::test]
-async fn a_claim_queues_a_job_whose_lease_lapsed_again_without_a_separate_expiry() {
+async fn a_claim_leaves_a_job_whose_lease_lapsed_to_the_expiry() {
     let harness = Harness::new().await;
     let (registration, _) = queued(&harness, 1, 600).await;
     let registrations = [registration];
@@ -121,11 +121,12 @@ async fn a_claim_queues_a_job_whose_lease_lapsed_again_without_a_separate_expiry
     assert!(
         harness
             .queue
-            .claim(&registrations, 29, 30)
+            .claim(&registrations, 30, 30)
             .await
             .unwrap()
             .is_none()
     );
+    assert!(harness.queue.expire(30).await.unwrap().is_empty());
     let again = harness
         .queue
         .claim(&registrations, 30, 30)
@@ -174,7 +175,7 @@ async fn a_heartbeat_past_the_deadline_tells_the_runner_to_stop_without_a_separa
 }
 
 #[tokio::test]
-async fn a_heartbeat_after_the_lease_lapsed_finds_the_job_queued_again() {
+async fn a_heartbeat_after_the_expiry_returned_the_job_to_the_queue_finds_it_queued() {
     let harness = Harness::new().await;
     let (registration, _) = queued(&harness, 1, 600).await;
     let registrations = [registration.clone()];
@@ -184,6 +185,7 @@ async fn a_heartbeat_after_the_lease_lapsed_finds_the_job_queued_again() {
         .await
         .unwrap()
         .unwrap();
+    harness.queue.expire(30).await.unwrap();
 
     assert_eq!(
         harness

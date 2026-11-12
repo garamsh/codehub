@@ -50,10 +50,12 @@ where
     /// first parent, through the landing merge, with `timestamp` as its time. It is called wherever
     /// a blocking check ends in failure or in a timeout, or its definitions could not be read.
     ///
-    /// The revert is recorded with `job` in the job queue: as landed, or as conflicting with later
-    /// changes, which lands nothing. A landed revert has its own checks queued. Nothing is
-    /// reverted where another job of the changeset already has a revert recorded, where the
-    /// changeset is itself a revert the server made, or where `job` did not fail or time out.
+    /// The revert is reserved in the job queue before anything lands, and the reservation is kept
+    /// where the revert then fails, so a changeset is reverted at most once. It is recorded with
+    /// `job`: as landed, or as conflicting with later changes, which lands nothing. A landed
+    /// revert has its own checks queued. Nothing is reverted where another job of the changeset
+    /// holds the reservation, where the changeset is itself a revert the server made, or where
+    /// `job` did not fail or time out.
     ///
     /// # Errors
     ///
@@ -69,15 +71,11 @@ where
         let Some(message) = revert::message(job.changeset, &job.check.name, job.state) else {
             return Ok(());
         };
-        let jobs = adapters
-            .queue
-            .of_changeset(repository, job.changeset)
-            .await?;
-        if jobs.iter().any(|other| other.revert.is_some()) {
-            return Ok(());
-        }
         let changeset = adapters.log.get(repository, job.changeset).await?;
         if revert::is_automatic(&changeset) {
+            return Ok(());
+        }
+        if !adapters.queue.reserve_revert(job.id).await? {
             return Ok(());
         }
 
