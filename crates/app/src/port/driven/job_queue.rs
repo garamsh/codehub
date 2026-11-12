@@ -54,7 +54,9 @@ pub trait JobQueue {
 
     /// Extends the lease on `job` to `lease` seconds from `now`, where it runs under one of
     /// `runners`. Where an administrator cancelled the job or it timed out while one of `runners`
-    /// held it, answers that the runner is to stop.
+    /// held it, or where the job is running and its deadline has passed, answers that the runner is
+    /// to stop; a passed deadline is answered as timed out whether or not [`JobQueue::expire`] has
+    /// acted on it, and extends nothing.
     ///
     /// # Errors
     ///

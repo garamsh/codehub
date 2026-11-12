@@ -65,3 +65,8 @@ async fn checks_are_visible_to_readers_and_cancelled_by_administrators() {
 async fn only_a_failed_blocking_check_keeps_a_changeset_from_last_green() {
     checks::only_a_failed_blocking_check_keeps_a_changeset_from_last_green::<Harness>().await;
 }
+
+#[tokio::test]
+async fn a_heartbeat_past_the_deadline_answers_timed_out() {
+    checks::a_heartbeat_past_the_deadline_answers_timed_out::<Harness>().await;
+}

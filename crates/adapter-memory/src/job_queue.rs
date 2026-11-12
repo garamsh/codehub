@@ -101,6 +101,9 @@ impl JobQueue for MemoryJobQueue {
             .filter(|found| found.runner.is_some_and(|runner| runners.contains(&runner)))
             .ok_or(JobQueueError::NotFound(job))?;
         match found.state {
+            JobState::Running { deadline, .. } if deadline <= now => {
+                Ok(Heartbeat::Stop(StopReason::TimedOut))
+            }
             JobState::Running { deadline, .. } => {
                 found.state = JobState::Running {
                     lease_expires_at: now.saturating_add(lease),

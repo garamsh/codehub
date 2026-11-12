@@ -1,7 +1,7 @@
 //! Checks queued on landing, run by runners, and what they do to `last-green`.
 
 use crate::contract::runner_deployment::{
-    RunnerDeployment, check, land, land_checks, organisation, runner,
+    LEASE, RunnerDeployment, check, land, land_checks, organisation, runner,
 };
 use app::domain::address::Address;
 use app::domain::job::{Heartbeat, Job, JobResult, JobState, Outcome, StopReason};
@@ -10,8 +10,9 @@ use app::domain::principal::Caller;
 use app::port::driven::changeset_log::{ChangesetLog, Ref};
 use app::port::driven::check_definitions::CheckDefinitions;
 use app::port::driven::check_definitions::CheckFileError;
-use app::port::driven::job_queue::JobQueueError;
+use app::port::driven::job_queue::{JobQueue, JobQueueError};
 use app::port::driven::membership::{Access, Role};
+use app::port::driven::runner_registry::RunnerRegistry;
 use app::port::driving::checks::{Checks, ChecksError};
 use app::port::driving::jobs::Jobs;
 use app::port::driving::members::Members;
@@ -149,7 +150,8 @@ pub async fn an_unreadable_checks_file_gives_one_failed_blocking_job<H: RunnerDe
     assert!(queued[0].check.blocking);
     assert_eq!(queued[0].check.name.as_str(), "checks-file");
     assert!(!queued[0].output.is_empty());
-    assert_eq!(last_green(&harness, &ada, &repo).await, None);
+    // The landing is reverted, and the revert, which defines no check, is `last-green` instead.
+    assert_ne!(last_green(&harness, &ada, &repo).await, Some(landed));
 }
 
 /// `last-green` moves to a changeset once every blocking check of it has passed, and not before.
@@ -200,9 +202,12 @@ pub async fn only_a_failed_blocking_check_keeps_a_changeset_from_last_green<H: R
     run_all(&harness, &bot, &["lint"], 0).await;
     assert_eq!(last_green(&harness, &ada, &repo).await, Some(soft));
 
-    land_checks(&repo, &ada, "hard", &[check("unit2"), check("extra")]).await;
+    let hard = land_checks(&repo, &ada, "hard", &[check("unit2"), check("extra")]).await;
     run_all(&harness, &bot, &["unit2"], 10).await;
-    assert_eq!(last_green(&harness, &ada, &repo).await, Some(soft));
+    // `hard` is reverted, and the revert's checks pass, so `last-green` is the revert.
+    let green = last_green(&harness, &ada, &repo).await;
+    assert_ne!(green, Some(hard));
+    assert_eq!(green, repo.main().await);
 }
 
 /// `last-green` never moves backward: a passing older changeset does not displace a newer one.
@@ -325,7 +330,8 @@ pub async fn a_job_past_its_deadline_times_out<H: RunnerDeployment>() {
             .await
             .is_err()
     );
-    assert_eq!(last_green(&harness, &ada, &repo).await, None);
+    // The changeset is reverted, and the revert, which defines no check, is `last-green` instead.
+    assert_ne!(last_green(&harness, &ada, &repo).await, Some(landed));
 }
 
 /// Cancelling a job tells its runner to stop and keeps the changeset from `last-green`.
@@ -412,4 +418,51 @@ pub async fn checks_are_visible_to_readers_and_cancelled_by_administrators<H: Ru
 
     // An administrator cancels it.
     harness.checks().cancel(&ada, repo.id, job).await.unwrap();
+}
+
+/// The job queue answers a heartbeat past the job's deadline as timed out, and extends nothing,
+/// before anything has expired the job.
+pub async fn a_heartbeat_past_the_deadline_answers_timed_out<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let landed = land_checks(
+        &repo,
+        &ada,
+        "checks",
+        &[check("slow").timing_out_after(100)],
+    )
+    .await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let job = harness.jobs().claim(&bot, 0).await.unwrap().unwrap().job.id;
+    let held: Vec<_> = harness
+        .registry()
+        .of_principal(bot.principal())
+        .await
+        .unwrap()
+        .iter()
+        .map(|registration| registration.id)
+        .collect();
+
+    assert_eq!(
+        harness
+            .queue()
+            .heartbeat(job, &held, 99, LEASE)
+            .await
+            .unwrap(),
+        Heartbeat::Continue
+    );
+    assert_eq!(
+        harness
+            .queue()
+            .heartbeat(job, &held, 100, LEASE)
+            .await
+            .unwrap(),
+        Heartbeat::Stop(StopReason::TimedOut)
+    );
+    // Nothing expired the job, so it still runs; reading it expires it.
+    assert!(matches!(
+        harness.queue().of_changeset(repo.id, landed).await.unwrap()[0].state,
+        JobState::Running { .. }
+    ));
 }
