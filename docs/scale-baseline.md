@@ -52,7 +52,7 @@ Commit `1cdea4a5f773cedcc53c73c44a8e99a76ffc94d2`, on 12 x AMD Ryzen 5 9600X wit
 Two runs back to back on the same machine, with other projects loading it: load average 7 to 34 on 12 cores during both. Pool size 40 per replica.
 
 - **Before**: main at `595f4c3476ea656417705560beccb86fc3391685`, with no server-side retry. Decisions are still asked once per path at both commits: ADR 0038 is decided and not yet built (#119).
-- **After**: PR #125 at `68b887dd9202134f547ab6d75b4ca2b75c375b14` merged onto it (merge `e80ee3e992fca2e59de61c62539d0a7254c55cba`), with the server-side retry (ADR 0036, 32 attempts) and the fair gate in each process (ADR 0039).
+- **After**: PR #125 at `68b887dd9202134f547ab6d75b4ca2b75c375b14` merged onto it (merge `e80ee3e992fca2e59de61c62539d0a7254c55cba`), with the server-side retry (ADR 0036, 32 attempts) and the fair gate in each process (ADR 0039). PR #125 merged as `edb866a` at head `8571c2f`, which differs from `68b887d` only in a test file.
 
 | Scenario | Operations/s before → after | Landings before → after | Land p50 / p95 / p99 (ms) before | Land p50 / p95 / p99 (ms) after | Lost swaps at the client before → after |
 |---|---|---|---|---|---|
