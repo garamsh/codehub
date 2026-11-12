@@ -8,6 +8,7 @@ use app::port::driven::authorisation_decision::{
 };
 use reqwest::StatusCode;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 /// Bound on each request to the token endpoint and to the decision point.
@@ -16,11 +17,19 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// A token is replaced when it is this close to its expiry.
 const EXPIRY_MARGIN: Duration = Duration::from_secs(5);
 
-/// Authorisation by an AuthZEN 1.0 decision point. Every decision is one evaluation request;
-/// the bearer token is held, the decision never.
+/// Authorisation by an AuthZEN 1.0 decision point. A decision is one evaluation request, and
+/// decisions on many resources are one evaluations request where the adapter is enabled for it
+/// and the decision point's metadata advertises it, read on first use (ADR 0041); the bearer
+/// token is held, the decision never.
 pub struct AuthzenAuthorisationDecision {
     http: reqwest::Client,
+    metadata_endpoint: String,
     evaluation_endpoint: String,
+    /// `access_evaluations_endpoint` of the metadata once it has been read successfully, `None`
+    /// inside where the metadata does not advertise it.
+    evaluations_endpoint: Mutex<Option<Option<String>>>,
+    /// Whether decisions on many resources may be one evaluations request (ADR 0041).
+    access_evaluations: bool,
     token_endpoint: String,
     client_id: String,
     client_secret: String,
@@ -56,14 +65,37 @@ struct Evaluation {
     decision: bool,
 }
 
+/// The member of an evaluations response (AuthZEN 1.0 §7.2) the adapter reads.
+#[derive(Deserialize)]
+struct Evaluations {
+    evaluations: Vec<Evaluation>,
+}
+
+/// The member of the decision point's metadata (AuthZEN 1.0 §9) the adapter reads.
+#[derive(Deserialize)]
+struct Metadata {
+    access_evaluations_endpoint: Option<String>,
+}
+
+impl From<Evaluation> for Decision {
+    fn from(evaluation: Evaluation) -> Self {
+        if evaluation.decision {
+            Self::Allow
+        } else {
+            Self::Deny
+        }
+    }
+}
+
 /// What the decision point answered one request.
-enum Answer {
-    Decided(Decision),
+enum Answer<T> {
+    Decided(T),
     Unauthorised,
 }
 
 impl AuthzenAuthorisationDecision {
-    /// An adapter that evaluates at `<base_url>/access/v1/evaluation`, with a bearer token
+    /// An adapter that evaluates at `<base_url>/access/v1/evaluation` and reads the decision
+    /// point's metadata at `<base_url>/.well-known/authzen-configuration`, with a bearer token
     /// obtained from `token_endpoint` as the client `client_id` with `client_secret`.
     ///
     /// # Errors
@@ -79,14 +111,28 @@ impl AuthzenAuthorisationDecision {
             .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(backend)?;
+        let base_url = base_url.trim_end_matches('/');
         Ok(Self {
             http,
-            evaluation_endpoint: format!("{}/access/v1/evaluation", base_url.trim_end_matches('/')),
+            metadata_endpoint: format!("{base_url}/.well-known/authzen-configuration"),
+            evaluation_endpoint: format!("{base_url}/access/v1/evaluation"),
+            evaluations_endpoint: Mutex::new(None),
+            access_evaluations: false,
             token_endpoint: token_endpoint.to_owned(),
             client_id: client_id.to_owned(),
             client_secret: client_secret.to_owned(),
             token: Mutex::new(None),
         })
+    }
+
+    /// The adapter, sending decisions on many resources as one evaluations request where
+    /// `enabled` and the decision point's metadata advertises it, and one evaluation per resource
+    /// otherwise, which is the default. Enable it only for a decision point that decides each
+    /// evaluation by its own resource properties (ADR 0041).
+    #[must_use]
+    pub const fn with_access_evaluations(mut self, enabled: bool) -> Self {
+        self.access_evaluations = enabled;
+        self
     }
 
     /// The held token while it is fresh, and a newly obtained one otherwise or where `renew`.
@@ -135,10 +181,45 @@ impl AuthzenAuthorisationDecision {
         })
     }
 
-    async fn evaluate(&self, bearer: &str, body: &Value) -> Result<Answer, AuthorisationError> {
+    /// The evaluations endpoint the metadata advertises, or none. The metadata is read on first
+    /// use and kept once read; a failed read is tried again by the next call.
+    async fn evaluations_endpoint(&self) -> Result<Option<String>, AuthorisationError> {
+        let held = self
+            .evaluations_endpoint
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(endpoint) = held {
+            return Ok(endpoint);
+        }
+        let metadata: Metadata = self
+            .http
+            .get(&self.metadata_endpoint)
+            .send()
+            .await
+            .map_err(backend)?
+            .error_for_status()
+            .map_err(backend)?
+            .json()
+            .await
+            .map_err(backend)?;
+        *self
+            .evaluations_endpoint
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) =
+            Some(metadata.access_evaluations_endpoint.clone());
+        Ok(metadata.access_evaluations_endpoint)
+    }
+
+    async fn post<T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        bearer: &str,
+        body: &Value,
+    ) -> Result<Answer<T>, AuthorisationError> {
         let response = self
             .http
-            .post(&self.evaluation_endpoint)
+            .post(endpoint)
             .bearer_auth(bearer)
             .json(body)
             .send()
@@ -147,17 +228,33 @@ impl AuthzenAuthorisationDecision {
         if response.status() == StatusCode::UNAUTHORIZED {
             return Ok(Answer::Unauthorised);
         }
-        let evaluation: Evaluation = response
+        let answer = response
             .error_for_status()
             .map_err(backend)?
             .json()
             .await
             .map_err(backend)?;
-        Ok(Answer::Decided(if evaluation.decision {
-            Decision::Allow
-        } else {
-            Decision::Deny
-        }))
+        Ok(Answer::Decided(answer))
+    }
+
+    /// The answer to `body` posted to `endpoint`; where the token is refused, another is
+    /// obtained and the request is sent once more.
+    async fn ask<T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        body: &Value,
+    ) -> Result<T, AuthorisationError> {
+        let bearer = self.bearer(false).await?;
+        if let Answer::Decided(answer) = self.post(endpoint, &bearer, body).await? {
+            return Ok(answer);
+        }
+        let bearer = self.bearer(true).await?;
+        match self.post(endpoint, &bearer, body).await? {
+            Answer::Decided(answer) => Ok(answer),
+            Answer::Unauthorised => Err(AuthorisationError::Backend(
+                "the decision point refused a newly obtained bearer token".to_owned(),
+            )),
+        }
     }
 }
 
@@ -169,27 +266,61 @@ impl AuthorisationDecision for AuthzenAuthorisationDecision {
         resource: &Resource,
     ) -> Result<Decision, AuthorisationError> {
         let body = json!({
-            "subject": {
-                "type": "principal",
-                "id": subject.subject(),
-                "properties": {"issuer": subject.issuer()},
-            },
+            "subject": subject_value(subject),
             "action": {"name": action_name(action)},
             "resource": resource_value(resource),
         });
-        let bearer = self.bearer(false).await?;
-        if let Answer::Decided(decision) = self.evaluate(&bearer, &body).await? {
-            return Ok(decision);
-        }
-        // The token was refused: obtain another and ask once more.
-        let bearer = self.bearer(true).await?;
-        match self.evaluate(&bearer, &body).await? {
-            Answer::Decided(decision) => Ok(decision),
-            Answer::Unauthorised => Err(AuthorisationError::Backend(
-                "the decision point refused a newly obtained bearer token".to_owned(),
-            )),
-        }
+        let evaluation: Evaluation = self.ask(&self.evaluation_endpoint, &body).await?;
+        Ok(evaluation.into())
     }
+
+    async fn decide_all(
+        &self,
+        subject: &Principal,
+        action: Action,
+        resources: &[Resource],
+    ) -> Result<Vec<Decision>, AuthorisationError> {
+        if resources.is_empty() {
+            return Ok(Vec::new());
+        }
+        let endpoint = if self.access_evaluations {
+            self.evaluations_endpoint().await?
+        } else {
+            None
+        };
+        let Some(endpoint) = endpoint else {
+            let mut decisions = Vec::with_capacity(resources.len());
+            for resource in resources {
+                decisions.push(self.decide(subject, action, resource).await?);
+            }
+            return Ok(decisions);
+        };
+        let body = json!({
+            "subject": subject_value(subject),
+            "action": {"name": action_name(action)},
+            "evaluations": resources
+                .iter()
+                .map(|resource| json!({"resource": resource_value(resource)}))
+                .collect::<Vec<_>>(),
+        });
+        let answer: Evaluations = self.ask(&endpoint, &body).await?;
+        if answer.evaluations.len() != resources.len() {
+            return Err(AuthorisationError::Backend(format!(
+                "the decision point answered {} decisions for {} resources",
+                answer.evaluations.len(),
+                resources.len()
+            )));
+        }
+        Ok(answer.evaluations.into_iter().map(Decision::from).collect())
+    }
+}
+
+fn subject_value(subject: &Principal) -> Value {
+    json!({
+        "type": "principal",
+        "id": subject.subject(),
+        "properties": {"issuer": subject.issuer()},
+    })
 }
 
 const fn action_name(action: Action) -> &'static str {

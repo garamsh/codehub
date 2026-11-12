@@ -68,14 +68,41 @@ pub trait AuthorisationDecision {
     ///
     /// # Errors
     ///
-    /// [`AuthorisationError::Backend`] where the decision could not be made; callers treat it as
-    /// a refusal.
+    /// [`AuthorisationError::Backend`] where the decision could not be made; the failure fails
+    /// the request as a server error and allows nothing (ADR 0033).
     fn decide(
         &self,
         subject: &Principal,
         action: Action,
         resource: &Resource,
     ) -> impl Future<Output = Result<Decision, AuthorisationError>> + Send;
+
+    /// Whether `subject` may take `action` on each of `resources`: one decision per resource, in
+    /// the order given, a resource given twice decided twice, and none for no resources. The
+    /// provided body decides each resource in turn; an adapter whose decision point decides many
+    /// at once overrides it (ADR 0038).
+    ///
+    /// # Errors
+    ///
+    /// [`AuthorisationError::Backend`] where the decisions could not be made, as for
+    /// [`AuthorisationDecision::decide`]; no decision is returned then.
+    fn decide_all(
+        &self,
+        subject: &Principal,
+        action: Action,
+        resources: &[Resource],
+    ) -> impl Future<Output = Result<Vec<Decision>, AuthorisationError>> + Send
+    where
+        Self: Sync,
+    {
+        async move {
+            let mut decisions = Vec::with_capacity(resources.len());
+            for resource in resources {
+                decisions.push(self.decide(subject, action, resource).await?);
+            }
+            Ok(decisions)
+        }
+    }
 }
 
 /// Why no decision was made.

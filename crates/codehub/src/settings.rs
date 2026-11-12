@@ -121,6 +121,11 @@ pub struct Config {
     /// The client secret used at that token endpoint; required with `--authorisation authzen`.
     #[arg(long, env = "CODEHUB_AUTHZEN_CLIENT_SECRET", hide_env_values = true)]
     pub authzen_client_secret: Option<String>,
+    /// Sends one AuthZEN Access Evaluations request for many resources where the decision point
+    /// advertises it, instead of one evaluation per resource. Turn it on only where the decision
+    /// point decides each evaluation by its own resource properties (ADR 0041).
+    #[arg(long, env = "CODEHUB_AUTHZEN_EVALUATIONS")]
+    pub authzen_evaluations: bool,
 }
 
 /// Prints every field but the secrets, which print as `<redacted>`. The impl destructures
@@ -154,6 +159,7 @@ impl fmt::Debug for Config {
             authzen_token_endpoint,
             authzen_client_id,
             authzen_client_secret,
+            authzen_evaluations,
         } = self;
         f.debug_struct("Config")
             .field("listen", listen)
@@ -187,6 +193,7 @@ impl fmt::Debug for Config {
                 "authzen_client_secret",
                 &authzen_client_secret.as_ref().map(|_| REDACTED),
             )
+            .field("authzen_evaluations", authzen_evaluations)
             .finish()
     }
 }
@@ -283,7 +290,28 @@ mod tests {
             authzen_token_endpoint: Some("http://issuer.example/token".to_owned()),
             authzen_client_id: Some("authzen-client-visible".to_owned()),
             authzen_client_secret: Some("authzen-secret-value".to_owned()),
+            authzen_evaluations: false,
         }
+    }
+
+    #[test]
+    fn leaves_access_evaluations_off_by_default_and_turns_them_on_by_flag() {
+        let required = [
+            "codehub",
+            "--postgres-url=postgres://db.example/codehub",
+            "--s3-endpoint=http://objects.example:9000",
+            "--s3-region=eu-test-1",
+            "--s3-bucket=bucket",
+            "--s3-access-key=access",
+            "--s3-secret-key=secret",
+        ];
+
+        let default = Config::try_parse_from(required).unwrap();
+        let on =
+            Config::try_parse_from(required.into_iter().chain(["--authzen-evaluations"])).unwrap();
+
+        assert!(!default.authzen_evaluations);
+        assert!(on.authzen_evaluations);
     }
 
     #[test]

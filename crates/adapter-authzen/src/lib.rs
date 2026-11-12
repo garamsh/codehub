@@ -1,5 +1,7 @@
 //! The OpenID AuthZEN Authorization API 1.0 implementation of the authorisation decision port:
-//! each decision is one Access Evaluation request to a policy decision point.
+//! each decision is one Access Evaluation request to a policy decision point, and decisions on
+//! many resources are one Access Evaluations request where the adapter is enabled for it and the
+//! decision point offers it (ADR 0038, ADR 0041).
 //!
 //! The request is `POST <base>/access/v1/evaluation`, JSON, authenticated with
 //! `Authorization: Bearer <token>`, and the answer is `{"decision": <bool>, ...}`: `true` is
@@ -15,6 +17,15 @@
 //!
 //! A `repository` resource without `path` is asked for an upload and means "anywhere in the
 //! repository".
+//!
+//! Only where `with_access_evaluations(true)` is set, on the first decision on many resources the
+//! adapter reads `GET <base>/.well-known/authzen-configuration`.
+//! Where it names `access_evaluations_endpoint`, the decisions are one `POST` there, JSON, with
+//! the shared `subject` and `action` at the top level and `"evaluations": [{"resource": ...}]`,
+//! answered with `{"evaluations": [{"decision": <bool>}, ...]}` in the same order; where it does
+//! not, or where it is not enabled, the decisions are one Access Evaluation each. A failed read of the metadata is read again
+//! on the next call, and an answer with a different number of decisions than resources is a
+//! failure.
 //!
 //! The numeric repository id is never sent: the decision point knows repositories by name.
 //!
