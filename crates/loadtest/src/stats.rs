@@ -343,6 +343,9 @@ mod tests {
         assert_eq!(percentile(&samples, 95), 95.0);
         assert_eq!(percentile(&samples, 99), 99.0);
         assert_eq!(percentile(&millis(&[7]), 99), 7.0);
+        // A rank that is not whole rounds up: 9.5 of 10 samples is the tenth.
+        let ten = millis(&(1..=10).collect::<Vec<_>>());
+        assert_eq!(percentile(&ten, 95), 10.0);
         assert_eq!(percentile(&[], 50), 0.0);
     }
 
@@ -374,18 +377,20 @@ mod tests {
         first.operation();
         let mut second = Recorder::default();
         second.record(Kind::Land, Duration::from_millis(30), 200);
-        second.landed(0);
+        second.record(Kind::Land, Duration::from_millis(20), 409);
+        second.record(Kind::Land, Duration::from_millis(30), 409);
+        second.landed(2);
         second.operation();
         first.merge(second);
 
         let report = first.report("t", 2, Duration::from_secs(2));
         assert_eq!(report.operations, 2);
         assert_eq!(report.landings, 2);
-        assert_eq!(report.landings_retried, 1);
-        assert_eq!(report.retries, 1);
-        assert_eq!(report.retries_per_landing, 0.5);
+        assert_eq!(report.landings_retried, 2);
+        assert_eq!(report.retries, 3);
+        assert_eq!(report.retries_per_landing, 1.5);
         assert_eq!(report.operations_per_second, 1.0);
         let land = report.latency.iter().find(|l| l.kind == Kind::Land);
-        assert_eq!(land.map(|l| l.count), Some(2));
+        assert_eq!(land.map(|l| l.count), Some(4));
     }
 }
