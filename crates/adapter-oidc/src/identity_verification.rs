@@ -43,12 +43,6 @@ struct Keys {
 /// A key-set fetch in flight, which every verification waiting for it polls.
 type Fetch = Shared<BoxFuture<'static, Result<(), IdentityError>>>;
 
-/// What a verification found for a token's key id.
-enum Lookup {
-    Cached(Jwk),
-    Pending(Fetch),
-}
-
 struct FetchedKeys {
     jwks_uri: String,
     set: JwkSet,
@@ -101,15 +95,16 @@ impl OidcIdentityVerification {
         lock(&self.keys).set.find(key_id).cloned()
     }
 
-    /// The cached key for `key_id`, else the fetch to wait for, started here when none is in
-    /// flight. Rejects an unknown key id when a fetch finished too recently to fetch again.
-    fn lookup(&self, key_id: &str) -> Result<Lookup, IdentityError> {
+    /// The fetch to wait for before looking `key_id` up, started here when none is in flight;
+    /// none where the key is cached. Rejects an unknown key id when a fetch finished too recently
+    /// to fetch again.
+    fn fetch_to_await(&self, key_id: &str) -> Result<Option<Fetch>, IdentityError> {
         let mut state = lock(&self.keys);
-        if let Some(jwk) = state.set.find(key_id) {
-            return Ok(Lookup::Cached(jwk.clone()));
+        if state.set.find(key_id).is_some() {
+            return Ok(None);
         }
         if let Some(fetch) = &state.fetching {
-            return Ok(Lookup::Pending(fetch.clone()));
+            return Ok(Some(fetch.clone()));
         }
         if state
             .fetched_at
@@ -119,7 +114,7 @@ impl OidcIdentityVerification {
         }
         let fetch = self.fetch(state.jwks_uri.clone());
         state.fetching = Some(fetch.clone());
-        Ok(Lookup::Pending(fetch))
+        Ok(Some(fetch))
     }
 
     /// A fetch that, when it finishes, stores its outcome and its finish time and ends itself.
@@ -189,13 +184,10 @@ impl IdentityVerification for OidcIdentityVerification {
             return Err(IdentityError::Rejected);
         }
         let key_id = header.kid.ok_or(IdentityError::Rejected)?;
-        let jwk = match self.lookup(&key_id)? {
-            Lookup::Cached(jwk) => jwk,
-            Lookup::Pending(fetch) => {
-                fetch.await?;
-                self.cached_key(&key_id).ok_or(IdentityError::Rejected)?
-            }
-        };
+        if let Some(fetch) = self.fetch_to_await(&key_id)? {
+            fetch.await?;
+        }
+        let jwk = self.cached_key(&key_id).ok_or(IdentityError::Rejected)?;
         let key = DecodingKey::from_jwk(&jwk).map_err(|_| IdentityError::Rejected)?;
         // `decode` takes one algorithm family per validation, so the token's own algorithm,
         // already checked against the allow-list, is the only one it is given.
