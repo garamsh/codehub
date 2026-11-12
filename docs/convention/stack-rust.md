@@ -37,7 +37,12 @@ hexagonal unit takes these names:
   ports. `src/port/driving/<conversation>.rs` and
   `src/port/driven/<conversation>.rs` each declare one trait, named for
   the conversation; a directory exists once it holds a port. The port's
-  error type is declared in the same file.
+  error type is declared in the same file. A type that more than one
+  port of a direction carries in its signature, and that is not pure
+  enough for `src/domain/`, gets a file of its own beside them,
+  `src/port/<direction>/<type's subject>.rs`, which declares no trait:
+  in one port's file it would make the others import a sibling port,
+  and under `src/use_case/` it would make a port depend on a use case.
 - `crates/adapter-<technology>` — one crate per technology, named for
   it (`adapter-postgres`, `adapter-http`). One module per port it
   implements, `src/<conversation>.rs`. `crates/adapter-memory` holds
