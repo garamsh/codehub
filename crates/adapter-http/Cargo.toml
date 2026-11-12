@@ -12,7 +12,7 @@ serde_json.workspace = true
 
 [dev-dependencies]
 adapter-memory = { path = "../adapter-memory" }
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tower = { workspace = true, features = ["util"] }
 
 [lints]
