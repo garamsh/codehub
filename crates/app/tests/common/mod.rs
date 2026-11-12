@@ -2,11 +2,14 @@
 //! ports.
 
 use adapter_memory::{
-    MemoryAuthorisationDecision, MemoryChangesetLog, MemoryDerivedData, MemoryDirectoryChanges,
-    MemoryDraftStore, MemoryIdentityVerification, MemoryMembership, MemoryObjectStore,
-    MemoryRepositoryDirectory,
+    MemoryAuthorisationDecision, MemoryChangesetLog, MemoryCheckDefinitions, MemoryDerivedData,
+    MemoryDirectoryChanges, MemoryDraftStore, MemoryIdentityVerification, MemoryJobQueue,
+    MemoryMembership, MemoryObjectStore, MemoryRepositoryDirectory, MemoryRunnerRegistry,
 };
+use app::domain::check::CheckDefinition;
+use app::port::driven::check_definitions::CheckFileError;
 use test_support::contract::Deployment;
+use test_support::contract::runner_deployment::RunnerDeployment;
 
 /// The in-memory adapters of one deployment, holding any number of repositories.
 pub struct Harness {
@@ -28,6 +31,12 @@ pub struct Harness {
     pub authorisation: MemoryAuthorisationDecision,
     /// The directory changes reported.
     pub changes: MemoryDirectoryChanges,
+    /// The runner registry.
+    pub registry: MemoryRunnerRegistry,
+    /// The job queue.
+    pub queue: MemoryJobQueue,
+    /// The check definitions.
+    pub definitions: MemoryCheckDefinitions,
 }
 
 impl Default for Harness {
@@ -42,6 +51,9 @@ impl Default for Harness {
             identity: MemoryIdentityVerification::default(),
             authorisation: membership.authorisation_decision(),
             changes: MemoryDirectoryChanges::default(),
+            registry: MemoryRunnerRegistry::default(),
+            queue: MemoryJobQueue::default(),
+            definitions: MemoryCheckDefinitions::new(".codehub/checks".parse().unwrap()),
             membership,
         }
     }
@@ -94,5 +106,27 @@ impl Deployment for Harness {
 
     fn changes(&self) -> &MemoryDirectoryChanges {
         &self.changes
+    }
+}
+
+impl RunnerDeployment for Harness {
+    type Registry = MemoryRunnerRegistry;
+    type Queue = MemoryJobQueue;
+    type Definitions = MemoryCheckDefinitions;
+
+    fn registry(&self) -> &MemoryRunnerRegistry {
+        &self.registry
+    }
+
+    fn queue(&self) -> &MemoryJobQueue {
+        &self.queue
+    }
+
+    fn definitions(&self) -> &MemoryCheckDefinitions {
+        &self.definitions
+    }
+
+    fn teach(&self, text: &str, outcome: Result<Vec<CheckDefinition>, CheckFileError>) {
+        self.definitions.teach(text, outcome);
     }
 }

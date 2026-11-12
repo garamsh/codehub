@@ -17,6 +17,8 @@ pub enum Action {
     CreateRepository,
     /// Add or remove members and their grants; asked of an [`Resource::Organisation`].
     AdministerMembers,
+    /// Register, list and remove runners, and cancel jobs; asked of an [`Resource::Organisation`].
+    AdministerRunners,
     /// Read; asked of a [`Resource::Repository`] or a [`Resource::Path`].
     Read,
     /// Write; asked of a [`Resource::Repository`] or a [`Resource::Path`].

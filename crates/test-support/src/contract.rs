@@ -8,8 +8,11 @@
 )]
 
 pub mod access;
+pub mod checks;
 pub mod history;
 pub mod landing;
+pub mod runner_deployment;
+pub mod runners;
 pub mod scoping;
 
 use std::future::Future;

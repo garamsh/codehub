@@ -296,7 +296,9 @@ impl From<LandError> for Problem {
             LandError::Derived(error) => error.into(),
             LandError::Drafts(error) => error.into(),
             LandError::Access(error) => error.into(),
-            LandError::Tree(_) | LandError::Encode(_) => Self::internal(),
+            LandError::Tree(_) | LandError::Encode(_) | LandError::ChecksNotQueued { .. } => {
+                Self::internal()
+            }
         }
     }
 }

@@ -197,6 +197,7 @@ const fn action_name(action: Action) -> &'static str {
         Action::CreateOrganisation => "create_organisation",
         Action::CreateRepository => "create_repository",
         Action::AdministerMembers => "administer_members",
+        Action::AdministerRunners => "administer_runners",
         Action::Read => "read",
         Action::Write => "write",
     }
