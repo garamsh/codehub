@@ -32,8 +32,6 @@ pub struct Execution {
 pub enum ExecutorError {
     /// The job's directory could not be made or removed.
     Directory(std::io::Error),
-    /// A file's path is not a path inside the job's directory.
-    Path(String),
     /// A file could not be fetched or written.
     Download {
         /// The file's path.
@@ -54,7 +52,6 @@ impl fmt::Display for ExecutorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Directory(error) => write!(f, "the job's directory failed: {error}"),
-            Self::Path(path) => write!(f, "the file path {path:?} is not inside the directory"),
             Self::Download { path, reason } => write!(f, "fetching {path} failed: {reason}"),
             Self::Mismatch { path } => {
                 write!(f, "the bytes of {path} do not match its address")

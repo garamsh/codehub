@@ -200,7 +200,7 @@ mod tests {
                 }),
                 () = tokio::time::sleep(self.after) => match &self.end {
                     Ok(end) => Ok(Execution { end: *end, output: "out".into() }),
-                    Err(text) => Err(ExecutorError::Path(text.clone())),
+                    Err(text) => Err(ExecutorError::Mismatch { path: text.clone() }),
                 },
             }
         }
@@ -269,7 +269,7 @@ mod tests {
         asked.heartbeat_interval = Duration::from_millis(10);
         source.claims.lock().unwrap().push_back(Ok(Some(asked)));
         let executor = Executes {
-            after: Duration::from_secs(3),
+            after: Duration::from_millis(2500),
             end: Ok(End::Exited(0)),
         };
         run(&source, &executor, Mode::Once).await.unwrap();

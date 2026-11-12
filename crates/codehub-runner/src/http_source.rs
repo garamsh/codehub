@@ -11,8 +11,12 @@ use crate::job_source::{
 };
 use crate::token::TokenSource;
 
-/// How long one request may take. A claim is held by the server, so this exceeds any hold.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long a claim may take. The server holds it, so this exceeds any hold.
+const CLAIM_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long any other request may take. A heartbeat that waits longer than the server's lease
+/// would let the job be handed to another runner while this one still runs it.
+const CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Deserialize)]
 struct WireJob {
@@ -85,7 +89,9 @@ impl WireJob {
             .into_iter()
             .map(|file| {
                 Ok(JobFile {
-                    path: file.path,
+                    path: file.path.parse().map_err(|error| {
+                        SourceError::Malformed(format!("{:?}: {error}", file.path))
+                    })?,
                     address: address(&file.address)?,
                     executable: file.executable,
                     download: Download {
@@ -127,6 +133,7 @@ pub struct HttpJobSource {
     http: reqwest::Client,
     server: String,
     tokens: TokenSource,
+    call_timeout: Duration,
 }
 
 impl HttpJobSource {
@@ -137,12 +144,21 @@ impl HttpJobSource {
             http,
             server: server.trim_end_matches('/').to_owned(),
             tokens,
+            call_timeout: CALL_TIMEOUT,
         }
+    }
+
+    /// The same source, with `timeout` as the longest a heartbeat or a result report may take.
+    #[must_use]
+    pub const fn with_call_timeout(mut self, timeout: Duration) -> Self {
+        self.call_timeout = timeout;
+        self
     }
 
     async fn post(
         &self,
         path: &str,
+        timeout: Duration,
         body: Option<&impl Serialize>,
     ) -> Result<reqwest::Response, SourceError> {
         let token = self
@@ -154,7 +170,7 @@ impl HttpJobSource {
             .http
             .post(format!("{}{path}", self.server))
             .bearer_auth(token)
-            .timeout(REQUEST_TIMEOUT);
+            .timeout(timeout);
         if let Some(body) = body {
             request = request.json(body);
         }
@@ -172,7 +188,9 @@ impl HttpJobSource {
 
 impl JobSource for HttpJobSource {
     async fn claim(&self) -> Result<Option<Job>, SourceError> {
-        let response = self.post("/v1/runner/jobs/claim", None::<&()>).await?;
+        let response = self
+            .post("/v1/runner/jobs/claim", CLAIM_TIMEOUT, None::<&()>)
+            .await?;
         if response.status() == StatusCode::NO_CONTENT {
             return Ok(None);
         }
@@ -185,7 +203,11 @@ impl JobSource for HttpJobSource {
 
     async fn heartbeat(&self, job: JobId) -> Result<Heartbeat, SourceError> {
         let response = self
-            .post(&format!("/v1/runner/jobs/{job}/heartbeat"), None::<&()>)
+            .post(
+                &format!("/v1/runner/jobs/{job}/heartbeat"),
+                self.call_timeout,
+                None::<&()>,
+            )
             .await?;
         let wire: WireHeartbeat = response
             .json()
@@ -208,9 +230,13 @@ impl JobSource for HttpJobSource {
             exit_code: report.exit_code,
             output_tail: &report.output,
         };
-        self.post(&format!("/v1/runner/jobs/{job}/result"), Some(&body))
-            .await
-            .map(|_| ())
+        self.post(
+            &format!("/v1/runner/jobs/{job}/result"),
+            self.call_timeout,
+            Some(&body),
+        )
+        .await
+        .map(|_| ())
     }
 }
 

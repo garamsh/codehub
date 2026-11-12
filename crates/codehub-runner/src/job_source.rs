@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::future::Future;
+use std::path::{Component, Path};
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -96,11 +97,57 @@ pub struct Download {
     pub headers: Vec<(String, String)>,
 }
 
+/// Why text is not a relative path.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RelativePathError;
+
+impl fmt::Display for RelativePathError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a file path is not empty, not absolute, and has only normal components")
+    }
+}
+
+impl std::error::Error for RelativePathError {}
+
+/// A path that stays inside the directory it is joined to: not empty, not absolute, made of
+/// normal components only.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RelativePath(String);
+
+impl RelativePath {
+    /// The path as a [`Path`], to join to a directory.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        Path::new(&self.0)
+    }
+}
+
+impl fmt::Display for RelativePath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for RelativePath {
+    type Err = RelativePathError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        if text.is_empty()
+            || !Path::new(text)
+                .components()
+                .all(|component| matches!(component, Component::Normal(_)))
+        {
+            return Err(RelativePathError);
+        }
+        Ok(Self(text.to_owned()))
+    }
+}
+
 /// One file of the changeset a job checks.
 #[derive(Clone, Debug)]
 pub struct JobFile {
     /// Where the file sits in the tree, `/`-separated.
-    pub path: String,
+    pub path: RelativePath,
     /// What its bytes hash to.
     pub address: Address,
     /// Whether it is written executable.
@@ -239,6 +286,16 @@ mod tests {
         let text = format!("sha256:{}", "0123456789abcdef".repeat(4));
         let address: Address = text.parse().unwrap();
         assert_eq!(address.to_string(), text);
+    }
+
+    #[test]
+    fn a_relative_path_stays_inside_its_directory() {
+        for text in ["../escape", "/abs", "", "a/../../b", "./a"] {
+            assert!(text.parse::<RelativePath>().is_err(), "{text:?}");
+        }
+        for text in ["a", "a/b", ".codehub/checks.toml"] {
+            assert_eq!(text.parse::<RelativePath>().unwrap().to_string(), text);
+        }
     }
 
     #[test]

@@ -3,7 +3,7 @@
 
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -110,17 +110,9 @@ impl HostExecutor {
     }
 
     async fn fetch(&self, file: &JobFile, dir: &Path) -> Result<(), ExecutorError> {
-        let relative = Path::new(&file.path);
-        if file.path.is_empty()
-            || !relative
-                .components()
-                .all(|c| matches!(c, Component::Normal(_)))
-        {
-            return Err(ExecutorError::Path(file.path.clone()));
-        }
-        let target = dir.join(relative);
+        let target = dir.join(file.path.as_path());
         let download = |reason: String| ExecutorError::Download {
-            path: file.path.clone(),
+            path: file.path.to_string(),
             reason,
         };
         if let Some(parent) = target.parent() {
@@ -162,7 +154,7 @@ impl HostExecutor {
         drop(out);
         if Address::new(hash.finalize().into()) != file.address {
             return Err(ExecutorError::Mismatch {
-                path: file.path.clone(),
+                path: file.path.to_string(),
             });
         }
         let mode = if file.executable { 0o755 } else { 0o644 };

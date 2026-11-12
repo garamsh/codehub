@@ -72,7 +72,7 @@ async fn serve(bytes: &'static [u8]) -> String {
 
 fn file(path: &str, address_bytes: &[u8], url: &str, executable: bool) -> JobFile {
     JobFile {
-        path: path.into(),
+        path: path.parse().unwrap(),
         address: address_of(address_bytes),
         executable,
         download: Download {
@@ -193,19 +193,6 @@ async fn a_file_whose_bytes_do_not_match_its_address_fails_the_job_and_runs_no_c
     assert!(error.to_string().contains("lib/x.sh"));
     assert!(!marker.exists(), "the command ran");
     assert_eq!(std::fs::read_dir(&work).unwrap().count(), 0);
-    std::fs::remove_dir_all(&work).unwrap();
-}
-
-#[tokio::test]
-async fn a_file_path_outside_the_directory_is_refused() {
-    let work = scratch();
-    let url = serve(b"x").await;
-    for path in ["../escape", "/abs", "", "a/../../b"] {
-        let mut job = job("true");
-        job.files = vec![file(path, b"x", &url, false)];
-        let error = run(&executor(&work), &job).await.unwrap_err();
-        assert!(matches!(error, ExecutorError::Path(_)), "{path:?}: {error}");
-    }
     std::fs::remove_dir_all(&work).unwrap();
 }
 
