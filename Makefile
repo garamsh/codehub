@@ -1,4 +1,4 @@
-.PHONY: lint format test e2e build ci services services-down
+.PHONY: lint format test e2e loadtest loadtest-smoke build ci services services-down
 
 lint:
 	CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets --locked
@@ -19,10 +19,24 @@ e2e: services
 	cargo build --locked -p codehub -p ch
 	set -a && . dev/check-env.sh && set +a && TEST_SELECTOR="-p e2e" sh scripts/test-count.sh
 
+# The load harness against two codehub replicas and the check services: a smoke run of every
+# scenario in the debug build, which fails on an unexpected status or a replica that dies.
+loadtest-smoke: services
+	cargo build --locked -p codehub -p loadtest
+	set -a && . dev/check-env.sh && set +a && cargo run --locked -p loadtest -- --scenario all --agents 4 --duration 5
+
+# The full run for the scale baseline: release binaries, 200 agents, LOADTEST_DURATION seconds per
+# scenario; the figures are also written to target/loadtest.json.
+LOADTEST_DURATION ?= 60
+
+loadtest: services
+	cargo build --locked --release -p codehub -p loadtest
+	set -a && . dev/check-env.sh && set +a && cargo run --locked --release -p loadtest -- --scenario all --agents 200 --duration $(LOADTEST_DURATION) --json target/loadtest.json
+
 build:
 	cargo build --workspace --all-targets --locked
 
-ci: lint format test e2e build
+ci: lint format test e2e loadtest-smoke build
 
 services:
 	sh scripts/services-up.sh
