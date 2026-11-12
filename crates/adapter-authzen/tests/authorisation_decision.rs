@@ -778,10 +778,10 @@ async fn decision_point(advertises_evaluations: bool, evaluations: fn(&Value) ->
     .await
 }
 
-/// Three paths of one repository, the first and last of which the stub allows.
+/// Three paths of one repository, only the first of which the stub allows.
 #[cfg(test)]
 fn three_paths() -> Vec<Resource> {
-    ["docs/a", "docs/b", "docs/ca"]
+    ["docs/a", "docs/b", "docs/c"]
         .iter()
         .map(|p| path("acme", "app", p))
         .collect()
@@ -817,7 +817,7 @@ async fn decides_many_resources_in_one_evaluations_request_where_the_metadata_ad
         .await
         .unwrap();
 
-    let expected = vec![Decision::Allow, Decision::Deny, Decision::Allow];
+    let expected = vec![Decision::Allow, Decision::Deny, Decision::Deny];
     assert_eq!(first, expected);
     assert_eq!(second, expected);
     // One request each time, to the advertised endpoint and to no other, carrying the subject
@@ -845,7 +845,7 @@ async fn decides_many_resources_in_one_evaluations_request_where_the_metadata_ad
                 .unwrap()
         })
         .collect();
-    assert_eq!(sent_paths, ["docs/a", "docs/b", "docs/ca"]);
+    assert_eq!(sent_paths, ["docs/a", "docs/b", "docs/c"]);
     // The metadata was read once for the two calls.
     assert_eq!(
         requests_count(&stub, "GET /.well-known/authzen-configuration "),
@@ -858,6 +858,24 @@ async fn asks_one_evaluation_per_resource_where_the_metadata_does_not_advertise_
     let stub = decision_point(false, answers_each_evaluation).await;
 
     let decisions = stub
+        .adapter_with_evaluations()
+        .decide_all(&user(), Action::Write, &three_paths())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        decisions,
+        vec![Decision::Allow, Decision::Deny, Decision::Deny]
+    );
+    assert_eq!(stub.requests_to("/access/v1/evaluation").len(), 3);
+    assert!(stub.requests_to("/evaluations").is_empty());
+}
+
+#[tokio::test]
+async fn asks_one_evaluation_per_resource_by_default_though_the_metadata_advertises_evaluations() {
+    let stub = decision_point(true, answers_each_evaluation).await;
+
+    let decisions = stub
         .adapter()
         .decide_all(&user(), Action::Write, &three_paths())
         .await
@@ -865,10 +883,24 @@ async fn asks_one_evaluation_per_resource_where_the_metadata_does_not_advertise_
 
     assert_eq!(
         decisions,
-        vec![Decision::Allow, Decision::Deny, Decision::Allow]
+        vec![Decision::Allow, Decision::Deny, Decision::Deny]
     );
     assert_eq!(stub.requests_to("/access/v1/evaluation").len(), 3);
     assert!(stub.requests_to("/evaluations").is_empty());
+    // The metadata is not read where the batch is not enabled.
+    assert_eq!(
+        requests_count(&stub, "GET /.well-known/authzen-configuration "),
+        0
+    );
+
+    // The control: enabled, the same decision point is asked once, at its evaluations endpoint.
+    let enabled = decision_point(true, answers_each_evaluation).await;
+    enabled
+        .adapter_with_evaluations()
+        .decide_all(&user(), Action::Write, &three_paths())
+        .await
+        .unwrap();
+    assert_eq!(enabled.requests_to("/evaluations").len(), 1);
 }
 
 #[tokio::test]
@@ -952,8 +984,14 @@ async fn reads_the_metadata_again_after_a_failed_read() {
             if metadata_reads.fetch_add(1, Ordering::SeqCst) == 0 {
                 ("500 Internal Server Error", "{}".to_owned())
             } else {
-                ("200 OK", json!({}).to_string())
+                let endpoint = format!("http://{}/evaluations", host_of(request));
+                (
+                    "200 OK",
+                    json!({"access_evaluations_endpoint": endpoint}).to_string(),
+                )
             }
+        } else if request.starts_with("POST /evaluations ") {
+            answers_each_evaluation(&body_of(request))
         } else {
             decision_reply(true)
         }
@@ -971,7 +1009,13 @@ async fn reads_the_metadata_again_after_a_failed_read() {
     assert!(stub.requests_to("/access/v1/evaluation").is_empty());
 
     let retried = adapter.decide_all(&user(), Action::Write, &resources).await;
-    assert_eq!(retried, Ok(vec![Decision::Allow; 3]));
+    assert_eq!(
+        retried,
+        Ok(vec![Decision::Allow, Decision::Deny, Decision::Deny])
+    );
+    // The second read was kept and used: one evaluations request, no single evaluation.
+    assert_eq!(stub.requests_to("/evaluations").len(), 1);
+    assert!(stub.requests_to("/access/v1/evaluation").is_empty());
 }
 
 #[tokio::test]
