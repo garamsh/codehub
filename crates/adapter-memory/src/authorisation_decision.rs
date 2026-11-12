@@ -41,7 +41,10 @@ const fn covers(held: Access, asked: Action) -> bool {
         (Access::Write, Action::Read | Action::Write) | (Access::Read, Action::Read) => true,
         (
             Access::Write | Access::Read,
-            Action::CreateOrganisation | Action::CreateRepository | Action::AdministerMembers,
+            Action::CreateOrganisation
+                | Action::CreateRepository
+                | Action::AdministerMembers
+                | Action::AdministerRunners,
         )
         | (Access::Read, Action::Write) => false,
     }
@@ -50,7 +53,10 @@ const fn covers(held: Access, asked: Action) -> bool {
 fn permits(member: &Member, action: Action, resource: &Resource) -> bool {
     match (member.role, resource) {
         (Role::Admin, Resource::Organisation(_)) => {
-            matches!(action, Action::CreateRepository | Action::AdministerMembers)
+            matches!(
+                action,
+                Action::CreateRepository | Action::AdministerMembers | Action::AdministerRunners
+            )
         }
         (Role::Admin, Resource::Repository { .. } | Resource::Path { .. }) => {
             matches!(action, Action::Read | Action::Write)

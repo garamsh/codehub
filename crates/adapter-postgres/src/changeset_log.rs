@@ -53,6 +53,7 @@ fn repository_column(repository: RepositoryId) -> Result<i64, ChangesetLogError>
 const fn ref_name(name: Ref) -> &'static str {
     match name {
         Ref::Main => "main",
+        Ref::LastGreen => "last-green",
     }
 }
 

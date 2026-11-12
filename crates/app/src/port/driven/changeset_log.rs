@@ -12,6 +12,9 @@ use crate::domain::repository::RepositoryId;
 pub enum Ref {
     /// What agents base their work on, and what landing advances.
     Main,
+    /// The newest changeset on `main` whose blocking checks have all passed; it only moves
+    /// forward along `main`.
+    LastGreen,
 }
 
 /// Holds the changesets of each repository and moves its refs. Each operation reads or writes the

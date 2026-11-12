@@ -36,7 +36,10 @@ const fn covers(held: Access, asked: Action) -> bool {
         (Access::Write, Action::Read | Action::Write) | (Access::Read, Action::Read) => true,
         (
             Access::Write | Access::Read,
-            Action::CreateOrganisation | Action::CreateRepository | Action::AdministerMembers,
+            Action::CreateOrganisation
+                | Action::CreateRepository
+                | Action::AdministerMembers
+                | Action::AdministerRunners,
         )
         | (Access::Read, Action::Write) => false,
     }
@@ -48,7 +51,10 @@ type Grants = Vec<(Prefix, Access)>;
 fn permits(role: Role, grants: &Grants, action: Action, resource: &Resource) -> bool {
     match (role, resource) {
         (Role::Admin, Resource::Organisation(_)) => {
-            matches!(action, Action::CreateRepository | Action::AdministerMembers)
+            matches!(
+                action,
+                Action::CreateRepository | Action::AdministerMembers | Action::AdministerRunners
+            )
         }
         (Role::Admin, Resource::Repository { .. } | Resource::Path { .. }) => {
             matches!(action, Action::Read | Action::Write)

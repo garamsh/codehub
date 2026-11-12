@@ -236,6 +236,14 @@ pub enum LandError {
     Encode(EncodeError),
     /// The caller may not land the draft.
     Access(AccessError),
+    /// The draft landed and `main` advanced to `landed`, but its checks were not queued; carries
+    /// why. The landing is not undone.
+    ChecksNotQueued {
+        /// The changeset that landed.
+        landed: Address,
+        /// Why queuing its checks failed.
+        cause: String,
+    },
 }
 
 impl fmt::Display for LandError {
@@ -254,6 +262,10 @@ impl fmt::Display for LandError {
             Self::Drafts(error) => write!(f, "{error}"),
             Self::Encode(error) => write!(f, "{error}"),
             Self::Access(error) => write!(f, "{error}"),
+            Self::ChecksNotQueued { landed, cause } => write!(
+                f,
+                "changeset {landed} landed and its checks were not queued: {cause}"
+            ),
         }
     }
 }

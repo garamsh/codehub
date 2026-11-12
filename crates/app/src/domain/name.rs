@@ -97,6 +97,25 @@ name! {
     DraftName
 }
 
+name! {
+    /// The name of a check inside its repository's check definitions; the form of an
+    /// [`OrganisationName`].
+    CheckName
+}
+
+impl CheckName {
+    /// The name of the check that stands for check definitions that could not be read.
+    pub(crate) fn unreadable() -> Self {
+        Self("checks-file".to_owned())
+    }
+}
+
+name! {
+    /// A label a check requires of a runner and a runner offers; the form of an
+    /// [`OrganisationName`].
+    Label
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,6 +125,12 @@ mod tests {
         assert_eq!("a1-b2".parse::<RepositoryName>().unwrap().as_str(), "a1-b2");
         assert!("0".parse::<OrganisationName>().is_ok());
         assert!("a".repeat(63).parse::<DraftName>().is_ok());
+    }
+
+    #[test]
+    fn the_unreadable_check_name_is_a_valid_name() {
+        let name = CheckName::unreadable();
+        assert_eq!(name.as_str().parse::<CheckName>().unwrap(), name);
     }
 
     #[test]
