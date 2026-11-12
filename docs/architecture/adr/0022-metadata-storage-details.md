@@ -43,3 +43,7 @@ Fact checked on 2026-11-11 against https://www.postgresql.org/support/versioning
 - Forward-only migrations block a deployment that needed a rollback.
 - The in-process pool is exhausted or spread across so many server processes that PostgreSQL's connection limit is reached, and an external pooler is introduced.
 - Rows of lost landings grow faster than the retention decision arrives.
+
+## Errata
+
+- 2026-11-12: "with a repository identifier on every row" is true of the rows below the repository directory, not of every row. `organisations`, `members` and `repositories` (`crates/adapter-postgres/migrations/0001_initial.sql`) carry none: they are the directory itself, or keyed by organisation. Found by the architecture review of goal issue #91 (finding D5). The decision stands.

@@ -11,7 +11,7 @@ Who is calling the system and whether the call is allowed: the ports the core us
 - **There is one kind of principal** (ADR 0027). The core does not tell agents from people, and how a token is obtained (device grant, token exchange, client credentials) is the issuer's and the client's.
 - **An outside layer joins through standards only** (ADR 0028). The core accepts only tokens bound to its one configured audience, shares organisation names with the outside layer with no mapping table, and resolves scope through the decision call.
 - **Identity is verified as an OIDC JWT offline or by RFC 7662 introspection**, one selected for the whole deployment by configuration (ADR 0029). In both modes the core only rejects; token lifetimes stay the issuer's.
-- **Authorisation is the PostgreSQL default or AuthZEN**, selected by configuration (ADR 0030). Selecting AuthZEN is the external mode: the core keeps no members or grants, the member endpoints are refused, creating an organisation writes no admin grant, and an organisation is created on first use when `CreateOrganisation` is allowed. An unreachable or failing decision point denies, with no caching.
+- **Authorisation is the PostgreSQL default or AuthZEN**, selected by configuration (ADR 0030). Selecting AuthZEN is the external mode: the core keeps no members or grants, the member endpoints are refused, creating an organisation writes no admin grant, and an organisation is created on first use when `CreateOrganisation` is allowed. An unreachable or failing decision point fails the request as a server error and allows nothing, with no caching (ADR 0033).
 
 ### Ports
 
@@ -22,8 +22,8 @@ Declared in the application's terms (`docs/architecture/structure.md`), named fo
 | Identity verification | Driven by the application | Given a credential presented with a request, return who the caller is, a principal identified by issuer and subject, or reject it | Two adapters, one selected by configuration (ADR 0029): an OpenID Connect Core 1.0 JWT bearer access token verified offline as a resource server, or RFC 7662 token introspection, where the core authenticates to the endpoint with client credentials and rejects a response without `active: true` or without its audience |
 | Runner identity verification | Driven by the application | Given a runner's transport-level credential, return which runner it is | Mutual TLS client certificates |
 | Authorisation decision | Driven by the application | Given subject, action, resource and context, return allow or deny; the resource carries the path (ADR 0021) | Default adapter: grants evaluated in PostgreSQL. Second adapter, selected by configuration (ADR 0030): OpenID AuthZEN Authorization API 1.0, Access Evaluation, over HTTP JSON, authenticated with a bearer token obtained by OAuth client credentials; Subject, Action and Resource are mapped in the application's terms and the path is a resource property |
-| Membership | Driven by the application | Add and remove organisation members and their grants, and read them (ADR 0021) | PostgreSQL tables, the same ones the default authorisation adapter evaluates; in external mode the member endpoints are refused and the port is not used |
-| Directory change | Driven by the application | Report organisation and repository creation and deletion, so an outside layer can learn of them (ADR 0030) | An in-process adapter and a no-op; delivery is at most once |
+| Membership | Driven by the application | Add and remove organisation members and their grants (ADR 0021); the default authorisation adapter reads them in PostgreSQL | PostgreSQL tables, the same ones the default authorisation adapter evaluates; in external mode the member endpoints are refused and the port is not used |
+| Directory change | Driven by the application | Report organisation and repository creation and deletion, so an outside layer can learn of them (ADR 0030) | An in-process adapter and a no-op; delivery is at most once; deletion events are reserved and not emitted until deletion exists |
 | Provisioning intake | Driving | Receive creation, update and deactivation of users and groups from a directory | SCIM 2.0 server (RFC 7643, RFC 7644) |
 
 - Identity verification and runner identity verification are two ports because the credential, its trust root and its lifecycle differ.
@@ -45,7 +45,7 @@ Declared in the application's terms (`docs/architecture/structure.md`), named fo
 - One kind of principal, and why a token's origin is not the core's concern: ADR 0027.
 - One audience, shared organisation names and no claim mapping: ADR 0028.
 - JWT or introspection, and the rules for an introspection response: ADR 0029.
-- The AuthZEN adapter, external mode, deny on failure and the directory-change port: ADR 0030.
+- The AuthZEN adapter, external mode, fail-closed on failure and the directory-change port: ADR 0030; a failure answered as a server error rather than a denial: ADR 0033.
 - The CLI's token sources and RFC 8693 exchange: ADR 0031.
 
 Status of each standard, checked on 2026-11-11 against its specification page:
@@ -62,9 +62,9 @@ Status of each standard, checked on 2026-11-11 against its specification page:
 
 ## Open questions
 
-- **Policy decision point behind the AuthZEN adapter.** The default adapter evaluates grants in PostgreSQL (ADR 0021) and the AuthZEN adapter exists (ADR 0030). Options for what it reaches: OpenFGA, Cedar, another engine reachable through AuthZEN, or a small engine written for the project. Recommendation: require that the engine match path prefixes and be reachable through AuthZEN.
+- **Policy decision point behind the AuthZEN adapter.** The default adapter evaluates grants in PostgreSQL (ADR 0021) and the AuthZEN adapter exists (ADR 0030). Development and the tests use Cerbos (`compose.yaml`, policies in `dev/cerbos/policies/`); what a production deployment reaches is open. Options: OpenFGA, Cedar, Cerbos, another engine reachable through AuthZEN, or a small engine written for the project. Recommendation: require that the engine match path prefixes and be reachable through AuthZEN.
 - **Filtering directory listings by path permission.** A listing of a directory may include entries the caller holds no `read` grant for. Options: omit them; show them and refuse the read; ask the decision port per entry. No recommendation yet.
-- **Identity provider for the single-machine stage.** Options: an existing self-hosted OpenID provider run beside the core; a minimal development-only provider shipped as a separate program, not part of the core; static tokens through the test adapter. Recommendation: an existing self-hosted provider, because a provider inside the core contradicts the separation and a development-only one is code to keep.
+- **Identity provider for a single-machine deployment.** Development and the tests run existing self-hosted providers beside the core: Dex for the device grant and Keycloak for introspection and token exchange (`compose.yaml`). Which provider a single-machine deployment runs is open. Recommendation: an existing self-hosted provider, because a provider inside the core contradicts the separation.
 - **Runner credential lifetime.** Token lifetimes are the issuer's (ADR 0029); the core only rejects. What remains is the runner credential. Settled together with `docs/architecture/runner.md`.
 - **Decision batching** at the target scale of hundreds of concurrent agents. ADR 0030 decides no caching; what remains is whether to batch evaluations if the engine supports them. Recommendation: measure before adding.
 - **SCIM scope.** Which resources are served (Users, Groups, both) and how provisioned groups reach the policy engine (through the core, or by the engine reading the directory directly). Recommendation: Users and Groups, with the engine reading the directory the external service owns, so the core stores only the identifiers it needs for audit.

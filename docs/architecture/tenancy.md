@@ -13,8 +13,8 @@ How the system is divided into organisations and repositories, and how a reposit
 - **Tenancy scopes every port that reaches stored data**: a request names its repository and, through it, its organisation.
 - **Organisation roles and path grants** are decided in ADR 0021 and described in `docs/architecture/access.md`. codehub owns organisations and repositories as tenancy containers; codehub depends on the standards and on no outside service's model (ADR 0028).
 - **Organisation names are shared with an outside layer with no mapping table** (ADR 0028). The name is the key on both sides, so an organisation is not renamed on one side alone.
-- **In external authorisation mode an organisation is created on first use** when the decision point allows `CreateOrganisation`, and is not created when it denies; no admin grant is written (ADR 0030). Organisation and repository creation and deletion are reported through the directory-change port (`docs/architecture/access.md`).
-- **The directory and the metadata are in one shared PostgreSQL schema** with a repository identifier on every row (ADR 0022).
+- **In external authorisation mode an organisation is created on first use** when the decision point allows `CreateOrganisation`, and is not created when it denies; no admin grant is written (ADR 0030). Organisation and repository creation is reported through the directory-change port, whose deletion events nothing emits until deletion exists (`docs/architecture/access.md`).
+- **The directory and the metadata are in one shared PostgreSQL schema** with a repository identifier on every row below the directory (ADR 0022).
 - Authentication and authorisation of people, agents and runners are outside this document (`docs/architecture/access.md`).
 
 ### Export and backup
@@ -27,7 +27,7 @@ How the system is divided into organisations and repositories, and how a reposit
 
 ### Mapping onto the hexagon
 
-- **Repository directory** — create, look up and delete organisations and repositories. Its storage is the metadata database, which is PostgreSQL (ADR 0013, `source-control.md` §Current decisions).
+- **Repository directory** — create and look up organisations and repositories; deletion is not implemented (§Open questions). Its storage is the metadata database, which is PostgreSQL (ADR 0013, `source-control.md` §Current decisions).
 - **Bundle store** — write and read export and backup bundles at a destination chosen by the operator. Possible adapters: local filesystem, S3-compatible store.
 
 ## Rationale

@@ -14,15 +14,15 @@ How versions of a repository's content are stored, changed, landed and queried.
 - **One derivation mechanism.** Every derived type is computed recursively from its values for the parents, and each type is flagged eager or deferred (ADR 0011). The types and their flags:
   - **Merkle directory trees** — eager, computed at landing, because checkout and sparse fetch start from a root tree and request missing subtrees and blobs recursively. The tree format reserves a place for a chunked large-file entry (content-defined chunking); chunking is not implemented.
   - **File-version nodes** — deferred, one per changed file, pointing at the previous version node of the same path.
-  - **Blame** — deferred, derived from the file-version nodes.
-  - **Skip lists** — over the changeset graph, answering ancestry queries.
+  - **Blame** — deferred, derived from the file-version nodes; not implemented.
+  - **Skip lists** — over the changeset graph, answering ancestry queries; not implemented.
 - **A path's history follows each node's first previous node:** from the path's file-version node in a changeset back through the first entry of each node's previous list, newest first. The other entries of a merge's previous list are kept and not walked.
 - **A repository has named refs** (ADR 0012):
   - `main` — what agents base their work on, and what landing advances;
   - release refs;
   - `last-green` — what CI and deployment base on.
   - Only `main` is implemented first; the format admits more refs.
-- **PostgreSQL holds the directory, the changeset log, refs, drafts, derived data and grants** in one schema shared by all organisations, with a repository identifier on every row. The minimum major version is 18, the server takes a connection URL, migrations are forward-only SQL files in `crates/adapter-postgres` applied at server start, and connections are pooled in process (ADR 0022).
+- **PostgreSQL holds the directory, the changeset log, refs, drafts, derived data and grants** in one schema shared by all organisations, with a repository identifier on every row below the directory. The minimum major version is 18, the server takes a connection URL, migrations are forward-only SQL files in `crates/adapter-postgres` applied at server start, and connections are pooled in process (ADR 0022).
 - **A draft is identified by repository, principal and draft name** (ADR 0022).
 - **A landing that lost the compare-and-swap leaves its changeset and derived rows**, which a retry reuses because they are content-addressed; removal waits for the retention decision (ADR 0022).
 - **Object keys are `<repository id>/<sha256 hex>`.** Uploads are single-part with `x-amz-checksum-sha256` signed, so the store verifies the bytes against the address; objects are not compressed, so the address covers the stored bytes. The server refuses a grant above a configured maximum no larger than S3's single-PUT limit, and presigned URLs expire after a configured time, 15 minutes by default (ADR 0023).
@@ -33,6 +33,7 @@ How versions of a repository's content are stored, changed, landed and queried.
   - advance `main` by compare-and-swap, so a landing that lost a race to another landing is not applied;
   - run the post-land checks;
   - revert the landing when a check fails.
+  - The checks and the revert are not implemented yet.
 - **The rebase at landing merges as follows** (ADR 0012):
   - a changeset whose paths do not overlap the changes made since its base is re-parented onto `main` with no merge;
   - overlapping text files are merged by a line-level 3-way merge;
@@ -129,7 +130,7 @@ The ports below follow from the decisions, named for the conversation and in the
 - **Derived data** — read and write computed trees, file-version nodes, blame and skip lists for a repository. Served by PostgreSQL (ADR 0022).
 - **Draft store** — put and get draft changesets, held outside the log until they land (ADR 0012). Served by PostgreSQL (ADR 0022).
 - **Check dispatch** — ask for the post-land checks to run and receive their results. The execution side is in `docs/architecture/runner.md`.
-- Driving adapters are the server API behind `ch` (`docs/architecture/interfaces.md`). They reach the application through the **source control** driving port: land a draft on `main`, and read a path's history.
+- Driving adapters are the server API behind `ch` (`docs/architecture/interfaces.md`). They reach the application through four driving ports: **source control** (stage a change into a draft, grant an upload, land a draft on `main`, read a file and read a path's history), **repositories** (create organisations and repositories), **members** (add and remove members and grants) and **authentication** (verify the credential presented with a request).
 
 ## Rationale
 
@@ -152,7 +153,7 @@ Each is undecided; the recommendation is not a decision.
 - **When the move to distributed SQL is made.** What measurement triggers it, such as write latency on the log or on `main` at a given number of concurrent agents. No option has been examined.
 - **What moves `last-green`, and on which check results.** Options: the server, when every post-land check of a changeset on `main` passes; the server, when only the checks marked blocking pass; a CI job holding a credential to move it.
 - **How release refs are created and moved, and by whom.** No option has been examined.
-- **Draft changeset lifetime.** How long a draft outside the log is kept, what removes it, and whether one agent can read another's draft. No option has been examined.
+- **Draft changeset lifetime.** How long a draft outside the log is kept and what removes it. No option has been examined. A draft is keyed by its principal, so no caller can name another principal's draft.
 - **Which checks run after landing, and who configures them.** Options: per repository configuration stored as repository data; a server-wide set.
   - Recommendation: per repository.
 - **When revert is automatic.** Options: any failing check reverts; only checks marked blocking revert; a person or agent decides.
