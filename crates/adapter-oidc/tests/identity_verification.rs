@@ -13,6 +13,7 @@ use app::domain::principal::Principal;
 use app::port::driven::identity_verification::{IdentityError, IdentityVerification};
 use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
+use futures_util::future::join_all;
 use jsonwebtoken::jwk::{Jwk, JwkSet};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde_json::{Value, json};
@@ -132,6 +133,15 @@ struct Stub {
 impl Stub {
     /// Starts the stub serving `jwks`; its discovery document names `claimed_issuer` where given.
     async fn start(jwks: String, claimed_issuer: Option<&str>) -> Self {
+        Self::start_answering_after(jwks, claimed_issuer, Duration::ZERO).await
+    }
+
+    /// As [`Stub::start`], with each key-set request answered `delay` after it arrives.
+    async fn start_answering_after(
+        jwks: String,
+        claimed_issuer: Option<&str>,
+        delay: Duration,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let issuer = format!("http://{}", listener.local_addr().unwrap());
         let discovery = json!({
@@ -152,6 +162,7 @@ impl Stub {
                     Some("/.well-known/openid-configuration") => discovery.clone(),
                     Some("/keys") => {
                         counter.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(delay).await;
                         served_jwks.lock().unwrap().clone()
                     }
                     _ => String::new(),
@@ -493,4 +504,64 @@ async fn reports_a_discovery_document_for_another_issuer_as_a_backend_failure() 
         lying.verifier().verify(&lying_token).await,
         Err(IdentityError::Backend(_))
     ));
+}
+
+#[tokio::test]
+async fn verifies_every_token_that_arrives_during_the_first_key_set_fetch() {
+    let key = TestKey::generate("k1");
+    let stub =
+        Stub::start_answering_after(key_set(&[&key]), None, Duration::from_millis(300)).await;
+    let verifier = stub.verifier();
+    let token = credential(&key.sign(&stub.claims("ada")));
+
+    let results = join_all((0..8).map(|_| verifier.verify(&token))).await;
+
+    for result in results {
+        assert_eq!(result, Ok(Principal::new(&stub.issuer, "ada").unwrap()));
+    }
+    assert_eq!(stub.requests(), 1);
+}
+
+#[tokio::test]
+async fn rejects_an_unknown_key_id_that_arrives_during_a_fetch_without_fetching_again() {
+    let key = TestKey::generate("k1");
+    let stranger = TestKey::generate("unknown");
+    let stub =
+        Stub::start_answering_after(key_set(&[&key]), None, Duration::from_millis(300)).await;
+    let verifier = stub.verifier();
+    let claims = stub.claims("ada");
+    let known = credential(&key.sign(&claims));
+    let unknown = credential(&stranger.sign(&claims));
+
+    let (waited, refused) = tokio::join!(verifier.verify(&known), verifier.verify(&unknown));
+
+    assert!(waited.is_ok());
+    assert_eq!(refused, Err(IdentityError::Rejected));
+    assert_eq!(stub.requests(), 1);
+}
+
+#[tokio::test]
+async fn holds_the_refetch_interval_after_a_failed_fetch() {
+    let key = TestKey::generate("k1");
+    let stub = Stub::start(String::new(), None).await;
+    let token = credential(&key.sign(&stub.claims("ada")));
+    let throttled = stub.verifier();
+    let unthrottled = stub.verifier_refetching_after(Duration::ZERO);
+
+    assert!(matches!(
+        throttled.verify(&token).await,
+        Err(IdentityError::Backend(_))
+    ));
+    assert_eq!(throttled.verify(&token).await, Err(IdentityError::Rejected));
+    assert_eq!(stub.requests(), 1);
+
+    assert!(matches!(
+        unthrottled.verify(&token).await,
+        Err(IdentityError::Backend(_))
+    ));
+    assert!(matches!(
+        unthrottled.verify(&token).await,
+        Err(IdentityError::Backend(_))
+    ));
+    assert_eq!(stub.requests(), 3);
 }
