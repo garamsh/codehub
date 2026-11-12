@@ -649,6 +649,19 @@ async fn documents_the_403_of_creating_an_organisation() {
 }
 
 #[tokio::test]
+async fn documents_the_404_of_creating_a_repository() {
+    let document = committed_document();
+    let responses = &document["paths"]["/v1/orgs/{org}/repos"]["post"]["responses"];
+    assert_eq!(
+        responses["404"]["content"]["application/problem+json"]["schema"]["$ref"],
+        "#/components/schemas/Problem"
+    );
+    // The control: the 403 and the 409 beside it stay documented.
+    assert!(responses["403"].is_object());
+    assert!(responses["409"].is_object());
+}
+
+#[tokio::test]
 async fn documents_no_request_body_on_a_delete_operation() {
     let document = committed_document();
     let mut deletes = 0;

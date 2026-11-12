@@ -175,6 +175,16 @@
               }
             }
           },
+          "404": {
+            "description": "The organisation does not exist and the decision point did not allow creating it (external authorisation mode).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "409": {
             "description": "The repository exists.",
             "content": {
