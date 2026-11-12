@@ -20,7 +20,8 @@ use app::port::driven::derived_data::{DerivedData, DerivedDataError};
 use app::port::driven::draft_store::DraftStore;
 use app::port::driving::source_control::SourceControlError;
 use app::use_case::land::LandError;
-use common::{Harness, Repo, draft};
+use common::Harness;
+use test_support::contract::{Deployment, Repo, draft};
 use tokio::task::JoinSet;
 
 /// A changeset with no parents and no changes, told apart from its siblings by `n`.
@@ -50,7 +51,7 @@ async fn concurrent_drafts_on_disjoint_paths_each_land_exactly_once() {
         writers.spawn(async move {
             let ada = harness.caller("ada").await;
             let repo = Repo {
-                harness: &harness,
+                harness: &*harness,
                 id,
             };
             let name = draft(&format!("draft-{n}"));
@@ -74,7 +75,7 @@ async fn concurrent_drafts_on_disjoint_paths_each_land_exactly_once() {
 
     // Every landing is a changeset of its own, and `main` reaches all of them through parents.
     let repo = Repo {
-        harness: &harness,
+        harness: &*harness,
         id,
     };
     landed.sort();

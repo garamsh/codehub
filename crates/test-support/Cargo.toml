@@ -6,6 +6,8 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+adapter-memory = { path = "../adapter-memory" }
+app = { path = "../app" }
 reqwest = { workspace = true, features = ["form", "json"] }
 serde_json.workspace = true
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio"] }

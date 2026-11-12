@@ -12,7 +12,7 @@ use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 
 use sqlx::{Connection, PgConnection};
-pub use test_support::{TestDatabase, env};
+pub use test_support::{TestDatabase, env, introspection_settings, pairs};
 
 /// The audience the server accepts, which Dex gives every access token its client asks for.
 const AUDIENCE: &str = "codehub-test";
@@ -229,45 +229,6 @@ impl Client {
         assert!(download.status().is_success());
         Some(download.text().await.unwrap())
     }
-}
-
-/// The settings that put `codehub` in introspection mode against Keycloak, as environment
-/// variables.
-pub fn introspection_settings() -> Vec<(&'static str, String)> {
-    vec![
-        ("CODEHUB_IDENTITY", "introspection".to_owned()),
-        (
-            "CODEHUB_INTROSPECTION_ENDPOINT",
-            format!(
-                "{}/protocol/openid-connect/token/introspect",
-                env("CODEHUB_TEST_KEYCLOAK_ISSUER")
-            ),
-        ),
-        (
-            "CODEHUB_INTROSPECTION_CLIENT_ID",
-            env("CODEHUB_TEST_KEYCLOAK_INTROSPECTION_CLIENT_ID"),
-        ),
-        (
-            "CODEHUB_INTROSPECTION_CLIENT_SECRET",
-            env("CODEHUB_TEST_KEYCLOAK_INTROSPECTION_CLIENT_SECRET"),
-        ),
-        (
-            "CODEHUB_INTROSPECTION_ISSUER",
-            env("CODEHUB_TEST_KEYCLOAK_ISSUER"),
-        ),
-        (
-            "CODEHUB_INTROSPECTION_AUDIENCE",
-            env("CODEHUB_TEST_KEYCLOAK_AUDIENCE"),
-        ),
-    ]
-}
-
-/// `settings` as the borrowed pairs `test_support::Server::start_with` takes.
-pub fn pairs<'a>(settings: &'a [(&'static str, String)]) -> Vec<(&'a str, &'a str)> {
-    settings
-        .iter()
-        .map(|(name, value)| (*name, value.as_str()))
-        .collect()
 }
 
 /// The single number `query`, a `select count(*)`, returns in `database`.

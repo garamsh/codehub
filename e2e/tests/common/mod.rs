@@ -14,6 +14,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 pub use test_support::{ChUser, Run, TestDatabase, env, keycloak_token, unique};
+use test_support::{introspection_settings, pairs, token_endpoint};
 
 /// The audience `codehub` accepts: the client `ch`, to which Dex issues the device grant's token.
 const AUDIENCE: &str = "ch";
@@ -110,14 +111,10 @@ impl Server {
 
     /// Starts the built `codehub` with `settings` set after the check environment's.
     fn start_with(database: &TestDatabase, settings: Vec<(&'static str, String)>) -> Self {
-        let pairs: Vec<(&str, &str)> = settings
-            .iter()
-            .map(|(name, value)| (*name, value.as_str()))
-            .collect();
         Self(test_support::Server::start_with(
             &binary("codehub"),
             database,
-            &pairs,
+            &pairs(&settings),
         ))
     }
 
@@ -290,43 +287,6 @@ impl User {
             self.name
         );
     }
-}
-
-/// Keycloak's token endpoint, which the RFC 8693 exchange and the decision point's client
-/// credentials use.
-pub fn token_endpoint() -> String {
-    format!(
-        "{}/protocol/openid-connect/token",
-        env("CODEHUB_TEST_KEYCLOAK_ISSUER")
-    )
-}
-
-/// The settings of introspection mode: Keycloak's endpoint, the introspection client, and the
-/// audience `codehub`.
-fn introspection_settings() -> Vec<(&'static str, String)> {
-    vec![
-        ("CODEHUB_IDENTITY", "introspection".to_owned()),
-        (
-            "CODEHUB_INTROSPECTION_ENDPOINT",
-            format!("{}/introspect", token_endpoint()),
-        ),
-        (
-            "CODEHUB_INTROSPECTION_CLIENT_ID",
-            env("CODEHUB_TEST_KEYCLOAK_INTROSPECTION_CLIENT_ID"),
-        ),
-        (
-            "CODEHUB_INTROSPECTION_CLIENT_SECRET",
-            env("CODEHUB_TEST_KEYCLOAK_INTROSPECTION_CLIENT_SECRET"),
-        ),
-        (
-            "CODEHUB_INTROSPECTION_ISSUER",
-            env("CODEHUB_TEST_KEYCLOAK_ISSUER"),
-        ),
-        (
-            "CODEHUB_INTROSPECTION_AUDIENCE",
-            env("CODEHUB_TEST_KEYCLOAK_AUDIENCE"),
-        ),
-    ]
 }
 
 /// A user of `ch` who presents a token from a file at one server, with no `ch login`.

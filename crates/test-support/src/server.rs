@@ -121,6 +121,15 @@ impl Server {
     }
 }
 
+/// `settings` as the borrowed pairs [`Server::start_with`] takes.
+#[must_use]
+pub fn pairs<'a>(settings: &'a [(&'static str, String)]) -> Vec<(&'a str, &'a str)> {
+    settings
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect()
+}
+
 impl Drop for Server {
     fn drop(&mut self) {
         if self.child.try_wait().unwrap().is_none() {

@@ -99,6 +99,7 @@ dependencies = [
  "adapter-memory",
  "imara-diff",
  "sha2 0.11.1",
+ "test-support",
  "tokio",
 ]
 
@@ -2199,6 +2200,8 @@ dependencies = [
 name = "test-support"
 version = "0.0.0"
 dependencies = [
+ "adapter-memory",
+ "app",
  "reqwest",
  "serde_json",
  "sqlx",
