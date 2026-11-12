@@ -12,9 +12,12 @@ ADR 0030 reports organisation and repository creation and deletion through the d
 garam is that layer. Its ADR-0149, merged on garam's `dev` branch as `adf2e1c8855dd75b463675f2035c661cd8aad957`, states:
 - a repository garam does not hold has no parent organisation, so every decision on it is denied;
 - codehub writes `Codehub::Repo` entities through the HTTP form of `ApplyEntityChanges`, with the token of the entity's organisation (ADR 0042);
-- an upsert carries the entity `grn:<org>/codehub/repo/<id>` and its one parent `grn:root/iam/org/<org>`. A delete is an `EntityDelete` of the same entity;
+- an upsert carries the entity `grn:<org>/codehub/repo/<id>`, an `org` attribute holding `<org>`, and its one parent `grn:root/iam/org/<org>`, with no members, consents or operations. A delete is an `EntityDelete` of the same entity;
 - each entity carries a sequence that rises with every change. A replayed or reordered delivery changes nothing, so at-least-once delivery is safe;
-- organisations are garam's, so codehub reports no organisation change to garam.
+- organisations are garam's, so codehub reports no organisation change to garam;
+- the outbox is stated "for the external mode".
+
+garam's ADR-0149 is "accepted; not built"; its HTTP binding with `ApplyEntityChanges` is garamsh/garam#1809.
 
 A lost repository creation therefore leaves a repository that every request is denied on, and nothing repairs it.
 
@@ -26,25 +29,30 @@ Alternatives not taken:
 
 ## Decision
 
-- **The outbox.** The repository directory writes each repository creation, and later each deletion, as an outbox entry in the same transaction as the change.
+- **The outbox.** The repository directory writes each repository creation, and later each deletion, as an outbox entry in the same transaction as the change. It does so in every mode, so one code path serves all of them; with the no-op adapter an entry is accepted on its first delivery. This is codehub's choice where garam's ADR-0149 asks only for the external mode.
   - An entry carries the organisation, the repository's name and id, the kind of change and a sequence.
-  - The sequence rises with every change to that repository and is never reused.
+  - The sequence is a counter on the repository's row, raised in the change's transaction, so it rises with every change to that repository and is never reused. How a deletion keeps the row's counter is decided with deletion.
   - The PostgreSQL adapter keeps the entries in a table, and the in-memory adapter keeps them in memory.
-- **The relay.** Each server process runs a relay that delivers pending entries through the directory-change port.
-  - It delivers one repository's entries in sequence order.
-  - An entry is held by one process at a time.
-  - An entry is deleted once the receiver accepts it, and is retried with a bounded backoff while delivery fails.
+  - A migration writes one creation entry, with sequence 1, for every repository that exists when it runs.
+- **The outbox port.** A new driven port, implemented by both stores, lets the relay claim one repository's pending entries under a lease, release them, and delete an entry once delivered. A claim holds no row lock while delivering; an expired lease lets another process claim the entries.
+- **The relay.** Each server process, and the in-memory composition used by the tests, runs a relay that delivers pending entries through the directory-change port.
+  - It claims entries one repository at a time and delivers that repository's entries in sequence order.
+  - An entry is deleted once the receiver accepts it. While delivery fails it is retried with a backoff doubling to a capped interval, and every failure is logged with the repository and the sequence.
+  - No entry is dropped. An entry the receiver refuses for good stays and is retried at the cap, so its log lines and the outbox's age show it.
   - Delivery is at least once.
-- **The port.** It changes from "report once" to "deliver this change, and say whether it was accepted". An adapter that cannot deliver says so, and the relay retries. The no-op adapter accepts every change.
-- **The garam adapter.** A new adapter of the port delivers to garam's HTTP form of `ApplyEntityChanges`. It sends the entity of ADR-0149 with the entry's sequence and the token of the entry's organisation, obtained as ADR 0042 decides. It counts an answer of applied or dropped as accepted.
-- **Organisation changes leave the outbox.** Organisation creation and deletion are not written to it. The in-process adapter, used by the tests, still receives them from the use case directly, at most once as before.
-- **Waiting at creation.** Creating a repository waits for its entry's delivery for a bounded time, set by configuration, then answers 201 whether or not delivery finished. The outbox keeps retrying after the answer.
-- This supersedes ADR 0030's delivery "at most once" for repository changes.
+- **The directory-change port.** Repository changes and organisation changes become two methods:
+  - a repository change carries the organisation, the name, the id and the sequence. The adapter delivers it and says whether it was accepted; an adapter that cannot deliver says so, and the relay retries. The no-op adapter accepts every change;
+  - an organisation change is reported by the use case directly, at most once as before (ADR 0030). The in-process adapter, used by the tests, receives both. The garam adapter ignores organisation changes, since garam holds organisations.
+- **The garam adapter.** A new adapter delivers to garam's HTTP form of `ApplyEntityChanges`, at the URL in `CODEHUB_DIRECTORY_GARAM_URL`. It sends the entity of ADR-0149 with the entry's sequence, and the token of the entry's organisation from the AuthZEN adapter's token cache (ADR 0042). It counts an answer of applied or dropped as accepted.
+- **Settings.** `CODEHUB_DIRECTORY_CHANGES` selects `none`, the default, or `garam`. `garam` requires the AuthZEN adapter in the `grn` profile (ADR 0043), and the server refuses to start otherwise.
+- **Waiting at creation.** After the creation commits, the request delivers that repository's entries itself, as the relay would, for at most `CODEHUB_DIRECTORY_DELIVERY_WAIT` (default 2 seconds). It then answers 201 whether or not delivery finished, and the relay carries on after the answer.
+- This supersedes ADR 0030's delivery "at most once" for repository changes, and ADR 0030's rejection of a durable queue.
 
 ## Consequences
 
 - A repository created while garam is unreachable is denied in garam until the relay delivers it. The window is bounded by garam's availability, not by a lost message.
-- One more table, and one background task per server process.
+- One more table, one more port, and one background task per server process.
+- Nothing of the garam adapter can be shown against garam until garamsh/garam#1809 is served. Until then it is tested against a stand-in that speaks ADR-0149's contract.
 - A server stopped between the commit and delivery leaves the entry in the table, and the next process to start delivers it.
 - Creating a repository can take up to the configured wait longer.
 - The open question "Reconciling directory changes" in `access.md` is settled for repositories by the outbox.
