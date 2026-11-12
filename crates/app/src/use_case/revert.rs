@@ -53,7 +53,8 @@ where
     /// The revert is reserved in the job queue before anything lands, and the reservation is kept
     /// where the revert then fails, so a changeset is reverted at most once. It is recorded with
     /// `job`: as landed, or as conflicting with later changes, which lands nothing, or as failed
-    /// with the reason where reading or landing it fails, after which the error is returned. A
+    /// with the reason where reading or landing it fails, after which the error is returned, or
+    /// [`RevertError::Unrecorded`] with both where recording the failure fails too. A
     /// landed revert has its own checks queued. Nothing is reverted where another job of the
     /// changeset holds the reservation, where the changeset is itself a revert the server made, or
     /// where `job` did not fail or time out.
@@ -83,13 +84,14 @@ where
         let recorded = match self.land_revert(job, changeset, message, timestamp).await {
             Ok(recorded) => recorded,
             Err(error) => {
-                // The error that reaches the caller is the first one, so a record that fails too
-                // is dropped rather than put in its place.
-                let _ = adapters
-                    .queue
-                    .record_revert(job.id, Revert::failed(&error))
-                    .await;
-                return Err(error);
+                let revert = Revert::failed(&error);
+                return Err(match adapters.queue.record_revert(job.id, revert).await {
+                    Ok(_) => error,
+                    Err(recording) => RevertError::Unrecorded {
+                        error: Box::new(error),
+                        recording,
+                    },
+                });
             }
         };
 

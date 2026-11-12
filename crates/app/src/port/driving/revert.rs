@@ -23,6 +23,15 @@ pub enum RevertError {
     Land(LandError),
     /// The revert landed and `main` advanced, but its checks were not queued; carries why.
     ChecksNotQueued(String),
+    /// The revert failed after its reservation and the failure could not be recorded with the job,
+    /// so the job shows no revert although the changeset will not be tried again; carries the
+    /// failure of the revert and the failure of the recording.
+    Unrecorded {
+        /// Why the revert failed.
+        error: Box<RevertError>,
+        /// Why the failure could not be recorded.
+        recording: JobQueueError,
+    },
 }
 
 impl fmt::Display for RevertError {
@@ -33,6 +42,9 @@ impl fmt::Display for RevertError {
             Self::Derived(error) => write!(f, "{error}"),
             Self::Land(error) => write!(f, "revert not landed: {error}"),
             Self::ChecksNotQueued(cause) => write!(f, "revert's checks not queued: {cause}"),
+            Self::Unrecorded { error, recording } => {
+                write!(f, "{error}; the failure was not recorded: {recording}")
+            }
         }
     }
 }
@@ -45,6 +57,7 @@ impl std::error::Error for RevertError {
             Self::Derived(error) => Some(error),
             Self::Land(error) => Some(error),
             Self::ChecksNotQueued(_) => None,
+            Self::Unrecorded { error, .. } => Some(error.as_ref()),
         }
     }
 }
