@@ -1,6 +1,6 @@
 # ADR 0030: Authorisation may go through AuthZEN in an external mode, and directory changes are reported through a port
 
-> Status: accepted; the clause calling a failing decision point a deny superseded by ADR-0033; its one configured bearer token superseded by ADR-0042 for the `private_key_jwt` mode
+> Status: accepted; the clause calling a failing decision point a deny superseded by ADR-0033; its one configured bearer token superseded by ADR-0042 for the `private_key_jwt` mode; the path as a resource property superseded by ADR-0043 in the `grn` profile; at-most-once delivery of repository changes and the rejected durable queue superseded by ADR-0044
 > Date: 2026-11-11
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.

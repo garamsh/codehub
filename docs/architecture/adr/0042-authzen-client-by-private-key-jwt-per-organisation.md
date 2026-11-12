@@ -1,6 +1,6 @@
 # ADR 0042: The AuthZEN adapter may authenticate by private_key_jwt, with one client and one token per organisation
 
-> Status: accepted
+> Status: accepted; the bullet failing every refused token request as a server error superseded for `unauthorized_client` by ADR-0043
 > Date: 2026-11-13
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.

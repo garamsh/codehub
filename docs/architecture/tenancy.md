@@ -12,9 +12,10 @@ How the system is divided into organisations and repositories, and how a reposit
 - **Target scale** is hundreds of concurrent agents.
 - **A repository sets no limit on concurrent landings.** Each server process passes the landings of one repository one at a time, in arrival order, and does not bound how many wait (ADR 0039, `source-control.md`).
 - **Tenancy scopes every port that reaches stored data**: a request names its repository and, through it, its organisation.
-- **Organisation roles and path grants** are decided in ADR 0021 and described in `docs/architecture/access.md`. codehub owns organisations and repositories as tenancy containers; codehub depends on the standards and on no outside service's model (ADR 0028).
-- **Organisation names are shared with an outside layer with no mapping table** (ADR 0028). The name is the key on both sides, so an organisation is not renamed on one side alone.
-- **In external authorisation mode an organisation is created on first use** when the decision point allows `CreateOrganisation`, and is not created when it denies; no admin grant is written (ADR 0030). Organisation and repository creation is reported through the directory-change port, whose deletion events nothing emits until deletion exists (`docs/architecture/access.md`).
+- **Organisation roles and path grants** are decided in ADR 0021 and described in `docs/architecture/access.md`. codehub owns organisations and repositories as tenancy containers; codehub depends on the standards and on no outside service's model (ADR 0028), except garam's names and entity feed in the AuthZEN `grn` profile (ADR 0043, ADR 0044).
+- **Organisation names are shared with an outside layer with no mapping table** (ADR 0028). The name is the key on both sides, so an organisation is not renamed on one side alone. A repository is named by its name, except in the `grn` profile, which names it by its id (ADR 0043).
+- **In external authorisation mode an organisation is created on first use** when the decision point allows `CreateOrganisation`, and is not created when it denies; no admin grant is written (ADR 0030). In every mode, repository creation is written to an outbox in the repository's transaction and delivered at least once through the directory-change port; creating a repository waits a bounded time for delivery and answers 201 either way (ADR 0044). Organisation creation is reported at most once to the in-process adapter (ADR 0030). Nothing emits deletion until deletion exists (`docs/architecture/access.md`).
+- **A repository has an id that is never reused**, the identity column of its row. The GRN profile names a repository by it (ADR 0043).
 - **The directory and the metadata are in one shared PostgreSQL schema** with a repository identifier on every row below the directory (ADR 0022).
 - Authentication and authorisation of people, agents and runners are outside this document (`docs/architecture/access.md`).
 
@@ -28,14 +29,14 @@ How the system is divided into organisations and repositories, and how a reposit
 
 ### Mapping onto the hexagon
 
-- **Repository directory** — create and look up organisations and repositories; deletion is not implemented (§Open questions). Its storage is the metadata database, which is PostgreSQL (ADR 0013, `source-control.md` §Current decisions).
+- **Repository directory** — create and look up organisations and repositories, writing each repository change to the outbox in the same transaction (ADR 0044); deletion is not implemented (§Open questions). Its storage is the metadata database, which is PostgreSQL (ADR 0013, `source-control.md` §Current decisions).
 - **Bundle store** — write and read export and backup bundles at a destination chosen by the operator. Possible adapters: local filesystem, S3-compatible store.
 
 ## Rationale
 
 - The tenancy model and its signs of being wrong are in ADR 0004.
 - Roles, grants and the ownership of the containers: ADR 0021. The shared schema: ADR 0022.
-- Shared organisation names, lazy creation in external mode and the directory-change port: ADR 0028 and ADR 0030.
+- Shared organisation names, lazy creation in external mode and the directory-change port: ADR 0028 and ADR 0030; the outbox and at-least-once delivery of repository changes: ADR 0044.
 - The term "repository" for what ADR 0004 and ADR 0005 call a workspace is in ADR 0020.
 - The bundle as the one unit for export, backup and import is in ADR 0005.
 - No limit on concurrent landings, and the gate in each process instead of a lock across replicas: ADR 0039, measured in `docs/scale-baseline.md`.
