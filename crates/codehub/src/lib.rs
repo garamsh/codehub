@@ -23,6 +23,7 @@ use app::port::driven::identity_verification::{IdentityError, IdentityVerificati
 use app::port::driven::object_store::ObjectStoreError;
 use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
+use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::members::{MembersAdapters, MembersService};
 use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
 use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
@@ -259,7 +260,8 @@ pub async fn run(config: Config) -> Result<(), Error> {
                 authorisation: &adapters.authorisation,
             },
             config.max_object_size,
-        ),
+        )
+        .with_landing_attempts(LandingAttempts::new(config.landing_attempts)),
     );
     let listener = TcpListener::bind(config.listen)
         .await

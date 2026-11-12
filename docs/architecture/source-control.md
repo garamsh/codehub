@@ -22,7 +22,7 @@ How versions of a repository's content are stored, changed, landed and queried.
   - release refs;
   - `last-green` — what CI and deployment base on.
   - `main` and `last-green` are implemented; release refs are not.
-- **PostgreSQL holds the directory, the changeset log, refs, drafts, derived data and grants** in one schema shared by all organisations, with a repository identifier on every row below the directory. The minimum major version is 18, the server takes a connection URL, migrations are forward-only SQL files in `crates/adapter-postgres` applied at server start, and connections are pooled in process, 40 per server process by default (not implemented yet: the default is 10), with the sum over processes kept below PostgreSQL's `max_connections` (ADR 0022, ADR 0037).
+- **PostgreSQL holds the directory, the changeset log, refs, drafts, derived data and grants** in one schema shared by all organisations, with a repository identifier on every row below the directory. The minimum major version is 18, the server takes a connection URL, migrations are forward-only SQL files in `crates/adapter-postgres` applied at server start, and connections are pooled in process, 40 per server process by default, with the sum over processes kept below PostgreSQL's `max_connections` (ADR 0022, ADR 0037).
 - **A draft is identified by repository, principal and draft name** (ADR 0022).
 - **A landing that lost the compare-and-swap leaves its changeset and derived rows**, which a retry reuses because they are content-addressed; removal waits for the retention decision (ADR 0022).
 - **Object keys are `<repository id>/<sha256 hex>`.** Uploads are single-part with `x-amz-checksum-sha256` signed, so the store verifies the bytes against the address; objects are not compressed, so the address covers the stored bytes. The server refuses a grant above a configured maximum no larger than S3's single-PUT limit, and presigned URLs expire after a configured time, 15 minutes by default (ADR 0023).
@@ -31,7 +31,7 @@ How versions of a repository's content are stored, changed, landed and queried.
 - **Landing is performed on the server**, in this order:
   - rebase the changeset onto the current `main`;
   - advance `main` by compare-and-swap, so a landing that lost a race to another landing is not applied;
-  - on a lost swap, read `main` again, rebase the same delta and swap again, up to a bound set by the server (32 by default), with authorisation and the draft read done once; when the bound is spent the landing is answered as moved (ADR 0036; not implemented yet, the client retries);
+  - on a lost swap, read `main` again, rebase the same delta and swap again, up to a bound set by the server (32 by default), with authorisation and the draft read done once; when the bound is spent the landing is answered as moved (ADR 0036);
   - queue the post-land checks;
   - revert the landing when a blocking check fails.
 - **Post-land checks are configured in the repository** (ADR 0035). `.codehub/checks.toml` in the landed tree lists checks, each with a name, a command, labels, `blocking` (default true) and a timeout (default 600 s). Each landing on `main` queues one job per check (`runner.md`). A file that does not parse counts as one failed blocking check.

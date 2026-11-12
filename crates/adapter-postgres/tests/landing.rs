@@ -31,3 +31,27 @@ async fn a_file_where_main_made_a_directory_is_rejected_naming_the_file() {
 async fn a_landing_that_loses_the_compare_and_swap_is_not_applied() {
     landing::a_landing_that_loses_the_compare_and_swap_is_not_applied::<Harness>().await;
 }
+
+#[tokio::test]
+async fn a_landing_that_loses_the_compare_and_swap_is_tried_again_by_the_server() {
+    landing::a_landing_that_loses_the_compare_and_swap_is_tried_again_by_the_server::<Harness>()
+        .await;
+}
+
+#[tokio::test]
+async fn the_authorisation_of_a_landing_is_asked_once_however_often_the_swap_is_lost() {
+    landing::the_authorisation_of_a_landing_is_asked_once_however_often_the_swap_is_lost::<Harness>(
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_conflict_that_appears_on_a_retry_is_answered_naming_the_path() {
+    landing::a_conflict_that_appears_on_a_retry_is_answered_naming_the_path::<Harness>().await;
+}
+
+#[tokio::test]
+async fn two_landings_on_one_repository_at_once_do_not_rebase_and_swap_together() {
+    landing::two_landings_on_one_repository_at_once_do_not_rebase_and_swap_together::<Harness>()
+        .await;
+}

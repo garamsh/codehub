@@ -98,42 +98,28 @@ where
         }
         let undo: BTreeMap<_, Change> = revert::inverse(&before, &after);
 
-        let mut moved = LandError::MainMoved { current: None };
-        let mut recorded = None;
-        for _ in 0..self.attempts.get() {
-            let staged = Draft {
-                base: Some(job.changeset),
-                changes: undo.clone(),
-            };
-            let landing = Landing {
-                message: message.clone(),
-                timestamp,
-            };
-            match land(
-                adapters.objects,
-                adapters.log,
-                adapters.derived,
-                repository,
-                AUTHOR,
-                staged,
-                landing,
-            )
-            .await
-            {
-                Ok(landed) => {
-                    recorded = Some(Revert::Landed(landed));
-                    break;
-                }
-                Err(LandError::Conflicts(conflicts)) => {
-                    recorded = Some(Revert::Conflicted(conflicts.into_keys().collect()));
-                    break;
-                }
-                Err(error @ LandError::MainMoved { .. }) => moved = error,
-                Err(error) => return Err(RevertError::Land(error)),
+        let staged = Draft {
+            base: Some(job.changeset),
+            changes: undo,
+        };
+        let landing = Landing { message, timestamp };
+        let recorded = match land(
+            adapters.objects,
+            adapters.log,
+            adapters.derived,
+            repository,
+            AUTHOR,
+            staged,
+            landing,
+            self.attempts,
+        )
+        .await
+        {
+            Ok(landed) => Revert::Landed(landed),
+            Err(LandError::Conflicts(conflicts)) => {
+                Revert::Conflicted(conflicts.into_keys().collect())
             }
-        }
-        let Some(recorded) = recorded else {
-            return Err(RevertError::Land(moved));
+            Err(error) => return Err(RevertError::Land(error)),
         };
 
         adapters

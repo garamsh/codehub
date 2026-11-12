@@ -24,6 +24,8 @@ use crate::port::driving::source_control::{
 use crate::use_case::access::{readable_repository, require, require_paths};
 use crate::use_case::history::history;
 use crate::use_case::land::land;
+use crate::use_case::landing_attempts::LandingAttempts;
+use crate::use_case::landing_gates::LandingGates;
 use crate::use_case::read_file::read_file;
 use crate::use_case::stage::stage;
 use crate::use_case::upload::request_upload;
@@ -53,11 +55,16 @@ pub struct SourceControlService<'a, O, L, D, S, R, A> {
     directory: &'a R,
     authorisation: &'a A,
     max_upload_size: u64,
+    attempts: LandingAttempts,
+    /// One gate per repository, held while a landing of it rebases and swaps: the landings of one
+    /// repository wait for one another within this service, and not across server processes.
+    gates: LandingGates,
 }
 
 impl<'a, O, L, D, S, R, A> SourceControlService<'a, O, L, D, S, R, A> {
-    /// Source control over `adapters` that grants uploads of at most `max_upload_size` bytes.
-    pub const fn new(
+    /// Source control over `adapters` that grants uploads of at most `max_upload_size` bytes and
+    /// tries each landing as often as [`LandingAttempts::default`] says.
+    pub fn new(
         adapters: SourceControlAdapters<'a, O, L, D, S, R, A>,
         max_upload_size: u64,
     ) -> Self {
@@ -77,7 +84,16 @@ impl<'a, O, L, D, S, R, A> SourceControlService<'a, O, L, D, S, R, A> {
             directory,
             authorisation,
             max_upload_size,
+            attempts: LandingAttempts::new(LandingAttempts::DEFAULT),
+            gates: LandingGates::new(),
         }
+    }
+
+    /// This source control with each landing that lost the compare-and-swap on `main` tried at
+    /// most `attempts` times.
+    #[must_use]
+    pub fn with_landing_attempts(self, attempts: LandingAttempts) -> Self {
+        Self { attempts, ..self }
     }
 }
 
@@ -215,6 +231,8 @@ where
         )
         .await
         .map_err(LandError::from)?;
+        let arrival = self.gates.reach(repository);
+        let _one_at_a_time = arrival.pass().await;
         let landed = land(
             self.objects,
             self.log,
@@ -223,6 +241,7 @@ where
             caller.principal(),
             staged,
             landing,
+            self.attempts,
         )
         .await?;
         self.drafts

@@ -2239,6 +2239,7 @@ version = "0.0.0"
 dependencies = [
  "adapter-memory",
  "app",
+ "futures-util",
  "reqwest",
  "serde_json",
  "sqlx",
