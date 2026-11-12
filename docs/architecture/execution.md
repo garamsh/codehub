@@ -21,6 +21,7 @@ How a job's environment is built from repository data: caches, images, their del
 
 - The server and the runner core do not know the execution environment.
 - An executor driver both runs the job and attaches the images. Drivers: microvm (default), kubernetes (images attached via CSI), host.
+- **Only the host driver is built** (ADR 0034). It runs a job's command under `/bin/sh -c` in a fresh directory on the runner's host, fetches the changeset's files by presigned URL and checks each against its address, stops the job's process group on cancel or timeout, and removes the directory. It isolates nothing: a runner on it must be trusted with what its jobs run. No image is attached.
 - The VMM is not chosen.
 
 ### Ports
@@ -36,6 +37,7 @@ Declared in the application's terms (`docs/architecture/structure.md`); the adap
 
 - Cache model C and the rejected alternatives: ADR 0007.
 - Object-storage delivery and executor drivers: ADR 0008.
+- The host driver as the only driver built so far: ADR 0034.
 - Export excludes images, so export content is defined by `tenancy.md`.
 
 ## Open questions
