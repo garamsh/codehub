@@ -42,9 +42,9 @@ const fn covers(held: Access, asked: Action) -> bool {
         (
             Access::Write | Access::Read,
             Action::CreateOrganisation
-                | Action::CreateRepository
-                | Action::AdministerMembers
-                | Action::AdministerRunners,
+            | Action::CreateRepository
+            | Action::AdministerMembers
+            | Action::AdministerRunners,
         )
         | (Access::Read, Action::Write) => false,
     }

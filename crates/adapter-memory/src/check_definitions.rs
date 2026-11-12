@@ -39,14 +39,11 @@ impl CheckDefinitions for MemoryCheckDefinitions {
     }
 
     fn parse(&self, bytes: &[u8]) -> Result<Vec<CheckDefinition>, CheckFileError> {
-        lock(&self.taught)
-            .get(bytes)
-            .cloned()
-            .unwrap_or_else(|| {
-                Err(CheckFileError::Syntax {
-                    line: 1,
-                    description: "text not taught to the in-memory definitions".to_owned(),
-                })
+        lock(&self.taught).get(bytes).cloned().unwrap_or_else(|| {
+            Err(CheckFileError::Syntax {
+                line: 1,
+                description: "text not taught to the in-memory definitions".to_owned(),
             })
+        })
     }
 }

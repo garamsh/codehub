@@ -129,7 +129,10 @@ where
 }
 
 fn ids(registrations: &[Registration]) -> Vec<RegistrationId> {
-    registrations.iter().map(|registration| registration.id).collect()
+    registrations
+        .iter()
+        .map(|registration| registration.id)
+        .collect()
 }
 
 impl<G, Q, O, D, L> Jobs for JobsService<'_, G, Q, O, D, L>
@@ -200,7 +203,9 @@ async fn settle<Q: JobQueue, L: ChangesetLog>(
             }
         }
         JobState::Passed => {
-            let jobs = queue.of_changeset(ended.repository, ended.changeset).await?;
+            let jobs = queue
+                .of_changeset(ended.repository, ended.changeset)
+                .await?;
             if blocking_checks_passed(&jobs) {
                 advance(log, ended.repository, ended.changeset).await?;
             }

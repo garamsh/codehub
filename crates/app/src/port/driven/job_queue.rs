@@ -110,8 +110,7 @@ pub trait JobQueue {
     /// # Errors
     ///
     /// [`JobQueueError::Backend`] where the queue fails.
-    fn expire(&self, now: i64)
-    -> impl Future<Output = Result<Vec<Job>, JobQueueError>> + Send;
+    fn expire(&self, now: i64) -> impl Future<Output = Result<Vec<Job>, JobQueueError>> + Send;
 }
 
 /// Why the job queue refused or did not answer.

@@ -1,0 +1,12 @@
+[package]
+name = "adapter-toml"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+app = { path = "../app" }
+toml.workspace = true
+
+[lints]
+workspace = true
