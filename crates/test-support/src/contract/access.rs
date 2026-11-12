@@ -16,15 +16,15 @@ use app::port::driven::authorisation_decision::{
 use app::port::driven::identity_verification::IdentityError;
 use app::port::driven::membership::{Access, Role};
 use app::port::driven::repository_directory::DirectoryError;
+use app::port::driving::access::AccessError;
 use app::port::driving::authentication::{Authentication, AuthenticationError};
 use app::port::driving::members::Members;
 use app::port::driving::repositories::{Repositories, RepositoriesError};
+use app::port::driving::source_control::LandError;
 use app::port::driving::source_control::{SourceControl, SourceControlError};
-use app::use_case::access::AccessError;
 use app::use_case::administration::Administration;
-use app::use_case::land::LandError;
-use app::use_case::members::MembersService;
-use app::use_case::source_control::SourceControlService;
+use app::use_case::members::{MembersAdapters, MembersService};
+use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
 
 /// A prefix over the path `path`, whole components only; empty is the whole repository.
 fn prefix(path: &str) -> Prefix {
@@ -48,9 +48,11 @@ struct Admin<'a, H> {
 impl<H: Deployment> Admin<'_, H> {
     async fn add(&self, member: &Caller, role: Role) {
         MembersService::new(
-            self.harness.directory(),
-            self.harness.authorisation(),
-            self.harness.membership(),
+            MembersAdapters {
+                directory: self.harness.directory(),
+                authorisation: self.harness.authorisation(),
+                membership: self.harness.membership(),
+            },
             Administration::BuiltIn,
         )
         .add_member(self.caller, &acme(), member.principal(), role)
@@ -60,9 +62,11 @@ impl<H: Deployment> Admin<'_, H> {
 
     async fn remove(&self, member: &Caller) {
         MembersService::new(
-            self.harness.directory(),
-            self.harness.authorisation(),
-            self.harness.membership(),
+            MembersAdapters {
+                directory: self.harness.directory(),
+                authorisation: self.harness.authorisation(),
+                membership: self.harness.membership(),
+            },
             Administration::BuiltIn,
         )
         .remove_member(self.caller, &acme(), member.principal())
@@ -72,9 +76,11 @@ impl<H: Deployment> Admin<'_, H> {
 
     async fn grant(&self, member: &Caller, path: &str, access: Access) {
         MembersService::new(
-            self.harness.directory(),
-            self.harness.authorisation(),
-            self.harness.membership(),
+            MembersAdapters {
+                directory: self.harness.directory(),
+                authorisation: self.harness.authorisation(),
+                membership: self.harness.membership(),
+            },
             Administration::BuiltIn,
         )
         .add_grant(
@@ -91,9 +97,11 @@ impl<H: Deployment> Admin<'_, H> {
 
     async fn ungrant(&self, member: &Caller, path: &str, access: Access) {
         MembersService::new(
-            self.harness.directory(),
-            self.harness.authorisation(),
-            self.harness.membership(),
+            MembersAdapters {
+                directory: self.harness.directory(),
+                authorisation: self.harness.authorisation(),
+                membership: self.harness.membership(),
+            },
             Administration::BuiltIn,
         )
         .remove_grant(
@@ -481,12 +489,14 @@ pub async fn a_failing_authorisation_backend_refuses_the_call_with_its_descripti
     repo.land(&ada, &draft("seed"), "seed").await.unwrap();
     let path: Path = "a".parse().unwrap();
     let down = SourceControlService::new(
-        harness.objects(),
-        harness.log(),
-        harness.derived(),
-        harness.drafts(),
-        harness.directory(),
-        &Down,
+        SourceControlAdapters {
+            objects: harness.objects(),
+            log: harness.log(),
+            derived: harness.derived(),
+            drafts: harness.drafts(),
+            directory: harness.directory(),
+            authorisation: &Down,
+        },
         MAX_UPLOAD_SIZE,
     );
 

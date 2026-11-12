@@ -10,9 +10,22 @@ use crate::port::driven::authorisation_decision::{
 use crate::port::driven::directory_changes::{DirectoryChange, DirectoryChanges};
 use crate::port::driven::membership::{Membership, Role};
 use crate::port::driven::repository_directory::{DirectoryError, RepositoryDirectory};
+use crate::port::driving::access::AccessError;
 use crate::port::driving::repositories::{Repositories, RepositoriesError};
-use crate::use_case::access::{AccessError, allowed, require};
+use crate::use_case::access::{allowed, require};
 use crate::use_case::administration::Administration;
+
+/// The driven ports the repositories are built over.
+pub struct RepositoriesAdapters<'a, R, A, M, C> {
+    /// Keeps organisations and repositories.
+    pub directory: &'a R,
+    /// Says what callers may do.
+    pub authorisation: &'a A,
+    /// Keeps members and their grants.
+    pub membership: &'a M,
+    /// Receives each creation.
+    pub changes: &'a C,
+}
 
 /// Organisations and repositories kept in the directory the composition site passes to it, for
 /// the callers the authorisation decision allows, each creation reported to the directory
@@ -26,17 +39,19 @@ pub struct RepositoriesService<'a, R, A, M, C> {
 }
 
 impl<'a, R, A, M, C> RepositoriesService<'a, R, A, M, C> {
-    /// Repositories kept in `directory`, callers checked with `authorisation`, and each creation
-    /// reported to `changes`. Where `administration` is built-in, the creator of an organisation
-    /// is made its admin in `membership`; where it is external, no grant is written and an
-    /// organisation missing from the directory is created on first use.
+    /// Repositories over `adapters`. Where `administration` is built-in, the creator of an
+    /// organisation is made its admin in the membership; where it is external, no grant is
+    /// written and an organisation missing from the directory is created on first use.
     pub const fn new(
-        directory: &'a R,
-        authorisation: &'a A,
-        membership: &'a M,
-        changes: &'a C,
+        adapters: RepositoriesAdapters<'a, R, A, M, C>,
         administration: Administration,
     ) -> Self {
+        let RepositoriesAdapters {
+            directory,
+            authorisation,
+            membership,
+            changes,
+        } = adapters;
         Self {
             directory,
             authorisation,

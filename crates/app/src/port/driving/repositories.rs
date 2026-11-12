@@ -7,7 +7,7 @@ use crate::domain::principal::Caller;
 use crate::domain::repository::RepositoryId;
 use crate::port::driven::membership::MembershipError;
 use crate::port::driven::repository_directory::DirectoryError;
-use crate::use_case::access::AccessError;
+use crate::port::driving::access::AccessError;
 
 /// What the outside asks of the application's organisations and repositories.
 pub trait Repositories {

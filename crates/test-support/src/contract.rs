@@ -34,12 +34,12 @@ use app::port::driven::object_store::ObjectStore;
 use app::port::driven::repository_directory::RepositoryDirectory;
 use app::port::driving::authentication::Authentication;
 use app::port::driving::repositories::Repositories;
+use app::port::driving::source_control::Landing;
 use app::port::driving::source_control::{SourceControl, SourceControlError};
 use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
-use app::use_case::land::Landing;
-use app::use_case::repositories::RepositoriesService;
-use app::use_case::source_control::SourceControlService;
+use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
+use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
 
 /// The largest upload the deployment's source control grants.
 pub const MAX_UPLOAD_SIZE: u64 = 1024;
@@ -113,10 +113,12 @@ pub trait Deployment: Sized + Send + Sync {
     /// `administration` says.
     fn administered(&self, administration: Administration) -> Repos<'_, Self> {
         RepositoriesService::new(
-            self.directory(),
-            self.authorisation(),
-            self.membership(),
-            self.changes(),
+            RepositoriesAdapters {
+                directory: self.directory(),
+                authorisation: self.authorisation(),
+                membership: self.membership(),
+                changes: self.changes(),
+            },
             administration,
         )
     }
@@ -129,12 +131,14 @@ pub trait Deployment: Sized + Send + Sync {
     /// Source control over this deployment's adapters.
     fn source_control(&self) -> Service<'_, Self> {
         SourceControlService::new(
-            self.objects(),
-            self.log(),
-            self.derived(),
-            self.drafts(),
-            self.directory(),
-            self.authorisation(),
+            SourceControlAdapters {
+                objects: self.objects(),
+                log: self.log(),
+                derived: self.derived(),
+                drafts: self.drafts(),
+                directory: self.directory(),
+                authorisation: self.authorisation(),
+            },
             MAX_UPLOAD_SIZE,
         )
     }

@@ -17,14 +17,14 @@ use app::port::driven::authorisation_decision::{
 use app::port::driven::directory_changes::DirectoryChange;
 use app::port::driven::membership::{Access, Role};
 use app::port::driven::repository_directory::{DirectoryError, RepositoryDirectory};
+use app::port::driving::access::AccessError;
 use app::port::driving::members::{Members, MembersError};
 use app::port::driving::repositories::{Repositories, RepositoriesError};
 use app::port::driving::source_control::SourceControl;
-use app::use_case::access::AccessError;
 use app::use_case::administration::Administration;
-use app::use_case::members::MembersService;
-use app::use_case::repositories::RepositoriesService;
-use app::use_case::source_control::SourceControlService;
+use app::use_case::members::{MembersAdapters, MembersService};
+use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
+use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
 use common::Harness;
 use test_support::contract::{Deployment, MAX_UPLOAD_SIZE};
 
@@ -149,9 +149,11 @@ async fn every_members_operation<A: AuthorisationDecision + Sync>(
     member: &Principal,
 ) -> Vec<Result<(), MembersError>> {
     let members = MembersService::new(
-        &harness.directory,
-        authorisation,
-        &harness.membership,
+        MembersAdapters {
+            directory: &harness.directory,
+            authorisation,
+            membership: &harness.membership,
+        },
         administration,
     );
     let (acme, app) = (organisation("acme"), app_repository());
@@ -220,9 +222,11 @@ async fn writes_no_member_when_refusing_a_members_operation_in_external_mode() {
     // The same admin adding bob in built-in mode does write him, so the Deny above is the
     // refusal's.
     MembersService::new(
-        &harness.directory,
-        &harness.authorisation,
-        &harness.membership,
+        MembersAdapters {
+            directory: &harness.directory,
+            authorisation: &harness.authorisation,
+            membership: &harness.membership,
+        },
         Administration::BuiltIn,
     )
     .add_member(&ada, &organisation("acme"), bob.principal(), Role::Admin)
@@ -347,10 +351,12 @@ async fn counts_an_organisation_a_concurrent_creator_made_as_created_and_does_no
         .answer(Action::CreateRepository, Decision::Allow);
     let directory = Racing::default();
     let repositories = RepositoriesService::new(
-        &directory,
-        &harness.authorisation,
-        &harness.membership,
-        &harness.changes,
+        RepositoriesAdapters {
+            directory: &directory,
+            authorisation: &harness.authorisation,
+            membership: &harness.membership,
+            changes: &harness.changes,
+        },
         Administration::External,
     );
 
@@ -492,10 +498,12 @@ async fn names_the_repository_in_each_resource_it_asks_the_decision_about() {
     let path: Path = "src/a.txt".parse().unwrap();
 
     RepositoriesService::new(
-        &harness.directory,
-        &recording,
-        &harness.membership,
-        &harness.changes,
+        RepositoriesAdapters {
+            directory: &harness.directory,
+            authorisation: &recording,
+            membership: &harness.membership,
+            changes: &harness.changes,
+        },
         Administration::BuiltIn,
     )
     .find_repository(&ada, &organisation("acme"), &app_repository())
@@ -504,12 +512,14 @@ async fn names_the_repository_in_each_resource_it_asks_the_decision_about() {
     // Whether the read succeeds is not the point; the decision has been asked by then.
     drop(
         SourceControlService::new(
-            &harness.objects,
-            &harness.log,
-            &harness.derived,
-            &harness.drafts,
-            &harness.directory,
-            &recording,
+            SourceControlAdapters {
+                objects: &harness.objects,
+                log: &harness.log,
+                derived: &harness.derived,
+                drafts: &harness.drafts,
+                directory: &harness.directory,
+                authorisation: &recording,
+            },
             MAX_UPLOAD_SIZE,
         )
         .read_file(&ada, id, &path)

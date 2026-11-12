@@ -11,6 +11,16 @@ use crate::port::driving::members::{Members, MembersError};
 use crate::use_case::access::require;
 use crate::use_case::administration::Administration;
 
+/// The driven ports the members are built over.
+pub struct MembersAdapters<'a, R, A, M> {
+    /// Looks repositories up.
+    pub directory: &'a R,
+    /// Says what callers may do.
+    pub authorisation: &'a A,
+    /// Keeps members and their grants.
+    pub membership: &'a M,
+}
+
 /// Members kept in the membership the composition site passes to it, administered by the callers
 /// the authorisation decision allows.
 pub struct MembersService<'a, R, A, M> {
@@ -21,15 +31,17 @@ pub struct MembersService<'a, R, A, M> {
 }
 
 impl<'a, R, A, M> MembersService<'a, R, A, M> {
-    /// Members kept in `membership`, with repositories looked up in `directory` and callers
-    /// checked with `authorisation`, where `administration` says whether members are kept here
-    /// at all.
+    /// Members over `adapters`, where `administration` says whether members are kept here at
+    /// all.
     pub const fn new(
-        directory: &'a R,
-        authorisation: &'a A,
-        membership: &'a M,
+        adapters: MembersAdapters<'a, R, A, M>,
         administration: Administration,
     ) -> Self {
+        let MembersAdapters {
+            directory,
+            authorisation,
+            membership,
+        } = adapters;
         Self {
             directory,
             authorisation,

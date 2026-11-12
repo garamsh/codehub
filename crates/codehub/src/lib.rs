@@ -23,9 +23,9 @@ use app::port::driven::identity_verification::{IdentityError, IdentityVerificati
 use app::port::driven::object_store::ObjectStoreError;
 use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
-use app::use_case::members::MembersService;
-use app::use_case::repositories::RepositoriesService;
-use app::use_case::source_control::SourceControlService;
+use app::use_case::members::{MembersAdapters, MembersService};
+use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
+use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -233,25 +233,31 @@ pub async fn run(config: Config) -> Result<(), Error> {
     let router = adapter_http::router(
         AuthenticationService::new(&adapters.identity),
         RepositoriesService::new(
-            &adapters.directory,
-            &adapters.authorisation,
-            &adapters.membership,
-            &(),
+            RepositoriesAdapters {
+                directory: &adapters.directory,
+                authorisation: &adapters.authorisation,
+                membership: &adapters.membership,
+                changes: &(),
+            },
             administration,
         ),
         MembersService::new(
-            &adapters.directory,
-            &adapters.authorisation,
-            &adapters.membership,
+            MembersAdapters {
+                directory: &adapters.directory,
+                authorisation: &adapters.authorisation,
+                membership: &adapters.membership,
+            },
             administration,
         ),
         SourceControlService::new(
-            &adapters.objects,
-            &adapters.log,
-            &adapters.derived,
-            &adapters.drafts,
-            &adapters.directory,
-            &adapters.authorisation,
+            SourceControlAdapters {
+                objects: &adapters.objects,
+                log: &adapters.log,
+                derived: &adapters.derived,
+                drafts: &adapters.drafts,
+                directory: &adapters.directory,
+                authorisation: &adapters.authorisation,
+            },
             config.max_object_size,
         ),
     );

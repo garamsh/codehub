@@ -17,13 +17,32 @@ use crate::port::driven::draft_store::DraftStore;
 use crate::port::driven::membership::Access;
 use crate::port::driven::object_store::{Grant, ObjectStore};
 use crate::port::driven::repository_directory::RepositoryDirectory;
-use crate::port::driving::source_control::{SourceControl, SourceControlError};
-use crate::use_case::access::{AccessError, readable_repository, require, require_paths};
+use crate::port::driving::access::AccessError;
+use crate::port::driving::source_control::{
+    FileContent, LandError, Landing, SourceControl, SourceControlError,
+};
+use crate::use_case::access::{readable_repository, require, require_paths};
 use crate::use_case::history::history;
-use crate::use_case::land::{LandError, Landing, land};
-use crate::use_case::read_file::{FileContent, read_file};
+use crate::use_case::land::land;
+use crate::use_case::read_file::read_file;
 use crate::use_case::stage::stage;
 use crate::use_case::upload::request_upload;
+
+/// The driven ports source control is built over.
+pub struct SourceControlAdapters<'a, O, L, D, S, R, A> {
+    /// Stores blobs.
+    pub objects: &'a O,
+    /// Stores changesets and `main`.
+    pub log: &'a L,
+    /// Stores derived data.
+    pub derived: &'a D,
+    /// Stores drafts.
+    pub drafts: &'a S,
+    /// Finds a repository's organisation.
+    pub directory: &'a R,
+    /// Says what callers may do.
+    pub authorisation: &'a A,
+}
 
 /// Source control over the driven ports the composition site passes to it.
 pub struct SourceControlService<'a, O, L, D, S, R, A> {
@@ -37,19 +56,19 @@ pub struct SourceControlService<'a, O, L, D, S, R, A> {
 }
 
 impl<'a, O, L, D, S, R, A> SourceControlService<'a, O, L, D, S, R, A> {
-    /// Source control that stores blobs in `objects`, changesets and `main` in `log`, derived
-    /// data in `derived`, and drafts in `drafts`, finds a repository's organisation in
-    /// `directory`, asks `authorisation` what callers may do, and grants uploads of at most
-    /// `max_upload_size` bytes.
+    /// Source control over `adapters` that grants uploads of at most `max_upload_size` bytes.
     pub const fn new(
-        objects: &'a O,
-        log: &'a L,
-        derived: &'a D,
-        drafts: &'a S,
-        directory: &'a R,
-        authorisation: &'a A,
+        adapters: SourceControlAdapters<'a, O, L, D, S, R, A>,
         max_upload_size: u64,
     ) -> Self {
+        let SourceControlAdapters {
+            objects,
+            log,
+            derived,
+            drafts,
+            directory,
+            authorisation,
+        } = adapters;
         Self {
             objects,
             log,
