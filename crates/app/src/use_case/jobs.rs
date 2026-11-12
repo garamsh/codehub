@@ -147,11 +147,11 @@ where
                 match entry {
                     Entry::Directory(subtree) => pending.push((components, subtree)),
                     Entry::File(file) => {
-                        let size = self.objects.get(repository, file.content).await?.len();
                         files.push(ClaimedFile {
                             path: Path::new(components)?,
                             kind: file.kind,
-                            size: u64::try_from(size).unwrap_or(u64::MAX),
+                            address: file.content,
+                            size: self.objects.size(repository, file.content).await?,
                             download: self
                                 .objects
                                 .download_grant(repository, file.content)

@@ -128,7 +128,7 @@ Addresses:
 
 The ports below follow from the decisions, named for the conversation and in the application's terms (`docs/architecture/structure.md`). Whether each is earned by two adapters is settled when it is written.
 
-- **Object store** — put and get immutable objects by content address, and issue presigned URLs through which clients upload and download object bytes directly to and from the store, so the bytes do not pass through the server API (ADR 0015). Served by an S3-compatible adapter; the same technology also holds filesystem images, delivered the same way (`docs/architecture/execution.md`, ADR 0008).
+- **Object store** — put and get immutable objects by content address, answer an object's size without its bytes, and issue presigned URLs through which clients upload and download object bytes directly to and from the store, so the bytes do not pass through the server API (ADR 0015). Served by an S3-compatible adapter; the same technology also holds filesystem images, delivered the same way (`docs/architecture/execution.md`, ADR 0008).
 - **Changeset log** — append a changeset, read the log, read a ref, and move a ref by compare-and-swap on that ref alone. Served by a PostgreSQL adapter, the log as a table (ADR 0013, ADR 0022).
 - **Derived data** — read and write computed trees, file-version nodes, blame and skip lists for a repository. Served by PostgreSQL (ADR 0022).
 - **Draft store** — put and get draft changesets, held outside the log until they land (ADR 0012). Served by PostgreSQL (ADR 0022).

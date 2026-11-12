@@ -6,6 +6,7 @@ use app::domain::repository::RepositoryId;
 use app::port::driven::object_store::{Grant, GrantMethod, ObjectStore, ObjectStoreError};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use reqwest::header::CONTENT_LENGTH;
 use reqwest::{Client, Response, StatusCode};
 use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
 
@@ -120,6 +121,20 @@ impl S3ObjectStore {
         }
     }
 
+    /// A `HEAD` request for the object, which carries its size and no bytes.
+    async fn head(
+        &self,
+        repository: RepositoryId,
+        address: Address,
+    ) -> Result<Response, ObjectStoreError> {
+        let key = Self::key(repository, address);
+        let url = self
+            .bucket
+            .head_object(Some(&self.credentials), &key)
+            .sign(self.expiry);
+        self.client.head(url).send().await.map_err(transport)
+    }
+
     async fn send(
         &self,
         grant: &Grant,
@@ -170,17 +185,30 @@ impl ObjectStore for S3ObjectStore {
         }
     }
 
+    async fn size(
+        &self,
+        repository: RepositoryId,
+        address: Address,
+    ) -> Result<u64, ObjectStoreError> {
+        let response = self.head(repository, address).await?;
+        match response.status() {
+            StatusCode::NOT_FOUND => Err(ObjectStoreError::NotFound(address)),
+            code if code.is_success() => response
+                .headers()
+                .get(CONTENT_LENGTH)
+                .and_then(|length| length.to_str().ok())
+                .and_then(|length| length.parse().ok())
+                .ok_or_else(|| backend("the store answered without a content length")),
+            _ => Err(status(&response)),
+        }
+    }
+
     async fn exists(
         &self,
         repository: RepositoryId,
         address: Address,
     ) -> Result<bool, ObjectStoreError> {
-        let key = Self::key(repository, address);
-        let url = self
-            .bucket
-            .head_object(Some(&self.credentials), &key)
-            .sign(self.expiry);
-        let response = self.client.head(url).send().await.map_err(transport)?;
+        let response = self.head(repository, address).await?;
         match response.status() {
             StatusCode::NOT_FOUND => Ok(false),
             code if code.is_success() => Ok(true),

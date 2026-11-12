@@ -2446,6 +2446,7 @@
         "type": "object",
         "required": [
           "path",
+          "address",
           "size",
           "executable",
           "download"
@@ -2453,6 +2454,9 @@
         "properties": {
           "path": {
             "type": "string"
+          },
+          "address": {
+            "$ref": "#/components/schemas/Address"
           },
           "size": {
             "type": "integer",
