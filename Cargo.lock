@@ -51,6 +51,7 @@ version = "0.0.0"
 dependencies = [
  "app",
  "aws-lc-rs",
+ "futures-util",
  "jsonwebtoken",
  "reqwest",
  "serde",
