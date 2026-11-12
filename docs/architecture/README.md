@@ -51,9 +51,10 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0027-one-kind-of-principal.md` — ADR 0027, codehub knows one kind of principal, and how a token is obtained is the issuer's and the client's
 - `adr/0028-federation-through-standards.md` — ADR 0028, codehub is federated through standards, with one audience and shared organisation names
 - `adr/0029-identity-verification-jwt-or-introspection.md` — ADR 0029, a token is verified as an OIDC JWT or by RFC 7662 introspection, selected by configuration
-- `adr/0030-authorisation-through-authzen-and-external-mode.md` — ADR 0030, authorisation may go through AuthZEN in an external mode, and directory changes are reported through a port
+- `adr/0030-authorisation-through-authzen-and-external-mode.md` — ADR 0030, authorisation may go through AuthZEN in an external mode, and directory changes are reported through a port; the clause calling a failure a deny is superseded by ADR 0033
 - `adr/0031-ch-token-sources-and-exchange.md` — ADR 0031, `ch` reads a token from a file or an environment variable and may exchange it by RFC 8693
 - `adr/0032-no-request-body-on-delete.md` — ADR 0032, no HTTP operation of codehub's API takes a request body on DELETE
+- `adr/0033-failing-decision-point-is-a-server-error.md` — ADR 0033, a failing decision point fails the request as a server error and allows nothing; supersedes one clause of ADR 0030
 - `execution.md` — caches, derived images, delivery through object storage, executor drivers
 - `runner.md` — runner registration, polling, labels, pools, job lifecycle
 - `adr/0007-cache-model-c.md` — ADR 0007, caches are versioned workspace data with images derived from them
