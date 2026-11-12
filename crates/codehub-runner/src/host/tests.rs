@@ -308,12 +308,16 @@ async fn only_the_end_of_the_output_is_kept() {
 #[test]
 fn the_kept_output_is_cut_at_a_character_boundary() {
     let mut tail = Tail::default();
-    tail.push(b"a");
     tail.push("é".repeat(OUTPUT_LIMIT).as_bytes());
+    tail.push(b"a");
     let kept = tail.text();
     assert!(kept.len() <= OUTPUT_LIMIT);
     assert!(kept.len() >= OUTPUT_LIMIT - 2);
-    assert!(kept.chars().all(|c| c == 'é'), "a character was cut");
+    assert!(kept.ends_with("éa"));
+    assert!(
+        kept.chars().all(|c| c == 'é' || c == 'a'),
+        "a character was cut"
+    );
 }
 
 #[tokio::test]
