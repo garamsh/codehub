@@ -3,8 +3,9 @@
 use std::collections::BTreeSet;
 
 use ch::wire::{
-    Access, Created, File, Grant, Header, History, Kind, Landed, Landing, Member, NewName,
-    Principal, Problem, Role, StagedFile, TransferGrant, TransferMethod, Upload, Version,
+    Access, Check, CheckState, Created, File, Grant, Header, History, Kind, Landed, Landing,
+    Member, NewName, NewRunner, Principal, Problem, Ref, Revert, Role, Runner, StagedFile,
+    TransferGrant, TransferMethod, Upload, Version,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -212,4 +213,94 @@ fn has_the_values_of_the_enumerations() {
     let methods = [TransferMethod::Get, TransferMethod::Put];
     let method = &schemas["TransferGrant"]["properties"]["method"];
     assert_eq!(allowed(method), written(&methods));
+}
+
+#[test]
+fn has_the_fields_of_the_runner_and_check_schemas() {
+    let schemas = schemas();
+    let issuer = "https://id.test".to_owned();
+    let subject = "r1".to_owned();
+    assert_fields(
+        &NewRunner {
+            issuer: issuer.clone(),
+            subject: subject.clone(),
+            labels: vec![],
+            repository: Some("app".into()),
+        },
+        &schemas["NewRunner"],
+        "NewRunner",
+    );
+    assert_fields(
+        &Runner {
+            id: 1,
+            organisation: "acme".into(),
+            repository_id: None,
+            issuer,
+            subject,
+            labels: vec![],
+        },
+        &schemas["Runner"],
+        "Runner",
+    );
+    assert_fields(
+        &Check {
+            id: 1,
+            name: "build".into(),
+            blocking: true,
+            labels: vec![],
+            state: CheckState::Queued,
+            exit_code: None,
+            output_tail: String::new(),
+            lease_expires_at: None,
+            deadline: None,
+            revert: None,
+        },
+        &schemas["Check"],
+        "Check",
+    );
+    assert_fields(
+        &Ref {
+            name: "main".into(),
+            changeset: address(),
+        },
+        &schemas["Ref"],
+        "Ref",
+    );
+}
+
+#[test]
+fn has_the_states_and_revert_outcomes_of_the_check_schemas() {
+    let schemas = schemas();
+    let states = [
+        CheckState::Queued,
+        CheckState::Running,
+        CheckState::Passed,
+        CheckState::Failed,
+        CheckState::TimedOut,
+        CheckState::Cancelled,
+    ];
+    let state = &schemas["Check"]["properties"]["state"];
+    assert_eq!(allowed(state), written(&states));
+    for state in states {
+        assert_eq!(
+            serde_json::to_value(state).unwrap(),
+            Value::String(state.text().to_owned())
+        );
+    }
+
+    let landed = serde_json::to_value(Revert::Landed {
+        changeset: address(),
+    })
+    .unwrap();
+    let conflicted = serde_json::to_value(Revert::Conflicted { paths: vec![] }).unwrap();
+    let variants = schemas["Revert"]["oneOf"].as_array().unwrap();
+    for (written, schema) in [landed, conflicted].iter().zip(variants) {
+        let mut properties = keys(schema["properties"].as_object().unwrap());
+        assert!(properties.remove("outcome"));
+        let outcome = written["outcome"].as_str().unwrap();
+        assert_eq!(schema["properties"]["outcome"]["const"], outcome);
+        let mut fields = keys(written.as_object().unwrap());
+        fields.remove("outcome");
+        assert_eq!(fields, properties, "{outcome}");
+    }
 }

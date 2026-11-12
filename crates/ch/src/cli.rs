@@ -13,7 +13,8 @@ Exit codes:
   1  Any other failure
   2  Usage
   3  Not logged in, or the server answered 401
-  4  Landing rejected: 409 or 403 on land
+  4  Landing rejected: 409 or 403 on land; or checks --wait ended with a blocking check
+     that did not pass, or timed out
   5  Denied or not found on any other operation: 403 or 404";
 
 /// The `ch` command line.
@@ -191,6 +192,62 @@ pub enum Command {
         #[command(subcommand)]
         command: MemberCommand,
     },
+    /// Act on the runners of the selected repository's organisation.
+    Runner {
+        /// The verb.
+        #[command(subcommand)]
+        command: RunnerCommand,
+    },
+    /// Show the check results of a changeset of the selected repository, and `last-green`.
+    Checks(Checks),
+}
+
+/// Arguments of `checks`.
+#[derive(Debug, Args)]
+pub struct Checks {
+    /// The changeset; defaults to the head of `main`.
+    pub changeset: Option<String>,
+    /// Poll until every check has ended; exit 0 if every blocking check passed, else 4.
+    #[arg(long)]
+    pub wait: bool,
+    /// With --wait, give up after this many seconds.
+    #[arg(long, requires = "wait", default_value_t = 600, value_name = "SECONDS")]
+    pub timeout: u64,
+    /// With --wait, how long to sleep between polls, in milliseconds.
+    #[arg(
+        long,
+        hide = true,
+        requires = "wait",
+        default_value_t = 2000,
+        value_name = "MILLISECONDS"
+    )]
+    pub poll_interval_ms: u64,
+}
+
+/// A verb on runners.
+#[derive(Debug, Subcommand)]
+pub enum RunnerCommand {
+    /// Register a principal as a runner of the organisation, and print the registration's id.
+    Register {
+        /// The runner's subject.
+        subject: String,
+        /// The runner's issuer.
+        #[arg(long)]
+        issuer: String,
+        /// A label the runner offers; a job runs only on a runner offering all of its labels.
+        #[arg(long = "label")]
+        labels: Vec<String>,
+        /// Register for this repository of the organisation only.
+        #[arg(long = "repo")]
+        repository: Option<String>,
+    },
+    /// List the organisation's runners: id, scope, issuer, subject and labels.
+    List,
+    /// Remove a registration.
+    Remove {
+        /// The registration's id.
+        id: u64,
+    },
 }
 
 /// Arguments of `login`.
@@ -350,6 +407,36 @@ mod tests {
         };
         assert_eq!(write, ["", "src"]);
         assert_eq!(read, ["docs"]);
+    }
+
+    #[test]
+    fn takes_repeated_labels_and_one_repository_to_register_a_runner() {
+        let cli = parse(&[
+            "runner", "register", "r1", "--issuer", "http://i", "--label", "a", "--label", "b",
+            "--repo", "app",
+        ])
+        .unwrap();
+        let Command::Runner {
+            command: RunnerCommand::Register {
+                labels, repository, ..
+            },
+        } = cli.command
+        else {
+            panic!("not runner register");
+        };
+        assert_eq!(labels, ["a", "b"]);
+        assert_eq!(repository.as_deref(), Some("app"));
+        assert!(parse(&["runner", "register", "r1"]).is_err());
+    }
+
+    #[test]
+    fn takes_a_timeout_only_with_wait_and_defaults_it_to_600_seconds() {
+        let Command::Checks(checks) = parse(&["checks", "--wait"]).unwrap().command else {
+            panic!("not checks");
+        };
+        assert_eq!((checks.timeout, checks.poll_interval_ms), (600, 2000));
+        assert!(parse(&["checks", "--timeout", "5"]).is_err());
+        assert!(parse(&["checks", "abc", "--wait", "--timeout", "5"]).is_ok());
     }
 
     #[test]

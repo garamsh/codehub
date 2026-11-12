@@ -9,8 +9,8 @@ use serde::de::DeserializeOwned;
 use crate::failure::{Failure, Operation};
 use crate::state::RepositoryRef;
 use crate::wire::{
-    Access, Created, File, Grant, History, Landed, Landing, Member, NewName, Principal, StagedFile,
-    TransferGrant, TransferMethod, Upload,
+    Access, Checks, Created, File, Grant, History, Landed, Landing, Member, NewName, NewRunner,
+    Principal, Ref, Runner, Runners, StagedFile, TransferGrant, TransferMethod, Upload,
 };
 
 /// Percent-encodes `text` for use as a URL path segment or a form value.
@@ -277,6 +277,73 @@ impl<'a> Api<'a> {
     /// Fails where the request or the server's answer fails.
     pub async fn file(&self, repository: &RepositoryRef, path: &str) -> Result<File, Failure> {
         let path = format!("{}/files/{}", repo_path(repository), encode_path(path));
+        self.call(Method::GET, &path, None::<&()>, Operation::Other)
+            .await
+    }
+
+    /// Registers a runner in `organisation`.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails.
+    pub async fn register_runner(
+        &self,
+        organisation: &str,
+        runner: &NewRunner,
+    ) -> Result<Runner, Failure> {
+        let path = format!("orgs/{}/runners", encode(organisation));
+        self.call(Method::POST, &path, Some(runner), Operation::Other)
+            .await
+    }
+
+    /// The runners registered in `organisation`.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails.
+    pub async fn runners(&self, organisation: &str) -> Result<Runners, Failure> {
+        let path = format!("orgs/{}/runners", encode(organisation));
+        self.call(Method::GET, &path, None::<&()>, Operation::Other)
+            .await
+    }
+
+    /// Removes the registration `id` from `organisation`.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails.
+    pub async fn remove_runner(&self, organisation: &str, id: u64) -> Result<(), Failure> {
+        let path = format!("orgs/{}/runners/{id}", encode(organisation));
+        self.call_empty(Method::DELETE, &path, None::<&()>).await
+    }
+
+    /// The checks of `changeset`.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails.
+    pub async fn checks(
+        &self,
+        repository: &RepositoryRef,
+        changeset: &str,
+    ) -> Result<Checks, Failure> {
+        let path = format!(
+            "{}/changesets/{}/checks",
+            repo_path(repository),
+            encode(changeset)
+        );
+        self.call(Method::GET, &path, None::<&()>, Operation::Other)
+            .await
+    }
+
+    /// The changeset the ref `name`, `main` or `last-green`, points at.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails, and with [`Failure::Denied`] where
+    /// the ref is not set.
+    pub async fn reference(&self, repository: &RepositoryRef, name: &str) -> Result<Ref, Failure> {
+        let path = format!("{}/refs/{}", repo_path(repository), encode(name));
         self.call(Method::GET, &path, None::<&()>, Operation::Other)
             .await
     }

@@ -191,3 +191,140 @@ pub struct Problem {
     #[serde(default)]
     pub paths: Vec<String>,
 }
+
+/// A principal to register as a runner.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NewRunner {
+    /// The issuer URL.
+    pub issuer: String,
+    /// The subject at that issuer.
+    pub subject: String,
+    /// What the runner offers; a job's labels must all be among them.
+    pub labels: Vec<String>,
+    /// The repository's name, where the runner takes only its jobs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+}
+
+/// A registered runner.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Runner {
+    /// The registration's identifier.
+    pub id: u64,
+    /// The organisation the runner is registered in.
+    pub organisation: String,
+    /// The repository it takes jobs of; absent for any repository of the organisation.
+    pub repository_id: Option<u64>,
+    /// The issuer URL.
+    pub issuer: String,
+    /// The subject at that issuer.
+    pub subject: String,
+    /// What the runner offers.
+    pub labels: Vec<String>,
+}
+
+/// The registrations of an organisation.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Runners {
+    /// The registrations, oldest first.
+    pub runners: Vec<Runner>,
+}
+
+/// Where a check's job is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckState {
+    /// Waiting for a runner.
+    Queued,
+    /// Claimed by a runner.
+    Running,
+    /// Ended, passed.
+    Passed,
+    /// Ended, failed.
+    Failed,
+    /// Ended past its timeout.
+    TimedOut,
+    /// Ended by cancellation.
+    Cancelled,
+}
+
+impl CheckState {
+    /// Whether the job has ended.
+    #[must_use]
+    pub const fn ended(self) -> bool {
+        match self {
+            Self::Queued | Self::Running => false,
+            Self::Passed | Self::Failed | Self::TimedOut | Self::Cancelled => true,
+        }
+    }
+
+    /// The state as the API and `ch` write it.
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::TimedOut => "timed_out",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// What came of reverting a changeset because a blocking check failed.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum Revert {
+    /// The revert landed as this changeset.
+    Landed {
+        /// The revert changeset's address.
+        changeset: String,
+    },
+    /// The revert conflicts with later changes and landed nothing.
+    Conflicted {
+        /// The paths it conflicts on.
+        paths: Vec<String>,
+    },
+}
+
+/// One check of a changeset.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Check {
+    /// The job's identifier.
+    pub id: u64,
+    /// The check's name.
+    pub name: String,
+    /// Whether a failure reverts the changeset.
+    pub blocking: bool,
+    /// The labels the job is routed by.
+    pub labels: Vec<String>,
+    /// Where the job is.
+    pub state: CheckState,
+    /// The command's exit code, where it has one.
+    pub exit_code: Option<i32>,
+    /// The end of the command's output.
+    pub output_tail: String,
+    /// While running: when the lease lapses, in seconds since the epoch.
+    pub lease_expires_at: Option<i64>,
+    /// While running: when the job times out, in seconds since the epoch.
+    pub deadline: Option<i64>,
+    /// What came of a revert, where one was attempted.
+    pub revert: Option<Revert>,
+}
+
+/// The checks of a changeset.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Checks {
+    /// The checks.
+    pub checks: Vec<Check>,
+}
+
+/// A ref and the changeset it points at.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Ref {
+    /// `main` or `last-green`.
+    pub name: String,
+    /// The changeset's address.
+    pub changeset: String,
+}
