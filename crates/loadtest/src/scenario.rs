@@ -22,8 +22,9 @@ const REPLICAS: usize = 2;
 const ORGANISATION: &str = "acme";
 const REPOSITORY: &str = "app";
 
-/// How many times a landing is attempted before it is given up on.
-const ATTEMPTS: u64 = 50;
+/// How many times a landing is attempted before it is given up on as stuck; a run by duration
+/// stops a landing at the deadline long before.
+const ATTEMPTS: u64 = 1000;
 
 /// Lines of the shared file each agent of `same-file` owns.
 const OWNED_LINES: usize = 3;
@@ -87,6 +88,28 @@ pub struct Plan {
     pub paths_per_landing: usize,
 }
 
+/// How one operation ended.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    /// It did what it set out to.
+    Done,
+    /// The run's time was up while a landing was still losing the compare-and-swap; it is not
+    /// counted as an operation, and is not a failure.
+    Cut,
+    /// A status the scenario does not expect.
+    Failed,
+}
+
+impl Outcome {
+    fn of(status: u16) -> Self {
+        if succeeded(status) {
+            Self::Done
+        } else {
+            Self::Failed
+        }
+    }
+}
+
 /// What a landing stages.
 #[derive(Clone, Copy)]
 enum Work {
@@ -117,9 +140,13 @@ impl Context {
         )
     }
 
+    fn past_deadline(&self) -> bool {
+        self.deadline.is_some_and(|end| Instant::now() >= end)
+    }
+
     fn finished(&self, operations: u64) -> bool {
         match self.plan.limit {
-            Limit::Duration(_) => self.deadline.is_some_and(|end| Instant::now() >= end),
+            Limit::Duration(_) => self.past_deadline(),
             Limit::Operations(count) => operations >= count,
         }
     }
@@ -440,7 +467,7 @@ async fn agent(context: Arc<Context>, index: usize) -> Recorder {
     let mut drafts = 0;
     let mut operations = 0;
     while !context.finished(operations) {
-        let succeeded = match context.scenario {
+        let outcome = match context.scenario {
             Scenario::Disjoint => {
                 land(
                     &session,
@@ -484,12 +511,12 @@ async fn agent(context: Arc<Context>, index: usize) -> Recorder {
                     let started = Instant::now();
                     let (status, _) = session.read(&path).await;
                     recorder.record(Kind::Read, started.elapsed(), status);
-                    succeeded(status)
+                    Outcome::of(status)
                 } else if roll < 90 {
                     let started = Instant::now();
                     let status = session.log(&path).await;
                     recorder.record(Kind::Log, started.elapsed(), status);
-                    succeeded(status)
+                    Outcome::of(status)
                 } else {
                     land(
                         &session,
@@ -504,9 +531,11 @@ async fn agent(context: Arc<Context>, index: usize) -> Recorder {
                 }
             }
         };
-        recorder.operation();
-        operations += 1;
-        if !succeeded {
+        if outcome != Outcome::Cut {
+            recorder.operation();
+            operations += 1;
+        }
+        if outcome != Outcome::Done {
             break;
         }
     }
@@ -515,7 +544,7 @@ async fn agent(context: Arc<Context>, index: usize) -> Recorder {
 
 /// Stages `work` in a draft and lands it; where the landing answers 409 the work is staged again in
 /// a fresh draft, because a failed landing leaves its draft on the base it had. Every 409 is one
-/// retry. Whether the landing succeeded.
+/// retry. The landing stops where the run's time is up.
 async fn land(
     session: &Session<'_>,
     recorder: &mut Recorder,
@@ -524,31 +553,35 @@ async fn land(
     drafts: &mut u64,
     work: Work,
     context: &Context,
-) -> bool {
+) -> Outcome {
     let mut retries = 0;
     loop {
         *drafts += 1;
         let draft = format!("agent-{agent}-{drafts}");
         if !stage(session, recorder, agent, operation, &draft, work, context).await {
             recorder.gave_up(retries);
-            return false;
+            return Outcome::Failed;
         }
         let started = Instant::now();
         let status = session.land(&draft, "load").await;
         recorder.record(Kind::Land, started.elapsed(), status);
         if succeeded(status) {
             recorder.landed(retries);
-            return true;
+            return Outcome::Done;
         }
         if status != 409 {
             recorder.gave_up(retries);
-            return false;
+            return Outcome::Failed;
         }
         retries += 1;
+        if context.past_deadline() {
+            recorder.gave_up(retries);
+            return Outcome::Cut;
+        }
         if retries >= ATTEMPTS {
             recorder.gave_up(retries);
             recorder.abandoned();
-            return false;
+            return Outcome::Failed;
         }
     }
 }
