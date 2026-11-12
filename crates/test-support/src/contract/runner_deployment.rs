@@ -16,6 +16,7 @@ use app::port::driving::source_control::{SourceControl, SourceControlError};
 use app::use_case::checked_source_control::{CheckedAdapters, CheckedSourceControl};
 use app::use_case::checks::{ChecksAdapters, ChecksService};
 use app::use_case::jobs::{JobsAdapters, JobsService};
+use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::runners::{RunnersAdapters, RunnersService};
 
 use super::{Deployment, Repo, Service, draft};
@@ -29,6 +30,30 @@ pub type Checked<'a, H> = CheckedSourceControl<
     <H as Deployment>::Log,
     <H as Deployment>::Directory,
     <H as RunnerDeployment>::Queue,
+    <H as RunnerDeployment>::Definitions,
+>;
+
+/// The jobs service over a deployment's adapters.
+pub type JobsOf<'a, H> = JobsService<
+    'a,
+    <H as RunnerDeployment>::Registry,
+    <H as RunnerDeployment>::Queue,
+    MemoryObjectStore,
+    <H as Deployment>::Derived,
+    <H as Deployment>::Log,
+    <H as Deployment>::Directory,
+    <H as RunnerDeployment>::Definitions,
+>;
+
+/// The checks service over a deployment's adapters.
+pub type ChecksOf<'a, H> = ChecksService<
+    'a,
+    <H as RunnerDeployment>::Queue,
+    <H as Deployment>::Log,
+    <H as Deployment>::Directory,
+    <H as Deployment>::Authorisation,
+    MemoryObjectStore,
+    <H as Deployment>::Derived,
     <H as RunnerDeployment>::Definitions,
 >;
 
@@ -67,10 +92,7 @@ pub trait RunnerDeployment: Deployment {
     }
 
     /// The jobs port over this deployment's adapters, with the lease [`LEASE`].
-    fn jobs(
-        &self,
-    ) -> JobsService<'_, Self::Registry, Self::Queue, MemoryObjectStore, Self::Derived, Self::Log>
-    {
+    fn jobs(&self) -> JobsOf<'_, Self> {
         JobsService::new(
             JobsAdapters {
                 registry: self.registry(),
@@ -78,21 +100,28 @@ pub trait RunnerDeployment: Deployment {
                 objects: self.objects(),
                 derived: self.derived(),
                 log: self.log(),
+                directory: self.directory(),
+                definitions: self.definitions(),
             },
             LEASE,
+            LandingAttempts::default(),
         )
     }
 
     /// The checks port over this deployment's adapters.
-    fn checks(
-        &self,
-    ) -> ChecksService<'_, Self::Queue, Self::Log, Self::Directory, Self::Authorisation> {
-        ChecksService::new(ChecksAdapters {
-            queue: self.queue(),
-            log: self.log(),
-            directory: self.directory(),
-            authorisation: self.authorisation(),
-        })
+    fn checks(&self) -> ChecksOf<'_, Self> {
+        ChecksService::new(
+            ChecksAdapters {
+                queue: self.queue(),
+                log: self.log(),
+                directory: self.directory(),
+                authorisation: self.authorisation(),
+                objects: self.objects(),
+                derived: self.derived(),
+                definitions: self.definitions(),
+            },
+            LandingAttempts::default(),
+        )
     }
 
     /// Source control that queues the checks of what it lands.
@@ -107,6 +136,7 @@ pub trait RunnerDeployment: Deployment {
                 queue: self.queue(),
                 definitions: self.definitions(),
             },
+            LandingAttempts::default(),
         )
     }
 }

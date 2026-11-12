@@ -6,5 +6,6 @@ pub mod checks;
 pub mod jobs;
 pub mod members;
 pub mod repositories;
+pub mod revert;
 pub mod runners;
 pub mod source_control;

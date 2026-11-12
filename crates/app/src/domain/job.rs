@@ -6,6 +6,7 @@ use crate::domain::address::Address;
 use crate::domain::check::CheckDefinition;
 use crate::domain::name::OrganisationName;
 use crate::domain::repository::RepositoryId;
+use crate::domain::revert::Revert;
 use crate::domain::runner::RegistrationId;
 
 /// The most output a job keeps, in bytes: the tail of what the runner reported.
@@ -105,6 +106,9 @@ pub struct Job {
     pub exit_code: Option<i32>,
     /// The tail of the output the runner reported, at most [`OUTPUT_LIMIT`] bytes.
     pub output: Vec<u8>,
+    /// What came of reverting the changeset because this check failed or timed out; `None` where
+    /// no revert was attempted for this job.
+    pub revert: Option<Revert>,
 }
 
 /// How a runner says a job ended.
@@ -114,6 +118,10 @@ pub enum Outcome {
     Passed,
     /// The check failed.
     Failed,
+    /// The runner enforced the check's timeout and stopped it.
+    TimedOut,
+    /// The runner stopped the check because it was cancelled.
+    Cancelled,
 }
 
 impl Outcome {
@@ -123,6 +131,8 @@ impl Outcome {
         match self {
             Self::Passed => JobState::Passed,
             Self::Failed => JobState::Failed,
+            Self::TimedOut => JobState::TimedOut,
+            Self::Cancelled => JobState::Cancelled,
         }
     }
 }
@@ -132,8 +142,8 @@ impl Outcome {
 pub struct JobResult {
     /// How it ended.
     pub outcome: Outcome,
-    /// The command's exit code.
-    pub exit_code: i32,
+    /// The command's exit code; `None` where the runner never started it.
+    pub exit_code: Option<i32>,
     /// The command's output; only its tail is kept.
     pub output: Vec<u8>,
 }

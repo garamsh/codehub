@@ -1,4 +1,4 @@
-//! Checks, as a reader of a repository sees them: the jobs of a changeset, `last-green`, and
+//! Checks, as a reader of a repository sees them: the jobs of a changeset, its refs, and
 //! cancelling a job.
 
 use std::fmt;
@@ -7,9 +7,10 @@ use crate::domain::address::Address;
 use crate::domain::job::{Job, JobId};
 use crate::domain::principal::Caller;
 use crate::domain::repository::RepositoryId;
-use crate::port::driven::changeset_log::ChangesetLogError;
+use crate::port::driven::changeset_log::{ChangesetLogError, Ref};
 use crate::port::driven::job_queue::JobQueueError;
 use crate::port::driving::access::AccessError;
+use crate::port::driving::revert::RevertError;
 
 /// What the outside asks of a repository's checks.
 pub trait Checks {
@@ -27,15 +28,17 @@ pub trait Checks {
         now: i64,
     ) -> impl Future<Output = Result<Vec<Job>, ChecksError>> + Send;
 
-    /// The changeset `last-green` points at; `None` before it is first set.
+    /// The changeset the ref `name` points at, `main` or `last-green`; `None` before it is first
+    /// set.
     ///
     /// # Errors
     ///
     /// [`ChecksError::Access`] where `repository` does not exist or `caller` holds no read on it.
-    fn last_green(
+    fn reference(
         &self,
         caller: &Caller,
         repository: RepositoryId,
+        name: Ref,
     ) -> impl Future<Output = Result<Option<Address>, ChecksError>> + Send;
 
     /// Cancels `job` of `repository`, queued or running, and returns it as it now stands.
@@ -63,6 +66,8 @@ pub enum ChecksError {
     Queue(JobQueueError),
     /// The changeset log failed.
     Log(ChangesetLogError),
+    /// A blocking job timed out and its changeset was not reverted.
+    Revert(RevertError),
 }
 
 impl fmt::Display for ChecksError {
@@ -71,6 +76,7 @@ impl fmt::Display for ChecksError {
             Self::Access(error) => write!(f, "{error}"),
             Self::Queue(error) => write!(f, "{error}"),
             Self::Log(error) => write!(f, "{error}"),
+            Self::Revert(error) => write!(f, "{error}"),
         }
     }
 }
@@ -81,6 +87,7 @@ impl std::error::Error for ChecksError {
             Self::Access(error) => Some(error),
             Self::Queue(error) => Some(error),
             Self::Log(error) => Some(error),
+            Self::Revert(error) => Some(error),
         }
     }
 }
@@ -100,5 +107,11 @@ impl From<JobQueueError> for ChecksError {
 impl From<ChangesetLogError> for ChecksError {
     fn from(error: ChangesetLogError) -> Self {
         Self::Log(error)
+    }
+}
+
+impl From<RevertError> for ChecksError {
+    fn from(error: RevertError) -> Self {
+        Self::Revert(error)
     }
 }

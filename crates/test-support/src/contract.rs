@@ -11,6 +11,7 @@ pub mod access;
 pub mod checks;
 pub mod history;
 pub mod landing;
+pub mod reverts;
 pub mod runner_deployment;
 pub mod runners;
 pub mod scoping;

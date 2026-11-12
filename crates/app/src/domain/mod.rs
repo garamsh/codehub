@@ -15,5 +15,6 @@ pub mod name;
 pub mod path;
 pub mod principal;
 pub mod repository;
+pub mod revert;
 pub mod runner;
 pub mod tree;

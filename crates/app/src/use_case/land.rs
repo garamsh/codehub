@@ -2,6 +2,7 @@
 //! `main` advanced to it by compare-and-swap (ADR 0012).
 
 use std::collections::BTreeMap;
+use std::fmt::Display;
 
 use crate::domain::address::Address;
 use crate::domain::changeset::{Change, Changeset};
@@ -10,7 +11,6 @@ use crate::domain::draft::Draft;
 use crate::domain::file::File;
 use crate::domain::merge::{self, FileVersion, Rebase};
 use crate::domain::path::Path;
-use crate::domain::principal::Principal;
 use crate::domain::repository::RepositoryId;
 use crate::domain::tree::{DeriveError, Tree, Trees};
 use crate::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
@@ -20,7 +20,8 @@ use crate::port::driving::source_control::{LandError, Landing, PathConflict};
 use crate::use_case::read_file::file_at;
 
 /// Lands the staged draft `staged` of `repository` on its `main` and returns the landed
-/// changeset's identifier. The changeset's author is `author`, the draft's principal.
+/// changeset's identifier. The changeset's author is the text of `author`: the draft's principal,
+/// or the server.
 ///
 /// The draft's delta is rebased onto `main` as it is read; its parent becomes `main`, and `main`
 /// advances to it only where it still points where it was read.
@@ -35,7 +36,7 @@ pub async fn land<O, L, D>(
     log: &L,
     derived: &D,
     repository: RepositoryId,
-    author: &Principal,
+    author: &(impl Display + ?Sized),
     staged: Draft,
     landing: Landing,
 ) -> Result<Address, LandError>

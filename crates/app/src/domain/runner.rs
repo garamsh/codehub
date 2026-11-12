@@ -96,6 +96,7 @@ mod tests {
             runner: None,
             exit_code: None,
             output: Vec::new(),
+            revert: None,
         }
     }
 
