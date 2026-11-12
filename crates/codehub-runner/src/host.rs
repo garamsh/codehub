@@ -42,15 +42,13 @@ impl Tail {
     /// The kept bytes as text, cut so that it starts on a character boundary.
     fn text(&self) -> String {
         let start = self.0.len().saturating_sub(OUTPUT_LIMIT);
-        let mut kept = self.0.get(start..).unwrap_or_default();
-        if start > 0 {
-            let skip = kept
-                .iter()
-                .take(3)
-                .take_while(|byte| (**byte & 0xC0) == 0x80)
-                .count();
-            kept = kept.get(skip..).unwrap_or_default();
-        }
+        let kept = self.0.get(start..).unwrap_or_default();
+        let skip = kept
+            .iter()
+            .take(3)
+            .take_while(|byte| (**byte & 0xC0) == 0x80)
+            .count();
+        let kept = kept.get(skip..).unwrap_or_default();
         let text = String::from_utf8_lossy(kept).into_owned();
         let mut from = text.len().saturating_sub(OUTPUT_LIMIT);
         while !text.is_char_boundary(from) {
