@@ -1,4 +1,4 @@
-//! The built `codehub` and `ch` binaries, the database `codehub` runs against, the approval of a
+//! The built `codehub`, `codehub-runner` and `ch` binaries, the database `codehub` runs against, the approval of a
 //! device code at Dex, and the federated mode: `codehub` verifying tokens by introspection at
 //! Keycloak and asking Cerbos for decisions, and `ch` presenting a token from a file.
 //!
@@ -32,7 +32,7 @@ pub fn binary(name: &str) -> PathBuf {
     let path = test.parent().and_then(Path::parent).unwrap().join(name);
     assert!(
         path.is_file(),
-        "{} is missing; build it with `cargo build --locked -p codehub -p ch`",
+        "{} is missing; build it with `cargo build --locked -p codehub -p ch -p codehub-runner`",
         path.display()
     );
     path
@@ -81,6 +81,29 @@ impl Server {
                     "CODEHUB_OIDC_AUDIENCE",
                     env("CODEHUB_TEST_KEYCLOAK_AUDIENCE"),
                 ),
+            ],
+        )
+    }
+
+    /// Starts the built `codehub` verifying JWTs offline against Keycloak's keys, as
+    /// [`Server::start_oidc`] does, with the runner settings short: a claim held for one second,
+    /// a heartbeat every second and a lease of three.
+    ///
+    /// # Panics
+    ///
+    /// Panics where [`Server::start`] does.
+    pub fn start_runners(database: &TestDatabase) -> Self {
+        Self::start_with(
+            database,
+            vec![
+                ("CODEHUB_OIDC_ISSUER", env("CODEHUB_TEST_KEYCLOAK_ISSUER")),
+                (
+                    "CODEHUB_OIDC_AUDIENCE",
+                    env("CODEHUB_TEST_KEYCLOAK_AUDIENCE"),
+                ),
+                ("CODEHUB_RUNNER_CLAIM_HOLD", "1".to_owned()),
+                ("CODEHUB_RUNNER_HEARTBEAT_INTERVAL", "1".to_owned()),
+                ("CODEHUB_RUNNER_LEASE", "3".to_owned()),
             ],
         )
     }
