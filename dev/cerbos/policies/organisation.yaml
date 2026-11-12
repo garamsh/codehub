@@ -11,7 +11,8 @@ resourcePolicy:
   rules:
     # alice: every action in acme, and creating repositories in beta. Creating organisation beta
     # is not granted, nor is creating any organisation the policy does not name.
-    - actions: [create_organisation, create_repository, administer_members]
+    - actions:
+        [create_organisation, create_repository, administer_members, administer_runners]
       effect: EFFECT_ALLOW
       roles: ["*"]
       condition:

@@ -2,14 +2,21 @@
 //!
 //! Every helper panics when a reply is not the one expected, as a failed assertion does.
 
+use adapter_http::{Pause, RunnerSettings};
 use adapter_memory::{
-    MemoryAuthorisationDecision, MemoryChangesetLog, MemoryDerivedData, MemoryDraftStore,
-    MemoryIdentityVerification, MemoryMembership, MemoryObjectStore, MemoryRepositoryDirectory,
+    MemoryAuthorisationDecision, MemoryChangesetLog, MemoryCheckDefinitions, MemoryDerivedData,
+    MemoryDraftStore, MemoryIdentityVerification, MemoryJobQueue, MemoryMembership,
+    MemoryObjectStore, MemoryRepositoryDirectory, MemoryRunnerRegistry,
 };
+use std::time::Duration;
+
 use app::domain::address::Address;
+use app::domain::check::{CheckDefinition, Command, Timeout};
+use app::domain::job::NewJob;
 use app::domain::name::{OrganisationName, RepositoryName};
 use app::domain::principal::Principal;
 use app::domain::repository::RepositoryId;
+use app::port::driven::job_queue::JobQueue;
 use app::port::driven::object_store::ObjectStore;
 use app::port::driven::repository_directory::RepositoryDirectory;
 use app::port::driving::members::Members;
@@ -17,8 +24,12 @@ use app::port::driving::repositories::Repositories;
 use app::port::driving::source_control::SourceControl;
 use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
+use app::use_case::checks::{ChecksAdapters, ChecksService};
+use app::use_case::jobs::{JobsAdapters, JobsService};
+use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::members::{MembersAdapters, MembersService};
 use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
+use app::use_case::runners::{RunnersAdapters, RunnersService};
 use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
 use axum::Router;
 use axum::body::{Body, to_bytes};
@@ -28,6 +39,12 @@ use tower::ServiceExt;
 
 /// The largest upload the fixture's source control grants.
 pub const MAX_UPLOAD_SIZE: u64 = 1024;
+
+/// How long the fixture holds a claim that finds no job.
+pub const HOLD: Duration = Duration::from_millis(300);
+
+/// How long the fixture's jobs service holds a job between heartbeats, in seconds.
+const LEASE: i64 = 60;
 
 /// The in-memory adapters of one deployment.
 pub struct Stores {
@@ -47,6 +64,12 @@ pub struct Stores {
     pub membership: MemoryMembership,
     /// The authorisation decision over `membership`.
     pub authorisation: MemoryAuthorisationDecision,
+    /// The runner registry.
+    pub registry: MemoryRunnerRegistry,
+    /// The job queue.
+    pub queue: MemoryJobQueue,
+    /// The check definitions.
+    pub definitions: MemoryCheckDefinitions,
 }
 
 impl Stores {
@@ -63,6 +86,9 @@ impl Stores {
             identity: MemoryIdentityVerification::default(),
             authorisation: membership.authorisation_decision(),
             membership,
+            registry: MemoryRunnerRegistry::default(),
+            queue: MemoryJobQueue::default(),
+            definitions: MemoryCheckDefinitions::new(".codehub/checks.toml".parse().unwrap()),
         }))
     }
 }
@@ -97,6 +123,65 @@ where
     )
 }
 
+fn repositories(stores: &'static Stores) -> impl Repositories + Send + Sync + 'static {
+    RepositoriesService::new(
+        RepositoriesAdapters {
+            directory: &stores.directory,
+            authorisation: &stores.authorisation,
+            membership: &stores.membership,
+            changes: &(),
+        },
+        Administration::BuiltIn,
+    )
+}
+
+fn pause(duration: Duration) -> Pause {
+    Box::pin(tokio::time::sleep(duration))
+}
+
+fn runner_router(stores: &'static Stores) -> Router {
+    adapter_http::runner_router(
+        AuthenticationService::new(&stores.identity),
+        repositories(stores),
+        RunnersService::new(RunnersAdapters {
+            registry: &stores.registry,
+            directory: &stores.directory,
+            authorisation: &stores.authorisation,
+        }),
+        JobsService::new(
+            JobsAdapters {
+                registry: &stores.registry,
+                queue: &stores.queue,
+                objects: &stores.objects,
+                derived: &stores.derived,
+                log: &stores.log,
+                directory: &stores.directory,
+                definitions: &stores.definitions,
+            },
+            LEASE,
+            LandingAttempts::default(),
+        ),
+        ChecksService::new(
+            ChecksAdapters {
+                queue: &stores.queue,
+                log: &stores.log,
+                directory: &stores.directory,
+                authorisation: &stores.authorisation,
+                objects: &stores.objects,
+                derived: &stores.derived,
+                definitions: &stores.definitions,
+            },
+            LandingAttempts::default(),
+        ),
+        RunnerSettings {
+            hold: HOLD,
+            retry_interval: Duration::from_millis(50),
+            heartbeat_interval: Duration::from_secs(10),
+            pause,
+        },
+    )
+}
+
 fn members(stores: &'static Stores) -> impl Members + Send + Sync + 'static {
     MembersService::new(
         MembersAdapters {
@@ -125,18 +210,9 @@ fn source_control(stores: &'static Stores) -> impl SourceControl + Send + Sync +
 impl Default for Api {
     fn default() -> Self {
         let stores = Stores::leaked();
-        let repositories = RepositoriesService::new(
-            RepositoriesAdapters {
-                directory: &stores.directory,
-                authorisation: &stores.authorisation,
-                membership: &stores.membership,
-                changes: &(),
-            },
-            Administration::BuiltIn,
-        );
         Self {
             stores,
-            router: router_with(stores, repositories),
+            router: router_with(stores, repositories(stores)).merge(runner_router(stores)),
         }
     }
 }
@@ -283,6 +359,27 @@ impl Api {
             json!({"message": "land"}),
         )
         .await
+    }
+
+    /// Queues the check `name`, blocking and with `labels`, against `changeset` of `org`/`app`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the queue refuses it.
+    pub async fn queue_check(&self, org: &str, changeset: &str, name: &str, labels: &[&str]) {
+        let job = NewJob {
+            organisation: org.parse().unwrap(),
+            repository: self.repository_id(org).await,
+            changeset: changeset.parse().unwrap(),
+            check: CheckDefinition {
+                name: name.parse().unwrap(),
+                command: Command::new("true").unwrap(),
+                labels: labels.iter().map(|label| label.parse().unwrap()).collect(),
+                blocking: true,
+                timeout: Timeout::new(60).unwrap(),
+            },
+        };
+        self.stores.queue.queue(vec![job]).await.unwrap();
     }
 
     /// Follows a download grant: the bytes the object store holds at the address the grant names.

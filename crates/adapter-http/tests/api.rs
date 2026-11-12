@@ -4,6 +4,7 @@
 pub mod common;
 
 use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
 
 use app::domain::address::Address;
 use app::domain::name::{OrganisationName, RepositoryName};
@@ -11,7 +12,7 @@ use app::domain::repository::RepositoryId;
 use app::port::driven::repository_directory::DirectoryError;
 use app::port::driving::repositories::{Repositories, RepositoriesError};
 use axum::http::{Method, StatusCode};
-use common::{Api, Reply, router_with, send};
+use common::{Api, HOLD, Reply, router_with, send};
 use serde_json::{Value, json};
 
 const PROBLEM: &str = "application/problem+json";
@@ -680,7 +681,7 @@ async fn documents_no_request_body_on_a_delete_operation() {
         }
     }
     // The control: the document has delete operations, and a put keeps its body.
-    assert_eq!(deletes, 3);
+    assert_eq!(deletes, 4);
     assert!(document["paths"]["/v1/orgs/{org}/members"]["put"]["requestBody"].is_object());
 }
 
@@ -688,6 +689,7 @@ async fn documents_no_request_body_on_a_delete_operation() {
 async fn documents_every_route_and_routes_every_documented_operation() {
     let routed: BTreeSet<(String, String)> = adapter_http::ROUTES
         .iter()
+        .chain(adapter_http::RUNNER_ROUTES)
         .flat_map(|(path, methods)| {
             methods
                 .iter()
@@ -723,4 +725,364 @@ async fn documents_every_route_and_routes_every_documented_operation() {
     let unknown = api.send(Method::GET, "/v1/nothing", None, None).await;
     assert_eq!(unknown.status, StatusCode::NOT_FOUND);
     assert_eq!(unknown.content_type, PROBLEM);
+}
+
+#[cfg(test)]
+const CHECKS: &str = "/v1/orgs/acme/repos/app/changesets";
+
+/// Registers `name` as a runner of acme offering `labels`, as ada, and returns its token.
+#[cfg(test)]
+async fn register_runner(api: &Api, ada: &str, name: &str, labels: &[&str]) -> String {
+    let reply = api
+        .post(
+            "/v1/orgs/acme/runners",
+            ada,
+            json!({"issuer": "https://id.test", "subject": name, "labels": labels}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+    api.token(name)
+}
+
+/// Lands a file as ada and returns the changeset, with one queued check `lint` wanting `linux`.
+#[cfg(test)]
+async fn landed_with_a_check(api: &Api, ada: &str) -> String {
+    api.repository(ada, "acme").await;
+    api.stage(ada, "acme", "d", "src/a.txt", "one\n").await;
+    let landed = api.land(ada, "acme", "d").await;
+    assert_eq!(landed.status, StatusCode::OK, "{}", landed.body);
+    let changeset = landed.body["changeset"].as_str().unwrap().to_owned();
+    api.queue_check("acme", &changeset, "lint", &["linux"])
+        .await;
+    changeset
+}
+
+#[cfg(test)]
+async fn claim(api: &Api, runner: &str) -> Reply {
+    api.post("/v1/runner/jobs/claim", runner, json!({})).await
+}
+
+#[tokio::test]
+async fn registers_lists_and_removes_a_runner() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    let bob = api.token("bob");
+    api.repository(&ada, "acme").await;
+
+    let created = api
+        .post(
+            "/v1/orgs/acme/runners",
+            &ada,
+            json!({"issuer": "https://id.test", "subject": "r1", "labels": ["linux"], "repository": "app"}),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let id = created.body["id"].as_u64().unwrap();
+    let repository = api.repository_id("acme").await.value();
+    assert_eq!(created.body["repository_id"], repository);
+    assert_eq!(created.body["labels"], json!(["linux"]));
+
+    let listed = api.get("/v1/orgs/acme/runners", &ada).await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body["runners"].as_array().unwrap().len(), 1);
+    assert_eq!(listed.body["runners"][0]["id"], id);
+    assert_eq!(listed.body["runners"][0]["subject"], "r1");
+
+    // Only an admin administers runners.
+    let denied = api.get("/v1/orgs/acme/runners", &bob).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+    assert_eq!(denied.content_type, PROBLEM);
+    let missing = api
+        .post(
+            "/v1/orgs/acme/runners",
+            &ada,
+            json!({"issuer": "https://id.test", "subject": "r2", "labels": [], "repository": "nope"}),
+        )
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+
+    let uri = format!("/v1/orgs/acme/runners/{id}");
+    let removed = api.send(Method::DELETE, &uri, Some(&ada), None).await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let again = api.send(Method::DELETE, &uri, Some(&ada), None).await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+    let listed = api.get("/v1/orgs/acme/runners", &ada).await;
+    assert!(listed.body["runners"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn claims_a_job_with_a_grant_for_each_file() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    let changeset = landed_with_a_check(&api, &ada).await;
+    let runner = register_runner(&api, &ada, "r1", &["linux"]).await;
+
+    let claimed = claim(&api, &runner).await;
+    assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
+    assert_eq!(claimed.body["organisation"], "acme");
+    assert_eq!(claimed.body["changeset"], changeset);
+    assert_eq!(claimed.body["check"]["name"], "lint");
+    assert_eq!(claimed.body["check"]["command"], "true");
+    assert_eq!(claimed.body["check"]["timeout"], 60);
+    assert_eq!(claimed.body["heartbeat_interval"], 10);
+    let files = claimed.body["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["path"], "src/a.txt");
+    assert_eq!(files[0]["executable"], false);
+    assert_eq!(api.download("acme", &files[0]["download"]).await, "one\n");
+}
+
+#[tokio::test]
+async fn answers_no_content_when_the_hold_ends_without_a_job() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    api.repository(&ada, "acme").await;
+    let runner = register_runner(&api, &ada, "r1", &["linux"]).await;
+
+    let started = Instant::now();
+    let claimed = claim(&api, &runner).await;
+    assert_eq!(claimed.status, StatusCode::NO_CONTENT);
+    assert!(started.elapsed() >= HOLD, "{:?}", started.elapsed());
+}
+
+#[tokio::test]
+async fn hands_a_job_queued_during_the_hold_to_the_waiting_claim() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    let changeset = landed_with_a_check(&api, &ada).await;
+    let runner = register_runner(&api, &ada, "r1", &["windows"]).await;
+
+    let waiting = claim(&api, &runner);
+    let queue = async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        api.queue_check("acme", &changeset, "late", &["windows"])
+            .await;
+    };
+    let (claimed, ()) = tokio::join!(waiting, queue);
+    assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
+    assert_eq!(claimed.body["check"]["name"], "late");
+}
+
+#[tokio::test]
+async fn refuses_an_unregistered_principal_on_every_runner_call() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    landed_with_a_check(&api, &ada).await;
+    let stranger = api.token("stranger");
+    let body = json!({"status": "passed", "exit_code": 0, "output_tail": ""});
+    for (uri, body) in [
+        ("/v1/runner/jobs/claim", json!({})),
+        ("/v1/runner/jobs/1/heartbeat", json!({})),
+        ("/v1/runner/jobs/1/result", body),
+    ] {
+        let reply = api.post(uri, &stranger, body).await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{uri}");
+        assert_eq!(reply.content_type, PROBLEM, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn answers_not_found_for_a_job_the_caller_does_not_hold() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    landed_with_a_check(&api, &ada).await;
+    let holder = register_runner(&api, &ada, "holder", &["linux"]).await;
+    let other = register_runner(&api, &ada, "other", &["linux"]).await;
+    let id = claim(&api, &holder).await.body["id"].as_u64().unwrap();
+
+    let heartbeat = api
+        .post(
+            &format!("/v1/runner/jobs/{id}/heartbeat"),
+            &other,
+            json!({}),
+        )
+        .await;
+    assert_eq!(heartbeat.status, StatusCode::NOT_FOUND);
+    let result = api
+        .post(
+            &format!("/v1/runner/jobs/{id}/result"),
+            &other,
+            json!({"status": "passed", "exit_code": 0, "output_tail": ""}),
+        )
+        .await;
+    assert_eq!(result.status, StatusCode::NOT_FOUND);
+    // The control: the holder is told to continue.
+    let held = api
+        .post(
+            &format!("/v1/runner/jobs/{id}/heartbeat"),
+            &holder,
+            json!({}),
+        )
+        .await;
+    assert_eq!(held.status, StatusCode::OK);
+    assert_eq!(held.body, json!({"action": "continue"}));
+}
+
+#[tokio::test]
+async fn tells_a_runner_to_stop_a_cancelled_job() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    landed_with_a_check(&api, &ada).await;
+    let runner = register_runner(&api, &ada, "r1", &["linux"]).await;
+    let id = claim(&api, &runner).await.body["id"].as_u64().unwrap();
+    let cancel = format!("/v1/orgs/acme/repos/app/jobs/{id}/cancel");
+
+    // A stranger to the repository cannot cancel; the admin can, once.
+    let bob = api.token("bob");
+    let denied = api.post(&cancel, &bob, json!({})).await;
+    assert_eq!(denied.status, StatusCode::NOT_FOUND);
+    let cancelled = api.post(&cancel, &ada, json!({})).await;
+    assert_eq!(cancelled.status, StatusCode::NO_CONTENT);
+    let heartbeat = api
+        .post(
+            &format!("/v1/runner/jobs/{id}/heartbeat"),
+            &runner,
+            json!({}),
+        )
+        .await;
+    assert_eq!(heartbeat.status, StatusCode::OK);
+    assert_eq!(
+        heartbeat.body,
+        json!({"action": "stop", "reason": "cancelled"})
+    );
+
+    let again = api.post(&cancel, &ada, json!({})).await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+    let unknown = api
+        .post("/v1/orgs/acme/repos/app/jobs/999/cancel", &ada, json!({}))
+        .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn lists_the_checks_of_a_changeset_through_a_run() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    let changeset = landed_with_a_check(&api, &ada).await;
+    let uri = format!("{CHECKS}/{changeset}/checks");
+
+    let queued = api.get(&uri, &ada).await;
+    assert_eq!(queued.status, StatusCode::OK, "{}", queued.body);
+    let check = &queued.body["checks"][0];
+    assert_eq!(check["name"], "lint");
+    assert_eq!(check["blocking"], true);
+    assert_eq!(check["labels"], json!(["linux"]));
+    assert_eq!(check["state"], "queued");
+    assert_eq!(check["exit_code"], Value::Null);
+    assert_eq!(check["revert"], Value::Null);
+
+    let runner = register_runner(&api, &ada, "r1", &["linux"]).await;
+    let id = claim(&api, &runner).await.body["id"].as_u64().unwrap();
+    let running = api.get(&uri, &ada).await;
+    assert_eq!(running.body["checks"][0]["state"], "running");
+    assert!(running.body["checks"][0]["deadline"].is_i64());
+    assert!(running.body["checks"][0]["lease_expires_at"].is_i64());
+
+    let reported = api
+        .post(
+            &format!("/v1/runner/jobs/{id}/result"),
+            &runner,
+            json!({"status": "failed", "exit_code": 3, "output_tail": "boom\n"}),
+        )
+        .await;
+    assert_eq!(reported.status, StatusCode::NO_CONTENT);
+    let failed = api.get(&uri, &ada).await;
+    assert_eq!(failed.body["checks"][0]["state"], "failed");
+    assert_eq!(failed.body["checks"][0]["exit_code"], 3);
+    assert_eq!(failed.body["checks"][0]["output_tail"], "boom\n");
+    // A failed blocking check reverts the changeset, and the listing says what landed.
+    let revert = &failed.body["checks"][0]["revert"];
+    assert_eq!(revert["outcome"], "landed");
+    assert!(revert["changeset"].is_string(), "{revert}");
+
+    let malformed = api.get(&format!("{CHECKS}/nope/checks"), &ada).await;
+    assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
+    let bob = api.token("bob");
+    let hidden = api.get(&uri, &bob).await;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn serves_last_green_once_the_blocking_checks_pass() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    let changeset = landed_with_a_check(&api, &ada).await;
+    let uri = "/v1/orgs/acme/repos/app/refs/last-green";
+
+    let unset = api.get(uri, &ada).await;
+    assert_eq!(unset.status, StatusCode::NOT_FOUND);
+    assert_eq!(unset.content_type, PROBLEM);
+
+    let runner = register_runner(&api, &ada, "r1", &["linux"]).await;
+    let id = claim(&api, &runner).await.body["id"].as_u64().unwrap();
+    let reported = api
+        .post(
+            &format!("/v1/runner/jobs/{id}/result"),
+            &runner,
+            json!({"status": "passed", "output_tail": "ok\n"}),
+        )
+        .await;
+    assert_eq!(reported.status, StatusCode::NO_CONTENT);
+
+    let set = api.get(uri, &ada).await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.body);
+    assert_eq!(
+        set.body,
+        json!({"name": "last-green", "changeset": changeset})
+    );
+    let unknown = api.get("/v1/orgs/acme/repos/app/refs/nothing", &ada).await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn serves_main_once_a_changeset_has_landed() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    let uri = "/v1/orgs/acme/repos/app/refs/main";
+    let changeset = landed_with_a_check(&api, &ada).await;
+    let set = api.get(uri, &ada).await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.body);
+    assert_eq!(set.body, json!({"name": "main", "changeset": changeset}));
+}
+
+#[tokio::test]
+async fn reports_each_outcome_as_its_own_state() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    let changeset = landed_with_a_check(&api, &ada).await;
+    let uri = format!("{CHECKS}/{changeset}/checks");
+    let runner = register_runner(&api, &ada, "r1", &["linux"]).await;
+
+    // Each status is its own outcome; no exit code stays null rather than 0.
+    for (name, status, exit_code) in [
+        ("lint", "cancelled", Value::Null),
+        ("two", "timed_out", Value::Null),
+        ("three", "failed", json!(7)),
+    ] {
+        if name != "lint" {
+            api.queue_check("acme", &changeset, name, &["linux"]).await;
+        }
+        // The earlier jobs are finished, so the claim hands out this one.
+        let claimed = claim(&api, &runner).await;
+        assert_eq!(claimed.body["check"]["name"], name, "{}", claimed.body);
+        let id = claimed.body["id"].as_u64().unwrap();
+        let body = if exit_code.is_null() {
+            json!({"status": status, "output_tail": ""})
+        } else {
+            json!({"status": status, "exit_code": exit_code, "output_tail": ""})
+        };
+        let reported = api
+            .post(&format!("/v1/runner/jobs/{id}/result"), &runner, body)
+            .await;
+        assert_eq!(reported.status, StatusCode::NO_CONTENT, "{status}");
+        let listed = api.get(&uri, &ada).await;
+        let shown = listed.body["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == name)
+            .unwrap();
+        assert_eq!(shown["state"], status);
+        assert_eq!(shown["exit_code"], exit_code, "{status}");
+    }
 }

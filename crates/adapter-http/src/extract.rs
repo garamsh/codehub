@@ -8,7 +8,9 @@ use std::sync::Arc;
 use app::domain::credential::Credential;
 use app::domain::path::{Path, Prefix};
 use app::domain::principal::{Caller, Principal};
+use app::domain::repository::RepositoryId;
 use app::port::driving::authentication::Authentication;
+use app::port::driving::repositories::Repositories;
 use axum::body::Bytes;
 use axum::extract::{FromRequest, FromRequestParts, Query, Request};
 use axum::http::header;
@@ -16,13 +18,13 @@ use axum::http::request::Parts;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::Services;
 use crate::problem::Problem;
+use crate::{Authenticates, Locates};
 
 /// The caller the request's bearer token identifies.
 pub struct Authenticated(pub Caller);
 
-impl<P: Services> FromRequestParts<Arc<P>> for Authenticated {
+impl<P: Authenticates> FromRequestParts<Arc<P>> for Authenticated {
     type Rejection = Problem;
 
     async fn from_request_parts(parts: &mut Parts, ports: &Arc<P>) -> Result<Self, Problem> {
@@ -100,6 +102,23 @@ where
 {
     text.parse()
         .map_err(|error| Problem::bad_request(format!("not a {what}: {error}")))
+}
+
+/// The repository `organisation`/`repository`, which `caller` may read.
+pub async fn find<P: Locates>(
+    ports: &P,
+    caller: &Caller,
+    organisation: &str,
+    repository: &str,
+) -> Result<RepositoryId, Problem> {
+    Ok(ports
+        .repositories()
+        .find_repository(
+            caller,
+            &parse("organisation name", organisation)?,
+            &parse("repository name", repository)?,
+        )
+        .await?)
 }
 
 /// Parses a path prefix; the empty text is the whole repository.
