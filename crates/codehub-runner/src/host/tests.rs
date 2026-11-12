@@ -167,7 +167,7 @@ async fn files_are_downloaded_verified_and_given_their_modes() {
     let work = scratch();
     let bytes: &'static [u8] = b"#!/bin/sh\necho ran\n";
     let url = serve(bytes).await;
-    let mut job = job("./bin/tool; stat -c %a bin/tool data.txt");
+    let mut job = job("sh bin/tool; stat -c %a bin/tool data.txt");
     job.files = vec![
         file("bin/tool", bytes, &url, true),
         file("data.txt", bytes, &url, false),
