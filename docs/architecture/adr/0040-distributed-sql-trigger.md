@@ -43,7 +43,7 @@ Until then, no adapter for a distributed store is built. A PostgreSQL feature us
 ## Consequences
 
 - The question of ADR 0013's timing has a test that an operator can run and a reviewer can check.
-- The baseline's sampling of PostgreSQL CPU becomes part of `make loadtest`'s report, so that condition 1 can be read from the same harness; until it does, it is sampled beside the harness, as here.
+- The baseline's sampling of PostgreSQL CPU becomes part of `make loadtest`'s report, so that condition 1 can be read from the same harness (#128); until it does, it is sampled beside the harness, as here.
 - A deployment that reaches the trigger runs on one primary in the meantime, with the latency that implies.
 
 ## Signs the decision was wrong
