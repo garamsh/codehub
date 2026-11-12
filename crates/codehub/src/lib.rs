@@ -110,7 +110,7 @@ impl IdentityVerification for Verifier {
 /// The authorisation decision the configuration selected.
 enum Decider {
     Postgres(PostgresAuthorisationDecision),
-    Authzen(AuthzenAuthorisationDecision),
+    Authzen(Box<AuthzenAuthorisationDecision>),
 }
 
 impl AuthorisationDecision for Decider {
@@ -200,7 +200,7 @@ fn decider(config: &Config, database: &Database) -> Result<Decider, Error> {
             )?,
         )
         .map(|decider| decider.with_access_evaluations(config.authzen_evaluations))
-        .map(Decider::Authzen)
+        .map(|decider| Decider::Authzen(Box::new(decider)))
         .map_err(Error::Authorisation),
     }
 }
