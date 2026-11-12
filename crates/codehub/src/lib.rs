@@ -4,17 +4,23 @@
 use std::fmt;
 use std::io::Write;
 use std::net::SocketAddr;
+use std::num::NonZeroU32;
 use std::time::Duration;
+
+use adapter_http::{Pause, RunnerSettings};
+use adapter_toml::TomlCheckDefinitions;
 
 use adapter_authzen::AuthzenAuthorisationDecision;
 use adapter_introspection::IntrospectionIdentityVerification;
 use adapter_oidc::OidcIdentityVerification;
 use adapter_postgres::{
     Database, DatabaseError, PostgresAuthorisationDecision, PostgresChangesetLog,
-    PostgresDerivedData, PostgresDraftStore, PostgresMembership, PostgresRepositoryDirectory,
+    PostgresDerivedData, PostgresDraftStore, PostgresJobQueue, PostgresMembership,
+    PostgresRepositoryDirectory, PostgresRunnerRegistry,
 };
 use adapter_s3::S3ObjectStore;
 use app::domain::credential::Credential;
+use app::domain::path::PathError;
 use app::domain::principal::Principal;
 use app::port::driven::authorisation_decision::{
     Action, AuthorisationDecision, AuthorisationError, Decision, Resource,
@@ -23,9 +29,13 @@ use app::port::driven::identity_verification::{IdentityError, IdentityVerificati
 use app::port::driven::object_store::ObjectStoreError;
 use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
+use app::use_case::checked_source_control::{CheckedAdapters, CheckedSourceControl};
+use app::use_case::checks::{ChecksAdapters, ChecksService};
+use app::use_case::jobs::{JobsAdapters, JobsService};
 use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::members::{MembersAdapters, MembersService};
 use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
+use app::use_case::runners::{RunnersAdapters, RunnersService};
 use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
@@ -49,6 +59,15 @@ pub enum Error {
     /// A setting the selected identity or authorisation mode needs is missing; carries its flag
     /// and variable.
     MissingSetting(&'static str),
+    /// The check definitions reader could not be built.
+    Definitions(PathError),
+    /// The runner lease does not exceed the heartbeat interval; carries both, in seconds.
+    RunnerLease {
+        /// `CODEHUB_RUNNER_LEASE`.
+        lease: NonZeroU32,
+        /// `CODEHUB_RUNNER_HEARTBEAT_INTERVAL`.
+        heartbeat: NonZeroU32,
+    },
     /// The listening address could not be bound.
     Bind(SocketAddr, std::io::Error),
     /// Signal handlers could not be installed, the address read or the server run.
@@ -72,6 +91,14 @@ impl fmt::Display for Error {
                     "the selected identity or authorisation mode needs {setting}"
                 )
             }
+            Self::Definitions(error) => {
+                write!(f, "configuring the check definitions failed: {error}")
+            }
+            Self::RunnerLease { lease, heartbeat } => write!(
+                f,
+                "CODEHUB_RUNNER_LEASE ({lease} s) must be greater than \
+                 CODEHUB_RUNNER_HEARTBEAT_INTERVAL ({heartbeat} s)"
+            ),
             Self::Bind(address, error) => write!(f, "binding {address} failed: {error}"),
             Self::Serve(error) => write!(f, "serving failed: {error}"),
         }
@@ -79,6 +106,14 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// How long a claim that found no job waits before it looks again.
+const CLAIM_RETRY_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Waits for `duration` on the server's runtime.
+fn pause(duration: Duration) -> Pause {
+    Box::pin(tokio::time::sleep(duration))
+}
 
 /// The adapters of the deployment.
 struct Adapters {
@@ -88,6 +123,9 @@ struct Adapters {
     drafts: PostgresDraftStore,
     directory: PostgresRepositoryDirectory,
     membership: PostgresMembership,
+    registry: PostgresRunnerRegistry,
+    queue: PostgresJobQueue,
+    definitions: TomlCheckDefinitions,
     authorisation: Decider,
     identity: Verifier,
 }
@@ -212,6 +250,7 @@ fn decider(config: &Config, database: &Database) -> Result<Decider, Error> {
 ///
 /// An [`Error`] naming the step that failed.
 pub async fn run(config: Config) -> Result<(), Error> {
+    config.check_runner_lease()?;
     let identity = verifier(&config)?;
     let administration = match config.authorisation {
         Authorisation::Postgres => Administration::BuiltIn,
@@ -241,9 +280,13 @@ pub async fn run(config: Config) -> Result<(), Error> {
         drafts: PostgresDraftStore::new(&database),
         directory: PostgresRepositoryDirectory::new(&database),
         membership: PostgresMembership::new(&database),
+        registry: PostgresRunnerRegistry::new(&database),
+        queue: PostgresJobQueue::new(&database),
+        definitions: TomlCheckDefinitions::new().map_err(Error::Definitions)?,
         authorisation,
         identity,
     }));
+    let attempts = LandingAttempts::new(config.landing_attempts);
     let router = adapter_http::router(
         AuthenticationService::new(&adapters.identity),
         RepositoriesService::new(
@@ -263,19 +306,80 @@ pub async fn run(config: Config) -> Result<(), Error> {
             },
             administration,
         ),
-        SourceControlService::new(
-            SourceControlAdapters {
+        CheckedSourceControl::new(
+            SourceControlService::new(
+                SourceControlAdapters {
+                    objects: &adapters.objects,
+                    log: &adapters.log,
+                    derived: &adapters.derived,
+                    drafts: &adapters.drafts,
+                    directory: &adapters.directory,
+                    authorisation: &adapters.authorisation,
+                },
+                config.max_object_size,
+            )
+            .with_landing_attempts(attempts),
+            CheckedAdapters {
                 objects: &adapters.objects,
-                log: &adapters.log,
                 derived: &adapters.derived,
-                drafts: &adapters.drafts,
+                log: &adapters.log,
+                directory: &adapters.directory,
+                queue: &adapters.queue,
+                definitions: &adapters.definitions,
+            },
+            attempts,
+        ),
+    )
+    .merge(adapter_http::runner_router(
+        AuthenticationService::new(&adapters.identity),
+        RepositoriesService::new(
+            RepositoriesAdapters {
                 directory: &adapters.directory,
                 authorisation: &adapters.authorisation,
+                membership: &adapters.membership,
+                changes: &(),
             },
-            config.max_object_size,
-        )
-        .with_landing_attempts(LandingAttempts::new(config.landing_attempts)),
-    );
+            administration,
+        ),
+        RunnersService::new(RunnersAdapters {
+            registry: &adapters.registry,
+            directory: &adapters.directory,
+            authorisation: &adapters.authorisation,
+        }),
+        JobsService::new(
+            JobsAdapters {
+                registry: &adapters.registry,
+                queue: &adapters.queue,
+                objects: &adapters.objects,
+                derived: &adapters.derived,
+                log: &adapters.log,
+                directory: &adapters.directory,
+                definitions: &adapters.definitions,
+            },
+            i64::from(config.runner_lease.get()),
+            attempts,
+        ),
+        ChecksService::new(
+            ChecksAdapters {
+                queue: &adapters.queue,
+                log: &adapters.log,
+                directory: &adapters.directory,
+                authorisation: &adapters.authorisation,
+                objects: &adapters.objects,
+                derived: &adapters.derived,
+                definitions: &adapters.definitions,
+            },
+            attempts,
+        ),
+        RunnerSettings {
+            hold: Duration::from_secs(config.runner_claim_hold),
+            retry_interval: CLAIM_RETRY_INTERVAL,
+            heartbeat_interval: Duration::from_secs(u64::from(
+                config.runner_heartbeat_interval.get(),
+            )),
+            pause,
+        },
+    ));
     let listener = TcpListener::bind(config.listen)
         .await
         .map_err(|error| Error::Bind(config.listen, error))?;

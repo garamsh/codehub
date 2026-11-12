@@ -11,12 +11,15 @@ adapter-introspection = { path = "../adapter-introspection" }
 adapter-oidc = { path = "../adapter-oidc" }
 adapter-postgres = { path = "../adapter-postgres" }
 adapter-s3 = { path = "../adapter-s3" }
+adapter-toml = { path = "../adapter-toml" }
 app = { path = "../app" }
 axum = { workspace = true, features = ["http1", "tokio"] }
 clap = { workspace = true, features = ["derive", "env", "error-context", "help", "std", "usage"] }
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
 
 [dev-dependencies]
+base64 = { workspace = true }
+codehub-runner = { path = "../codehub-runner" }
 reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio"] }

@@ -10,6 +10,12 @@ use clap::{Parser, ValueEnum};
 
 use crate::Error;
 
+/// The default of `--runner-heartbeat-interval`, in seconds.
+const DEFAULT_HEARTBEAT_INTERVAL: NonZeroU32 = NonZeroU32::MIN.saturating_add(4);
+
+/// The default of `--runner-lease`, in seconds.
+const DEFAULT_LEASE: NonZeroU32 = NonZeroU32::MIN.saturating_add(29);
+
 /// How the server verifies the token a caller presents.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
 pub enum Identity {
@@ -48,6 +54,17 @@ pub struct Config {
     /// they are spent the landing is answered as moved (ADR 0036).
     #[arg(long, env = "CODEHUB_LANDING_ATTEMPTS", default_value_t = LandingAttempts::DEFAULT)]
     pub landing_attempts: NonZeroU32,
+    /// How long a runner's claim is held waiting for a job before it is answered with none, in
+    /// seconds.
+    #[arg(long, env = "CODEHUB_RUNNER_CLAIM_HOLD", default_value_t = 30)]
+    pub runner_claim_hold: u64,
+    /// How often a runner is told to heartbeat, in seconds, at least one.
+    #[arg(long, env = "CODEHUB_RUNNER_HEARTBEAT_INTERVAL", default_value_t = DEFAULT_HEARTBEAT_INTERVAL)]
+    pub runner_heartbeat_interval: NonZeroU32,
+    /// How long a claim or a heartbeat holds a job for its runner, in seconds; it must exceed the
+    /// heartbeat interval, or a runner loses its job between two heartbeats.
+    #[arg(long, env = "CODEHUB_RUNNER_LEASE", default_value_t = DEFAULT_LEASE)]
+    pub runner_lease: NonZeroU32,
     /// The URL of the S3-compatible object store.
     #[arg(long, env = "CODEHUB_S3_ENDPOINT")]
     pub s3_endpoint: String,
@@ -138,6 +155,9 @@ impl fmt::Debug for Config {
             postgres_url,
             postgres_pool_size,
             landing_attempts,
+            runner_claim_hold,
+            runner_heartbeat_interval,
+            runner_lease,
             s3_endpoint,
             s3_region,
             s3_bucket,
@@ -166,6 +186,9 @@ impl fmt::Debug for Config {
             .field("postgres_url", &redact_url(postgres_url))
             .field("postgres_pool_size", postgres_pool_size)
             .field("landing_attempts", landing_attempts)
+            .field("runner_claim_hold", runner_claim_hold)
+            .field("runner_heartbeat_interval", runner_heartbeat_interval)
+            .field("runner_lease", runner_lease)
             .field("s3_endpoint", s3_endpoint)
             .field("s3_region", s3_region)
             .field("s3_bucket", s3_bucket)
@@ -195,6 +218,24 @@ impl fmt::Debug for Config {
             )
             .field("authzen_evaluations", authzen_evaluations)
             .finish()
+    }
+}
+
+impl Config {
+    /// Checks that the lease outlasts the heartbeat interval.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RunnerLease`] where it does not.
+    pub(crate) fn check_runner_lease(&self) -> Result<(), Error> {
+        if self.runner_lease > self.runner_heartbeat_interval {
+            Ok(())
+        } else {
+            Err(Error::RunnerLease {
+                lease: self.runner_lease,
+                heartbeat: self.runner_heartbeat_interval,
+            })
+        }
     }
 }
 
@@ -269,6 +310,9 @@ mod tests {
             postgres_url: postgres_url.to_owned(),
             postgres_pool_size: 10,
             landing_attempts: LandingAttempts::DEFAULT,
+            runner_claim_hold: 1,
+            runner_heartbeat_interval: NonZeroU32::MIN,
+            runner_lease: NonZeroU32::MIN.saturating_add(1),
             s3_endpoint: "http://objects.example:9000".to_owned(),
             s3_region: "eu-test-1".to_owned(),
             s3_bucket: "bucket-visible".to_owned(),
@@ -387,6 +431,22 @@ mod tests {
             "{without}"
         );
         assert!(!without.contains("<redacted>@"), "{without}");
+    }
+
+    #[test]
+    fn a_lease_must_exceed_the_heartbeat_interval() {
+        let mut config = config("postgres://db.example/codehub");
+        config.runner_heartbeat_interval = NonZeroU32::MIN.saturating_add(4);
+        for lease in [1, 4, 5] {
+            config.runner_lease = NonZeroU32::new(lease).unwrap();
+            let error = config.check_runner_lease().unwrap_err();
+            assert!(
+                error.to_string().contains("CODEHUB_RUNNER_LEASE"),
+                "{error}"
+            );
+        }
+        config.runner_lease = NonZeroU32::new(6).unwrap();
+        assert!(config.check_runner_lease().is_ok());
     }
 
     #[test]
