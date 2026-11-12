@@ -85,7 +85,10 @@ dependencies = [
 name = "adapter-toml"
 version = "0.0.0"
 dependencies = [
+ "adapter-memory",
  "app",
+ "test-support",
+ "tokio",
  "toml",
 ]
 
