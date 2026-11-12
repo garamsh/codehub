@@ -240,6 +240,72 @@ hello from codehub
 exit 0
 ```
 
+### Run checks on a runner
+
+The output below was produced on 2026-11-13 from the commit `5ace17573d745a3f0596046e512ba5e3f63672d3` plus this file's change; changeset identifiers contain a timestamp, so yours differ, and every other line is the same. Cerbos reads `dev/cerbos/policies` when it starts, so a `make services` started before the policy granted `administer_runners` answers `ch: the action is not allowed` to step 1 until the services are started again.
+
+A runner is a principal registered to claim the jobs of an organisation's checks; `codehub-runner` claims them and runs each command on this machine. This section runs in federated mode, with the second terminal's `ch` configured as above and `acme/app` selected, against `codehub` started with either of the identity settings above. The runner authenticates with a token file, the same way `ch` does: bob's token from the password grant of the client `codehub-test`, because that client and bob's password are already in `dev/check-env.sh` and compose, so no client has to be created in Keycloak to get one. The other way, a token endpoint with the client-credentials grant (`--token-endpoint`, `--client-id`, `--client-secret-env`), needs a Keycloak client with a service account, which `dev/keycloak/codehub-realm.json` does not have.
+
+1. Register bob as a runner of `acme`. Alice is allowed to in `acme` (`administer_runners` in `dev/cerbos/policies/organisation.yaml`). Bob's subject and the issuer are in `dev/check-env.sh`:
+
+   ```console
+   $ ch runner register "$CODEHUB_TEST_KEYCLOAK_SUBJECT_BOB" --issuer "$CODEHUB_TEST_KEYCLOAK_ISSUER"
+   1
+   $ ch runner list
+   1 organisation http://127.0.0.1:18081/realms/codehub 00000000-0000-4000-8000-0000000000b0 -
+   ```
+
+2. Start `codehub-runner` in a third terminal, from the repository root, with bob's token in a file. It stays in the foreground and prints a line when a job starts and when it ends, for example `job 1 ended: Passed`. The token expires after a few minutes and the runner reads the file again before each request, so write the token again with the same `curl` when `ch checks` stops making progress:
+
+   ```sh
+   cargo build --locked -p codehub-runner
+   set -a; . dev/check-env.sh; set +a
+   export RUNNER_TOKEN_FILE=$(mktemp)
+   curl -s -u "$CODEHUB_TEST_KEYCLOAK_TEST_CLIENT_ID:$CODEHUB_TEST_KEYCLOAK_TEST_CLIENT_SECRET" \
+     -d grant_type=password -d username=bob \
+     --data-urlencode "password=$CODEHUB_TEST_KEYCLOAK_PASSWORD_BOB" \
+     "$CODEHUB_TEST_KEYCLOAK_ISSUER/protocol/openid-connect/token" | jq -r .access_token > "$RUNNER_TOKEN_FILE"
+   target/debug/codehub-runner --server http://127.0.0.1:8080 --token-file "$RUNNER_TOKEN_FILE"
+   ```
+
+3. In the second terminal, land a change with a `.codehub/checks.toml`. Each `[[check]]` is a job; a check blocks unless it says `blocking = false`:
+
+   ```console
+   $ cat > "$tmp/checks.toml" <<'EOF'
+   [[check]]
+   name = "unit"
+   command = "echo unit ok"
+
+   [[check]]
+   name = "lint"
+   command = "test -f docs/hello.txt"
+   EOF
+   $ ch put .codehub/checks.toml "$tmp/checks.toml"
+   $ ch land -m 'add checks'
+   sha256:3e1aed923ae11adc21cd3f6dc0a244b36002e73dfcf7f1944883da650acd1670
+   ```
+
+4. Wait for the checks of the landing:
+
+   ```console
+   $ ch checks --wait; echo "exit $?"
+   last-green sha256:3e1aed923ae11adc21cd3f6dc0a244b36002e73dfcf7f1944883da650acd1670
+   unit blocking passed 0
+   lint blocking passed 0
+   exit 0
+   ```
+
+5. `last-green` is the newest changeset whose blocking checks all passed. The first line above shows it at the changeset `ch land` printed; read it again with:
+
+   ```console
+   $ ch checks
+   last-green sha256:3e1aed923ae11adc21cd3f6dc0a244b36002e73dfcf7f1944883da650acd1670
+   unit blocking passed 0
+   lint blocking passed 0
+   ```
+
+A blocking check that fails or times out has its changeset reverted as a new changeset; `ch checks` prints the revert next to the check, and `ch checks --wait` exits 4.
+
 ### Stop and clean up
 
-Stop `codehub` with Ctrl-C. To start over, drop the database with `docker compose exec postgres dropdb -U codehub federated` and create it again.
+Stop `codehub` with Ctrl-C, and the runner. To start over, drop the database with `docker compose exec postgres dropdb -U codehub federated` and create it again.
