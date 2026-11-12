@@ -52,7 +52,7 @@ Alternatives not taken:
 - `AdministerMembers` is never asked in external mode (ADR 0030). In the GRN profile the adapter treats it as a defect: it fails the request as a server error and allows nothing.
 - With `private_key_jwt` client authentication (ADR 0042), a token request answered `unauthorized_client` denies every decision asked for that organisation; the request answers as any denial does (ADR 0033). Every other refused or failed token request stays a server error that allows nothing (ADR 0033). Like a server error, a denial is not cached. This supersedes, for `unauthorized_client`, ADR 0042's bullet that a refused token fails the request as a server error.
 - The repository's id is carried to the adapter in the authorisation decision port's resource, as it already is (`Resource::Repository` and `Resource::Path` hold `repository`). The port does not change, and the core still hands the path to the port as a property of the resource (ADR 0021); only the adapter's rendering differs.
-- The HTTP API's repository representation carries the repository's id, so a policy author can learn which repository a GRN names.
+- The HTTP API answers a repository's creation with its id beside its name: the `Created` representation, which holds only `name` today (`crates/adapter-http/openapi.json`), gains `id`. A policy author can then learn which repository a GRN names.
 - In the `grn` profile this supersedes three decisions of ADR 0028: "codehub speaks standards only", for garam's GRN names and its entity feed (ADR 0044); "an organisation and its repositories are named the same on both sides", for repositories, which are named by id; and "a path is sent to the decision point as a resource attribute". It also supersedes ADR 0030's "The path is a resource property" in that profile. In the `plain` profile all four stand.
 
 ## Consequences
@@ -61,7 +61,7 @@ Alternatives not taken:
 - A garam policy on a repository names a number, which a reader resolves through codehub.
 - Cerbos and the plain profile are unchanged except for the UTF-8 denial.
 - Nothing of the `grn` profile can be shown against garam until garamsh/garam#1809, #1811 and #1815 are served. Until then it is tested against a stand-in that speaks ADR-0149's contract.
-- Moving between the two profiles is a code change in codehub where ADR 0028 expected configuration alone, since a third layer with its own names needs its own profile.
+- Choosing between the two profiles is configuration, but a third layer with its own names needs a third profile written in codehub, where ADR 0028 expected moving to another layer to be a configuration change alone.
 - `CODEHUB_AUTHZEN_EVALUATIONS` stays the operator's decision (ADR 0041). In the GRN profile each path sits in its own evaluation's context, not in a shared resource id. Whether garam answers each evaluation separately rests on garamsh/garam#1809.
 - An organisation that garam does not hold is refused as a denial, so external mode's lazy creation (ADR 0030) creates nothing for it.
 
