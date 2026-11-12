@@ -213,3 +213,6 @@ impl JobSource for HttpJobSource {
             .map(|_| ())
     }
 }
+
+#[cfg(test)]
+mod tests;
