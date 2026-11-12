@@ -4,14 +4,19 @@ use crate::contract::runner_deployment::{
     RunnerDeployment, check, land, land_checks, organisation, runner,
 };
 use app::domain::address::Address;
-use app::domain::job::{Heartbeat, Job, JobId, JobResult, JobState, Outcome, StopReason};
+use app::domain::job::{Heartbeat, Job, JobResult, JobState, Outcome, StopReason};
+use app::domain::path::Prefix;
 use app::domain::principal::Caller;
 use app::port::driven::changeset_log::{ChangesetLog, Ref};
 use app::port::driven::check_definitions::CheckDefinitions;
 use app::port::driven::check_definitions::CheckFileError;
 use app::port::driven::job_queue::JobQueueError;
+use app::port::driven::membership::{Access, Role};
 use app::port::driving::checks::{Checks, ChecksError};
 use app::port::driving::jobs::Jobs;
+use app::port::driving::members::Members;
+use app::use_case::administration::Administration;
+use app::use_case::members::{MembersAdapters, MembersService};
 
 fn passed() -> JobResult {
     JobResult {
@@ -361,13 +366,50 @@ pub async fn checks_are_visible_to_readers_and_cancelled_by_administrators<H: Ru
     let ada = harness.caller("ada").await;
     let repo = harness.repository(&ada, "acme").await;
     let landed = land_checks(&repo, &ada, "checks", &[check("unit")]).await;
+    let job = jobs(&harness, &ada, &repo, landed, 0).await[0].id;
     let eve = harness.caller("eve").await;
+    let rae = harness.caller("rae").await;
+    let members = MembersService::new(
+        MembersAdapters {
+            directory: harness.directory(),
+            authorisation: harness.authorisation(),
+            membership: harness.membership(),
+        },
+        Administration::BuiltIn,
+    );
+    let acme = organisation("acme");
+    members
+        .add_member(&ada, &acme, rae.principal(), Role::Member)
+        .await
+        .unwrap();
+    members
+        .add_grant(
+            &ada,
+            &acme,
+            rae.principal(),
+            &"app".parse().unwrap(),
+            Prefix::whole(),
+            Access::Read,
+        )
+        .await
+        .unwrap();
 
+    // Someone who cannot read the repository sees nothing of it.
     let seen = harness.checks().jobs_of(&eve, repo.id, landed, 0).await;
     assert!(matches!(seen, Err(ChecksError::Access(_))), "{seen:?}");
     let green = harness.checks().last_green(&eve, repo.id).await;
     assert!(matches!(green, Err(ChecksError::Access(_))), "{green:?}");
-    let cancel = harness.checks().cancel(&eve, repo.id, JobId::new(1)).await;
+
+    // A reader sees the jobs but may not cancel one.
+    assert_eq!(jobs(&harness, &rae, &repo, landed, 0).await.len(), 1);
+    assert_eq!(last_green(&harness, &rae, &repo).await, None);
+    let cancel = harness.checks().cancel(&rae, repo.id, job).await;
     assert!(matches!(cancel, Err(ChecksError::Access(_))), "{cancel:?}");
-    assert_eq!(jobs(&harness, &ada, &repo, landed, 0).await.len(), 1);
+    assert_eq!(
+        jobs(&harness, &ada, &repo, landed, 0).await[0].state,
+        JobState::Queued
+    );
+
+    // An administrator cancels it.
+    harness.checks().cancel(&ada, repo.id, job).await.unwrap();
 }

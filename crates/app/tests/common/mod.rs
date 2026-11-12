@@ -53,7 +53,7 @@ impl Default for Harness {
             changes: MemoryDirectoryChanges::default(),
             registry: MemoryRunnerRegistry::default(),
             queue: MemoryJobQueue::default(),
-            definitions: MemoryCheckDefinitions::new(".codehub/checks.toml".parse().unwrap()),
+            definitions: MemoryCheckDefinitions::new(".codehub/checks".parse().unwrap()),
             membership,
         }
     }

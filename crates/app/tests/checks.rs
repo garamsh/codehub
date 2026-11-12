@@ -60,3 +60,8 @@ async fn a_cancelled_job_tells_its_runner_to_stop() {
 async fn checks_are_visible_to_readers_and_cancelled_by_administrators() {
     checks::checks_are_visible_to_readers_and_cancelled_by_administrators::<Harness>().await;
 }
+
+#[tokio::test]
+async fn only_a_failed_blocking_check_keeps_a_changeset_from_last_green() {
+    checks::only_a_failed_blocking_check_keeps_a_changeset_from_last_green::<Harness>().await;
+}

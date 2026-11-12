@@ -140,9 +140,9 @@ mod tests {
 
     #[test]
     fn the_unreadable_check_blocks_and_names_the_file() {
-        let file: Path = ".codehub/checks.toml".parse().unwrap();
+        let file: Path = ".codehub/checks".parse().unwrap();
         let check = CheckDefinition::unreadable(&file);
         assert!(check.blocking);
-        assert_eq!(check.command.as_str(), ".codehub/checks.toml");
+        assert_eq!(check.command.as_str(), ".codehub/checks");
     }
 }
