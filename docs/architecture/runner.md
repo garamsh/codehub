@@ -13,7 +13,7 @@ How a runner joins the system, receives jobs and runs them: registration, pollin
   - a heartbeat while the job runs, answered with continue or stop (cancelled or timed out);
   - a result report that ends the job.
 - **Routing.** A job carries its organisation, repository and labels. It goes only to a runner registered for that organisation or that repository, whose labels include every label of the job. A principal with no registration is refused.
-- **The runner is the binary `codehub-runner`**, a package beside `ch`, holding the runner core, its two ports and their adapters.
+- **The runner is the binary `codehub-runner`**, a package beside `ch` (library and binary), holding the runner core, its two ports and their adapters. It authenticates with a token read again from a file before each request, or by the OAuth client-credentials grant with the secret read from a named environment variable, never logged and withheld from job commands. Its options are `--server`, `--work-dir` and `--once`. The server's `CODEHUB_RUNNER_CLAIM_HOLD`, `CODEHUB_RUNNER_HEARTBEAT_INTERVAL` and `CODEHUB_RUNNER_LEASE` settings configure the claim hold, the heartbeat interval it asks of runners, and the lease; `codehub` refuses to start where the lease does not exceed the heartbeat interval.
 
 ### Job lifecycle
 
