@@ -2,6 +2,18 @@
 
 Starting the check services, running `codehub` against them, and landing and reading a file with `ch`, from a clean checkout.
 
+## Contents
+- Before you start
+- 1. Start the services
+- 2. Run `codehub`
+- 3. Log in
+- 4. Create an organisation and a repository, and select it
+- 5. Stage and land a file
+- 6. Read the history and the content
+- Stop and clean up
+- Federated mode
+- garam as issuer and decision point
+
 The output below was produced on 2026-11-11 from the commit `e4fe6227eb08e05d515d77ac625515cc6054340b` plus this file's change, with the services of `compose.yaml` running. Steps 5 and 6 changed afterwards only in the path of the scratch file, and were run again on 2026-11-12 from the commit `33ec12de6559b810aaf1a93494716df864dc62e0` plus that change: their output lines are the same apart from the changeset identifiers. Changeset identifiers contain a timestamp, so yours differ; every other line is the same.
 
 ## Before you start
