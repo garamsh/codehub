@@ -737,6 +737,19 @@ async fn answers_the_probes_without_a_token() {
 }
 
 #[tokio::test]
+async fn serves_the_probes_from_the_router_of_the_whole_api() {
+    let api = Api::new();
+    for path in ["/healthz", "/readyz"] {
+        let reply = api.send(Method::GET, path, None, None).await;
+        assert_eq!(reply.status, StatusCode::OK, "{path}");
+    }
+    // The control: a path no route has is still answered by the fallback.
+    let unknown = api.send(Method::GET, "/nothing", None, None).await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    assert_eq!(unknown.content_type, PROBLEM);
+}
+
+#[tokio::test]
 async fn answers_readyz_with_503_and_the_reason_where_a_dependency_does_not_answer() {
     let reason = "PostgreSQL did not answer";
     let not_ready = send(health(Some(reason)), Method::GET, "/readyz", None, None).await;

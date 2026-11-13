@@ -3,11 +3,7 @@
 //! Every helper panics when a reply is not the one expected, as a failed assertion does.
 
 use adapter_http::{Pause, RunnerSettings};
-use adapter_memory::{
-    MemoryAuthorisationDecision, MemoryChangesetLog, MemoryCheckDefinitions, MemoryDerivedData,
-    MemoryDraftStore, MemoryIdentityVerification, MemoryJobQueue, MemoryMembership,
-    MemoryObjectStore, MemoryRepositoryDirectory, MemoryRunnerRegistry,
-};
+use adapter_memory::MemoryObjectStore;
 use std::time::Duration;
 
 use app::domain::address::Address;
@@ -22,8 +18,6 @@ use app::port::driven::object_store::ObjectStore;
 use app::port::driven::repository_directory::RepositoryDirectory;
 use app::port::driving::repositories::Repositories;
 use app::use_case::administration::Administration;
-use app::use_case::assembly::Assembly;
-use app::use_case::landing_attempts::LandingAttempts;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
@@ -36,55 +30,8 @@ pub const MAX_UPLOAD_SIZE: u64 = 1024;
 /// How long the fixture holds a claim that finds no job.
 pub const HOLD: Duration = Duration::from_millis(300);
 
-/// How long the fixture's jobs service holds a job between heartbeats, in seconds.
-const LEASE: i64 = 60;
-
 /// The in-memory adapters of one deployment.
-pub struct Stores {
-    /// The object store.
-    pub objects: MemoryObjectStore,
-    /// The changeset log.
-    pub log: MemoryChangesetLog,
-    /// The derived data.
-    pub derived: MemoryDerivedData,
-    /// The draft store.
-    pub drafts: MemoryDraftStore,
-    /// The repository directory.
-    pub directory: MemoryRepositoryDirectory,
-    /// Identity verification, where tokens are registered.
-    pub identity: MemoryIdentityVerification,
-    /// Membership.
-    pub membership: MemoryMembership,
-    /// The authorisation decision over `membership`.
-    pub authorisation: MemoryAuthorisationDecision,
-    /// The runner registry.
-    pub registry: MemoryRunnerRegistry,
-    /// The job queue.
-    pub queue: MemoryJobQueue,
-    /// The check definitions.
-    pub definitions: MemoryCheckDefinitions,
-}
-
-impl Stores {
-    /// Adapters that live as long as the process: the services borrow them, and a router holds its
-    /// ports for `'static`.
-    fn leaked() -> &'static Self {
-        let membership = MemoryMembership::default();
-        Box::leak(Box::new(Self {
-            objects: MemoryObjectStore::default(),
-            log: MemoryChangesetLog::default(),
-            derived: MemoryDerivedData::default(),
-            drafts: MemoryDraftStore::default(),
-            directory: MemoryRepositoryDirectory::default(),
-            identity: MemoryIdentityVerification::default(),
-            authorisation: membership.authorisation_decision(),
-            membership,
-            registry: MemoryRunnerRegistry::default(),
-            queue: MemoryJobQueue::default(),
-            definitions: MemoryCheckDefinitions::new(".codehub/checks.toml".parse().unwrap()),
-        }))
-    }
-}
+pub type Stores = test_support::Stores<MemoryObjectStore>;
 
 /// What the router answered.
 pub struct Reply {
@@ -103,55 +50,17 @@ pub struct Api {
     router: Router,
 }
 
-/// The driving ports over the in-memory adapters of `Stores`.
-type Wired = Assembly<
-    'static,
-    MemoryObjectStore,
-    MemoryChangesetLog,
-    MemoryDerivedData,
-    MemoryDraftStore,
-    MemoryRepositoryDirectory,
-    MemoryAuthorisationDecision,
-    MemoryMembership,
-    MemoryJobQueue,
-    MemoryRunnerRegistry,
-    MemoryCheckDefinitions,
-    (),
-    (),
-    MemoryIdentityVerification,
->;
-
-/// The driving ports over `stores`, with members administered as `administration` says.
-fn assembly(stores: &'static Stores, administration: Administration) -> Wired {
-    Assembly {
-        objects: &stores.objects,
-        log: &stores.log,
-        derived: &stores.derived,
-        drafts: &stores.drafts,
-        directory: &stores.directory,
-        authorisation: &stores.authorisation,
-        membership: &stores.membership,
-        queue: &stores.queue,
-        registry: &stores.registry,
-        definitions: &stores.definitions,
-        changes: &(),
-        delivery: &(),
-        identity: &stores.identity,
-
-        administration,
-        max_upload_size: MAX_UPLOAD_SIZE,
-        attempts: LandingAttempts::default(),
-        lease: LEASE,
-    }
-}
-
 /// The router over `stores`, with members administered as `administration` says.
 pub fn router(stores: &'static Stores, administration: Administration) -> Router {
-    let assembly = assembly(stores, administration);
-    router_with(stores, administration, assembly.repositories())
+    adapter_http::api_router(
+        &stores.assembly(&stores.identity, administration, MAX_UPLOAD_SIZE),
+        settings(),
+        (),
+    )
 }
 
-/// The router over `stores`, with the repositories port replaced by `repositories`.
+/// The router over `stores`, with the repositories port replaced by `repositories`. It serves the
+/// source-control routes alone.
 pub fn router_with<R>(
     stores: &'static Stores,
     administration: Administration,
@@ -160,7 +69,7 @@ pub fn router_with<R>(
 where
     R: Repositories + Send + Sync + 'static,
 {
-    let assembly = assembly(stores, administration);
+    let assembly = stores.assembly(&stores.identity, administration, MAX_UPLOAD_SIZE);
     adapter_http::router(
         assembly.authentication(),
         repositories,
@@ -173,29 +82,21 @@ fn pause(duration: Duration) -> Pause {
     Box::pin(tokio::time::sleep(duration))
 }
 
-fn runner_router(stores: &'static Stores) -> Router {
-    let assembly = assembly(stores, Administration::BuiltIn);
-    adapter_http::runner_router(
-        assembly.authentication(),
-        assembly.repositories(),
-        assembly.runners(),
-        assembly.jobs(),
-        assembly.checks(),
-        RunnerSettings {
-            hold: HOLD,
-            retry_interval: Duration::from_millis(50),
-            heartbeat_interval: Duration::from_secs(10),
-            pause,
-        },
-    )
+fn settings() -> RunnerSettings {
+    RunnerSettings {
+        hold: HOLD,
+        retry_interval: Duration::from_millis(50),
+        heartbeat_interval: Duration::from_secs(10),
+        pause,
+    }
 }
 
 impl Default for Api {
     fn default() -> Self {
-        let stores = Stores::leaked();
+        let stores = Stores::leaked(MemoryObjectStore::default());
         Self {
             stores,
-            router: router(stores, Administration::BuiltIn).merge(runner_router(stores)),
+            router: router(stores, Administration::BuiltIn),
         }
     }
 }

@@ -10,11 +10,6 @@ use std::time::Duration;
 use base64::Engine;
 
 use adapter_http::{Pause, RunnerSettings};
-use adapter_memory::{
-    MemoryAuthorisationDecision, MemoryChangesetLog, MemoryCheckDefinitions, MemoryDerivedData,
-    MemoryDraftStore, MemoryIdentityVerification, MemoryJobQueue, MemoryMembership,
-    MemoryRepositoryDirectory, MemoryRunnerRegistry,
-};
 use adapter_oidc::OidcIdentityVerification;
 use adapter_s3::S3ObjectStore;
 use app::domain::check::{CheckDefinition, Command, Timeout};
@@ -26,8 +21,6 @@ use app::port::driven::identity_verification::IdentityVerification;
 use app::port::driven::job_queue::JobQueue;
 use app::port::driven::repository_directory::RepositoryDirectory;
 use app::use_case::administration::Administration;
-use app::use_case::assembly::Assembly;
-use app::use_case::landing_attempts::LandingAttempts;
 use serde_json::json;
 
 pub use test_support::{ChUser, Run, env, unique};
@@ -38,23 +31,8 @@ const MAX_UPLOAD_SIZE: u64 = 1024 * 1024;
 /// How long the server holds a claim that finds no job.
 const HOLD: Duration = Duration::from_millis(300);
 
-/// How long the server's jobs service holds a job between heartbeats, in seconds.
-const LEASE: i64 = 60;
-
 /// The adapters of one server.
-struct Stores {
-    objects: S3ObjectStore,
-    log: MemoryChangesetLog,
-    derived: MemoryDerivedData,
-    drafts: MemoryDraftStore,
-    directory: MemoryRepositoryDirectory,
-    identity: MemoryIdentityVerification,
-    membership: MemoryMembership,
-    authorisation: MemoryAuthorisationDecision,
-    registry: MemoryRunnerRegistry,
-    queue: MemoryJobQueue,
-    definitions: MemoryCheckDefinitions,
-}
+type Stores = test_support::Stores<S3ObjectStore>;
 
 /// A user of `ch`: a configuration directory of its own, and so a state file of its own.
 pub struct User(ChUser);
@@ -118,9 +96,8 @@ pub async fn serve_oidc() -> Server {
 }
 
 fn leak_stores() -> &'static Stores {
-    let membership = MemoryMembership::default();
-    Box::leak(Box::new(Stores {
-        objects: S3ObjectStore::new(
+    Stores::leaked(
+        S3ObjectStore::new(
             &env("CODEHUB_TEST_S3_ENDPOINT"),
             &env("CODEHUB_TEST_S3_REGION"),
             &env("CODEHUB_TEST_S3_BUCKET"),
@@ -129,62 +106,23 @@ fn leak_stores() -> &'static Stores {
             MAX_UPLOAD_SIZE,
         )
         .unwrap(),
-        log: MemoryChangesetLog::default(),
-        derived: MemoryDerivedData::default(),
-        drafts: MemoryDraftStore::default(),
-        directory: MemoryRepositoryDirectory::default(),
-        identity: MemoryIdentityVerification::default(),
-        authorisation: membership.authorisation_decision(),
-        membership,
-        registry: MemoryRunnerRegistry::default(),
-        queue: MemoryJobQueue::default(),
-        definitions: MemoryCheckDefinitions::new(".codehub/checks.toml".parse().unwrap()),
-    }))
+    )
 }
 
 async fn bind<I: IdentityVerification + Send + Sync + 'static>(
     stores: &'static Stores,
     identity: &'static I,
 ) -> Server {
-    let assembly = Assembly {
-        objects: &stores.objects,
-        log: &stores.log,
-        derived: &stores.derived,
-        drafts: &stores.drafts,
-        directory: &stores.directory,
-        authorisation: &stores.authorisation,
-        membership: &stores.membership,
-        queue: &stores.queue,
-        registry: &stores.registry,
-        definitions: &stores.definitions,
-        changes: &(),
-        delivery: &(),
-        identity,
-
-        administration: Administration::BuiltIn,
-        max_upload_size: MAX_UPLOAD_SIZE,
-        attempts: LandingAttempts::default(),
-        lease: LEASE,
-    };
-    let router = adapter_http::router(
-        assembly.authentication(),
-        assembly.repositories(),
-        assembly.members(),
-        assembly.source_control(),
-    )
-    .merge(adapter_http::runner_router(
-        assembly.authentication(),
-        assembly.repositories(),
-        assembly.runners(),
-        assembly.jobs(),
-        assembly.checks(),
+    let router = adapter_http::api_router(
+        &stores.assembly(identity, Administration::BuiltIn, MAX_UPLOAD_SIZE),
         RunnerSettings {
             hold: HOLD,
             retry_interval: Duration::from_millis(50),
             heartbeat_interval: Duration::from_secs(10),
             pause,
         },
-    ));
+        (),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

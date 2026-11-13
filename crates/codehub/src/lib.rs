@@ -389,18 +389,8 @@ pub async fn run(config: Config) -> Result<(), Error> {
         attempts: LandingAttempts::new(config.landing_attempts),
         lease: i64::from(config.runner_lease.get()),
     };
-    let router = adapter_http::router(
-        assembly.authentication(),
-        assembly.repositories(),
-        assembly.members(),
-        assembly.source_control(),
-    )
-    .merge(adapter_http::runner_router(
-        assembly.authentication(),
-        assembly.repositories(),
-        assembly.runners(),
-        assembly.jobs(),
-        assembly.checks(),
+    let router = adapter_http::api_router(
+        &assembly,
         RunnerSettings {
             hold: Duration::from_secs(config.runner_claim_hold),
             retry_interval: CLAIM_RETRY_INTERVAL,
@@ -409,11 +399,11 @@ pub async fn run(config: Config) -> Result<(), Error> {
             )),
             pause,
         },
-    ))
-    .merge(adapter_http::health_router(Probe {
-        directory: &adapters.directory,
-        objects: &adapters.objects,
-    }));
+        Probe {
+            directory: &adapters.directory,
+            objects: &adapters.objects,
+        },
+    );
     let listener = TcpListener::bind(config.listen)
         .await
         .map_err(|error| Error::Bind(config.listen, error))?;
