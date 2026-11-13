@@ -1,6 +1,8 @@
 name: release
 
-# A `vX.Y.Z` tag publishes codehub/server:X.Y.Z and codehub/runner:X.Y.Z, and no other tag. The
+# A `vX.Y.Z`, `vX.Y.Z-dev.N` or `vX.Y.Z-rc.N` tag publishes codehub/server and codehub/runner
+# tagged with the version without its `v`, and no other tag does. A tag with a suffix makes a
+# pre-release that is not marked latest. The
 # push role's trust policy admits only the subject refs/tags/v* of this repository, so no other
 # trigger gets a credential. Action pins take the form ci.yml states.
 on:
@@ -10,10 +12,11 @@ on:
 permissions: read-all
 
 # No concurrency group: a group cancels a pending run when a newer one queues behind it, so a
-# `vX.Y.Z` tag could publish nothing.
+# release tag could publish nothing.
 
 env:
-  # Role of aurora#750: trusts refs/tags/v* of this repository, audience sts.amazonaws.com.
+  # The role that pushes codehub/server and codehub/runner to ECR: trusts refs/tags/v* of this
+  # repository, audience sts.amazonaws.com.
   AWS_ROLE: arn:aws:iam::486152169996:role/github-actions-codehub-push
   AWS_REGION: ap-northeast-2
 
@@ -38,7 +41,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # The repositories are tag-immutable, so a tag that is not vX.Y.Z is refused before
+      # The repositories are tag-immutable, so a tag that is not a release form is refused before
       # anything is built or pushed. The tag name reaches the shell through the environment.
       - id: version
         env:
@@ -119,6 +122,8 @@ jobs:
         run: echo "ImageOS=$ImageOS ImageVersion=$ImageVersion" >> "$GITHUB_STEP_SUMMARY"
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
+          prerelease: ${{ contains(needs.images.outputs.version, '-') }}
+          make_latest: ${{ !contains(needs.images.outputs.version, '-') }}
           body: |
             ${{ needs.images.outputs.registry }}/codehub/server:${{ needs.images.outputs.version }}
             ${{ needs.images.outputs.server-digest }}
