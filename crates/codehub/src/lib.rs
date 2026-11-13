@@ -7,18 +7,19 @@ use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adapter_http::{Pause, RunnerSettings};
 use adapter_toml::TomlCheckDefinitions;
 
 use adapter_authzen::{AuthzenAuthorisationDecision, Profile};
+use adapter_garam_directory::GaramDirectoryChanges;
 use adapter_introspection::IntrospectionIdentityVerification;
 use adapter_oidc::OidcIdentityVerification;
 use adapter_postgres::{
     Database, DatabaseError, PostgresAuthorisationDecision, PostgresChangesetLog,
-    PostgresDerivedData, PostgresDraftStore, PostgresJobQueue, PostgresMembership,
-    PostgresRepositoryDirectory, PostgresRunnerRegistry,
+    PostgresDerivedData, PostgresDirectoryOutbox, PostgresDraftStore, PostgresJobQueue,
+    PostgresMembership, PostgresRepositoryDirectory, PostgresRunnerRegistry,
 };
 use adapter_s3::S3ObjectStore;
 use app::domain::credential::Credential;
@@ -26,6 +27,9 @@ use app::domain::path::PathError;
 use app::domain::principal::Principal;
 use app::port::driven::authorisation_decision::{
     Action, AuthorisationDecision, AuthorisationError, Decision, Resource,
+};
+use app::port::driven::directory_changes::{
+    DirectoryChanges, OrganisationChange, RepositoryChange,
 };
 use app::port::driven::identity_verification::{IdentityError, IdentityVerification};
 use app::port::driven::object_store::ObjectStoreError;
@@ -36,6 +40,7 @@ use app::use_case::checks::{ChecksAdapters, ChecksService};
 use app::use_case::jobs::{JobsAdapters, JobsService};
 use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::members::{MembersAdapters, MembersService};
+use app::use_case::relay::{DirectoryRelay, RelayEnvironment};
 use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
 use app::use_case::runners::{RunnersAdapters, RunnersService};
 use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
@@ -48,7 +53,10 @@ mod settings;
 
 use readiness::Probe;
 use settings::require;
-pub use settings::{Authorisation, AuthzenClientAuthentication, AuthzenProfile, Config, Identity};
+pub use settings::{
+    Authorisation, AuthzenClientAuthentication, AuthzenProfile, Config, DirectoryChangesMode,
+    Identity,
+};
 
 /// Why the server did not start or stopped serving.
 #[derive(Debug)]
@@ -72,6 +80,8 @@ pub enum Error {
     Client(InvalidClient),
     /// The check definitions reader could not be built.
     Definitions(PathError),
+    /// The garam directory adapter could not be built; carries a description.
+    DirectoryChanges(String),
     /// The runner lease does not exceed the heartbeat interval; carries both, in seconds.
     RunnerLease {
         /// `CODEHUB_RUNNER_LEASE`.
@@ -116,6 +126,9 @@ impl fmt::Display for Error {
             Self::Definitions(error) => {
                 write!(f, "configuring the check definitions failed: {error}")
             }
+            Self::DirectoryChanges(description) => {
+                write!(f, "configuring the directory changes failed: {description}")
+            }
             Self::RunnerLease { lease, heartbeat } => write!(
                 f,
                 "CODEHUB_RUNNER_LEASE ({lease} s) must be greater than \
@@ -150,6 +163,54 @@ struct Adapters {
     definitions: TomlCheckDefinitions,
     authorisation: Decider,
     identity: Verifier,
+    changes: Arc<Changes>,
+    relay: Arc<DirectoryRelay<PostgresDirectoryOutbox, Changes, ServerEnvironment>>,
+}
+
+/// Where the directory changes go, as the configuration selected.
+enum Changes {
+    /// Nowhere: every repository change is accepted at once.
+    Nowhere,
+    /// garam's `ApplyEntityChanges`.
+    Garam(Box<GaramDirectoryChanges>),
+}
+
+impl DirectoryChanges for Changes {
+    async fn repository_changed(&self, change: &RepositoryChange) -> bool {
+        match self {
+            Self::Nowhere => ().repository_changed(change).await,
+            Self::Garam(changes) => changes.repository_changed(change).await,
+        }
+    }
+
+    async fn organisation_changed(&self, change: &OrganisationChange) {
+        match self {
+            Self::Nowhere => ().organisation_changed(change).await,
+            Self::Garam(changes) => changes.organisation_changed(change).await,
+        }
+    }
+}
+
+/// What the relay takes from the process: the system clock, the runtime's timer and stderr.
+struct ServerEnvironment;
+
+impl RelayEnvironment for ServerEnvironment {
+    fn now(&self) -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| {
+                i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+            })
+    }
+
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send {
+        tokio::time::sleep(duration)
+    }
+
+    fn log(&self, line: &str) {
+        // Nowhere left to report a failed stderr write.
+        let _ = writeln!(std::io::stderr(), "directory relay: {line}");
+    }
 }
 
 /// The identity verification the configuration selected.
@@ -243,7 +304,9 @@ fn verifier(config: &Config) -> Result<Verifier, Error> {
 /// authentication are checked together: the `grn` profile speaks to a decision point that binds
 /// each token to an organisation (ADR 0043), so it needs `private-key-jwt` (ADR 0042) and is
 /// refused where the AuthZEN adapter is not selected.
-fn authzen(config: &Config) -> Result<Option<AuthzenAuthorisationDecision>, Error> {
+fn authzen(
+    config: &Config,
+) -> Result<Option<(AuthzenAuthorisationDecision, Arc<TokenClient>)>, Error> {
     if config.authorisation != Authorisation::Authzen {
         if config.authzen_profile == AuthzenProfile::Grn {
             return Err(Error::IncompatibleSettings(
@@ -305,13 +368,42 @@ fn authzen(config: &Config) -> Result<Option<AuthzenAuthorisationDecision>, Erro
         authentication,
     )
     .map_err(Error::Client)?;
+    let tokens = Arc::new(tokens);
     let profile = match config.authzen_profile {
         AuthzenProfile::Plain => Profile::Plain,
         AuthzenProfile::Grn => Profile::Grn,
     };
-    AuthzenAuthorisationDecision::new(url, Arc::new(tokens), profile)
-        .map(|decider| Some(decider.with_access_evaluations(config.authzen_evaluations)))
+    AuthzenAuthorisationDecision::new(url, Arc::clone(&tokens), profile)
+        .map(|decider| {
+            Some((
+                decider.with_access_evaluations(config.authzen_evaluations),
+                tokens,
+            ))
+        })
         .map_err(Error::Authorisation)
+}
+
+/// Builds where the directory changes go, sharing the one token client of the AuthZEN adapter:
+/// garam binds each token to an organisation, so the changes are sent under the `grn` profile's
+/// clients (ADR 0043), and the profile is checked before anything is connected.
+fn directory_changes(config: &Config, tokens: Option<&Arc<TokenClient>>) -> Result<Changes, Error> {
+    match config.directory_changes {
+        DirectoryChangesMode::None => Ok(Changes::Nowhere),
+        DirectoryChangesMode::Garam => {
+            let (AuthzenProfile::Grn, Some(tokens)) = (config.authzen_profile, tokens) else {
+                return Err(Error::IncompatibleSettings(
+                    "CODEHUB_DIRECTORY_CHANGES=garam needs CODEHUB_AUTHZEN_PROFILE=grn",
+                ));
+            };
+            let url = require(
+                &config.directory_garam_url,
+                "--directory-garam-url (CODEHUB_DIRECTORY_GARAM_URL)",
+            )?;
+            GaramDirectoryChanges::new(url, Arc::clone(tokens))
+                .map(|changes| Changes::Garam(Box::new(changes)))
+                .map_err(Error::DirectoryChanges)
+        }
+    }
 }
 
 /// The authorisation decision: the `authzen` adapter where [`authzen`] built one, else PostgreSQL
@@ -333,6 +425,11 @@ pub async fn run(config: Config) -> Result<(), Error> {
     config.check_runner_lease()?;
     let identity = verifier(&config)?;
     let authzen = authzen(&config)?;
+    let changes = Arc::new(directory_changes(
+        &config,
+        authzen.as_ref().map(|(_, tokens)| tokens),
+    )?);
+    let authzen = authzen.map(|(decider, _)| decider);
     let administration = match config.authorisation {
         Authorisation::Postgres => Administration::BuiltIn,
         Authorisation::Authzen => Administration::External,
@@ -342,6 +439,12 @@ pub async fn run(config: Config) -> Result<(), Error> {
         .map_err(Error::Database)?;
     database.migrate().await.map_err(Error::Database)?;
     let authorisation = decider(&database, authzen);
+    let relay = Arc::new(DirectoryRelay::new(
+        Arc::new(PostgresDirectoryOutbox::new(&database)),
+        Arc::clone(&changes),
+        Arc::new(ServerEnvironment),
+        Duration::from_secs(config.directory_delivery_wait),
+    ));
     let objects = S3ObjectStore::new(
         &config.s3_endpoint,
         &config.s3_region,
@@ -366,6 +469,8 @@ pub async fn run(config: Config) -> Result<(), Error> {
         definitions: TomlCheckDefinitions::new().map_err(Error::Definitions)?,
         authorisation,
         identity,
+        changes,
+        relay,
     }));
     let attempts = LandingAttempts::new(config.landing_attempts);
     let router = adapter_http::router(
@@ -375,7 +480,8 @@ pub async fn run(config: Config) -> Result<(), Error> {
                 directory: &adapters.directory,
                 authorisation: &adapters.authorisation,
                 membership: &adapters.membership,
-                changes: &(),
+                changes: &*adapters.changes,
+                delivery: &*adapters.relay,
             },
             administration,
         ),
@@ -418,7 +524,8 @@ pub async fn run(config: Config) -> Result<(), Error> {
                 directory: &adapters.directory,
                 authorisation: &adapters.authorisation,
                 membership: &adapters.membership,
-                changes: &(),
+                changes: &*adapters.changes,
+                delivery: &*adapters.relay,
             },
             administration,
         ),
@@ -473,7 +580,9 @@ pub async fn run(config: Config) -> Result<(), Error> {
     let mut interrupt = signal(SignalKind::interrupt()).map_err(Error::Serve)?;
     // Nowhere left to report a failed stderr write.
     let _ = writeln!(std::io::stderr(), "codehub listening on {address}");
-    axum::serve(listener, router)
+    let relay = Arc::clone(&adapters.relay);
+    let delivering = tokio::spawn(async move { relay.run().await });
+    let served = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             tokio::select! {
                 _ = terminate.recv() => {}
@@ -481,5 +590,7 @@ pub async fn run(config: Config) -> Result<(), Error> {
             }
         })
         .await
-        .map_err(Error::Serve)
+        .map_err(Error::Serve);
+    delivering.abort();
+    served
 }

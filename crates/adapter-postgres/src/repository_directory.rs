@@ -7,7 +7,8 @@ use crate::conversion;
 use crate::database::Database;
 
 /// The repository directory in PostgreSQL; it numbers repositories from 1 in creation order,
-/// leaving gaps where a creation lost to an existing name.
+/// leaving gaps where a creation lost to an existing name. It writes each creation as an outbox
+/// entry in the transaction that inserts the repository.
 pub struct PostgresRepositoryDirectory {
     pool: PgPool,
 }
@@ -55,13 +56,14 @@ impl RepositoryDirectory for PostgresRepositoryDirectory {
         organisation: &OrganisationName,
         repository: &RepositoryName,
     ) -> Result<RepositoryId, DirectoryError> {
-        let inserted = sqlx::query_scalar::<_, i64>(
+        let mut transaction = self.pool.begin().await.map_err(backend)?;
+        let inserted = sqlx::query_as::<_, (i64, i64)>(
             "insert into repositories (organisation, name) values ($1, $2) \
-             on conflict (organisation, name) do nothing returning id",
+             on conflict (organisation, name) do nothing returning id, change_sequence",
         )
         .bind(organisation.as_str())
         .bind(repository.as_str())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(|error| {
             let no_organisation = error
@@ -73,13 +75,25 @@ impl RepositoryDirectory for PostgresRepositoryDirectory {
                 backend(error)
             }
         })?;
-        match inserted {
-            Some(id) => identifier(id),
-            None => Err(DirectoryError::RepositoryExists(
+        let Some((id, sequence)) = inserted else {
+            return Err(DirectoryError::RepositoryExists(
                 organisation.clone(),
                 repository.clone(),
-            )),
-        }
+            ));
+        };
+        sqlx::query(
+            "insert into directory_outbox (repository, organisation, name, kind, sequence) \
+             values ($1, $2, $3, 'created', $4)",
+        )
+        .bind(id)
+        .bind(organisation.as_str())
+        .bind(repository.as_str())
+        .bind(sequence)
+        .execute(&mut *transaction)
+        .await
+        .map_err(backend)?;
+        transaction.commit().await.map_err(backend)?;
+        identifier(id)
     }
 
     async fn find_repository(

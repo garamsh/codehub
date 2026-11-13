@@ -1,5 +1,6 @@
 //! The repositories driving port, served by the repository directory, the authorisation decision,
-//! the membership and the directory changes it is given.
+//! the membership and the directory changes it is given, and the delivery of a repository's outbox
+//! entries once its creation has committed (ADR 0044).
 
 use crate::domain::name::{OrganisationName, RepositoryName};
 use crate::domain::principal::Caller;
@@ -7,43 +8,47 @@ use crate::domain::repository::RepositoryId;
 use crate::port::driven::authorisation_decision::{
     Action, AuthorisationDecision, Decision, Resource,
 };
-use crate::port::driven::directory_changes::{DirectoryChange, DirectoryChanges};
+use crate::port::driven::directory_changes::{DirectoryChanges, OrganisationChange};
 use crate::port::driven::membership::{Membership, Role};
 use crate::port::driven::repository_directory::{DirectoryError, RepositoryDirectory};
 use crate::port::driving::access::AccessError;
 use crate::port::driving::repositories::{Repositories, RepositoriesError};
 use crate::use_case::access::{allowed, require};
 use crate::use_case::administration::Administration;
+use crate::use_case::relay::Delivery;
 
 /// The driven ports the repositories are built over.
-pub struct RepositoriesAdapters<'a, R, A, M, C> {
+pub struct RepositoriesAdapters<'a, R, A, M, C, D> {
     /// Keeps organisations and repositories.
     pub directory: &'a R,
     /// Says what callers may do.
     pub authorisation: &'a A,
     /// Keeps members and their grants.
     pub membership: &'a M,
-    /// Receives each creation.
+    /// Receives each organisation creation.
     pub changes: &'a C,
+    /// Delivers the entries of a repository's creation once it has committed.
+    pub delivery: &'a D,
 }
 
 /// Organisations and repositories kept in the directory the composition site passes to it, for
-/// the callers the authorisation decision allows, each creation reported to the directory
-/// changes.
-pub struct RepositoriesService<'a, R, A, M, C> {
+/// the callers the authorisation decision allows, each organisation creation reported to the
+/// directory changes and each repository creation followed by the delivery of its entries.
+pub struct RepositoriesService<'a, R, A, M, C, D> {
     directory: &'a R,
     authorisation: &'a A,
     membership: &'a M,
     changes: &'a C,
+    delivery: &'a D,
     administration: Administration,
 }
 
-impl<'a, R, A, M, C> RepositoriesService<'a, R, A, M, C> {
+impl<'a, R, A, M, C, D> RepositoriesService<'a, R, A, M, C, D> {
     /// Repositories over `adapters`. Where `administration` is built-in, the creator of an
     /// organisation is made its admin in the membership; where it is external, no grant is
     /// written and an organisation missing from the directory is created on first use.
     pub const fn new(
-        adapters: RepositoriesAdapters<'a, R, A, M, C>,
+        adapters: RepositoriesAdapters<'a, R, A, M, C, D>,
         administration: Administration,
     ) -> Self {
         let RepositoriesAdapters {
@@ -51,22 +56,25 @@ impl<'a, R, A, M, C> RepositoriesService<'a, R, A, M, C> {
             authorisation,
             membership,
             changes,
+            delivery,
         } = adapters;
         Self {
             directory,
             authorisation,
             membership,
             changes,
+            delivery,
             administration,
         }
     }
 }
 
-impl<R, A, M, C> RepositoriesService<'_, R, A, M, C>
+impl<R, A, M, C, D> RepositoriesService<'_, R, A, M, C, D>
 where
     R: RepositoryDirectory + Sync,
     A: AuthorisationDecision + Sync,
     C: DirectoryChanges + Sync,
+    D: Delivery + Sync,
 {
     /// Creates `organisation`, which the directory did not hold (`missing`), where `caller` may
     /// create it; otherwise returns `missing`. An organisation a concurrent creator made first
@@ -92,7 +100,7 @@ where
         match self.directory.create_organisation(organisation).await {
             Ok(()) => {
                 self.changes
-                    .report(&DirectoryChange::OrganisationCreated(organisation.clone()))
+                    .organisation_changed(&OrganisationChange::Created(organisation.clone()))
                     .await;
                 Ok(())
             }
@@ -102,12 +110,13 @@ where
     }
 }
 
-impl<R, A, M, C> Repositories for RepositoriesService<'_, R, A, M, C>
+impl<R, A, M, C, D> Repositories for RepositoriesService<'_, R, A, M, C, D>
 where
     R: RepositoryDirectory + Sync,
     A: AuthorisationDecision + Sync,
     M: Membership + Sync,
     C: DirectoryChanges + Sync,
+    D: Delivery + Sync,
 {
     async fn create_organisation(
         &self,
@@ -123,7 +132,7 @@ where
         .await?;
         self.directory.create_organisation(name).await?;
         self.changes
-            .report(&DirectoryChange::OrganisationCreated(name.clone()))
+            .organisation_changed(&OrganisationChange::Created(name.clone()))
             .await;
         if self.administration == Administration::BuiltIn {
             self.membership
@@ -162,12 +171,7 @@ where
             }
             created => created?,
         };
-        self.changes
-            .report(&DirectoryChange::RepositoryCreated {
-                organisation: organisation.clone(),
-                repository: repository.clone(),
-            })
-            .await;
+        self.delivery.deliver(id).await;
         Ok(id)
     }
 

@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 adapter-authzen = { path = "../adapter-authzen" }
+adapter-garam-directory = { path = "../adapter-garam-directory" }
 adapter-http = { path = "../adapter-http" }
 adapter-introspection = { path = "../adapter-introspection" }
 adapter-oidc = { path = "../adapter-oidc" }

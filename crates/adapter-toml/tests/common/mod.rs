@@ -3,14 +3,16 @@
 
 use adapter_memory::{
     MemoryAuthorisationDecision, MemoryChangesetLog, MemoryDerivedData, MemoryDirectoryChanges,
-    MemoryDraftStore, MemoryIdentityVerification, MemoryJobQueue, MemoryMembership,
-    MemoryObjectStore, MemoryRepositoryDirectory, MemoryRunnerRegistry,
+    MemoryDirectoryOutbox, MemoryDraftStore, MemoryIdentityVerification, MemoryJobQueue,
+    MemoryMembership, MemoryObjectStore, MemoryRepositoryDirectory, MemoryRunnerRegistry,
 };
 use adapter_toml::TomlCheckDefinitions;
 use app::domain::check::CheckDefinition;
+use app::domain::repository::RepositoryId;
 use app::port::driven::check_definitions::CheckFileError;
-use test_support::contract::Deployment;
+use app::port::driven::directory_changes::{ChangeKind, RepositoryChange};
 use test_support::contract::runner_deployment::RunnerDeployment;
+use test_support::contract::{Deployment, HeldRelay};
 
 /// The in-memory adapters of one deployment, holding any number of repositories.
 pub struct Harness {
@@ -32,6 +34,10 @@ pub struct Harness {
     pub authorisation: MemoryAuthorisationDecision,
     /// The directory changes reported.
     pub changes: MemoryDirectoryChanges,
+    /// The directory outbox, over the entries the repository directory writes.
+    pub outbox: MemoryDirectoryOutbox,
+    /// The relay that offers each creation's entry to a receiver refusing it.
+    pub delivery: HeldRelay,
     /// The runner registry.
     pub registry: MemoryRunnerRegistry,
     /// The job queue.
@@ -43,12 +49,15 @@ pub struct Harness {
 impl Default for Harness {
     fn default() -> Self {
         let membership = MemoryMembership::default();
+        let directory = MemoryRepositoryDirectory::default();
         Self {
             objects: MemoryObjectStore::default(),
             log: MemoryChangesetLog::default(),
             derived: MemoryDerivedData::default(),
             drafts: MemoryDraftStore::default(),
-            directory: MemoryRepositoryDirectory::default(),
+            outbox: directory.outbox(),
+            delivery: HeldRelay::new(directory.outbox()),
+            directory,
             identity: MemoryIdentityVerification::default(),
             authorisation: membership.authorisation_decision(),
             changes: MemoryDirectoryChanges::default(),
@@ -68,6 +77,8 @@ impl Deployment for Harness {
     type Membership = MemoryMembership;
     type Authorisation = MemoryAuthorisationDecision;
     type Changes = MemoryDirectoryChanges;
+    type Outbox = MemoryDirectoryOutbox;
+    type Delivery = HeldRelay;
 
     async fn start() -> Self {
         Self::default()
@@ -107,6 +118,18 @@ impl Deployment for Harness {
 
     fn changes(&self) -> &MemoryDirectoryChanges {
         &self.changes
+    }
+
+    fn outbox(&self) -> &MemoryDirectoryOutbox {
+        &self.outbox
+    }
+
+    fn delivery(&self) -> &HeldRelay {
+        &self.delivery
+    }
+
+    async fn write_change(&self, repository: RepositoryId, kind: ChangeKind) -> RepositoryChange {
+        self.directory.record_change(repository, kind).unwrap()
     }
 }
 

@@ -11,7 +11,7 @@ sha2.workspace = true
 [dev-dependencies]
 adapter-memory = { path = "../adapter-memory" }
 test-support = { path = "../test-support" }
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 
 [lints]
 workspace = true

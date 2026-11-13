@@ -70,6 +70,9 @@ The server listens on `127.0.0.1:8080` unless `CODEHUB_LISTEN` says otherwise, s
 | `--authzen-key-id` | `CODEHUB_AUTHZEN_KEY_ID` | no | The `kid` header of the assertions, such as the key's RFC 7638 thumbprint; optional. |
 | `--authzen-issuer` | `CODEHUB_AUTHZEN_ISSUER` | no | The issuer identifier of the token endpoint's authorization server, the assertions' `aud`; required with `private-key-jwt`. |
 | `--authzen-audience` | `CODEHUB_AUTHZEN_AUDIENCE` | no | Sent as the token request's `audience` parameter where given. |
+| `--directory-changes` | `CODEHUB_DIRECTORY_CHANGES` | no | Where repository and organisation changes go: `none` (default) or `garam`, garam's `ApplyEntityChanges` with the organisation's token. `garam` needs `CODEHUB_AUTHZEN_PROFILE=grn`, or the server refuses to start (ADR 0044). `none` accepts and discards every entry the outbox holds, so enable `garam` before creating any repository garam must know: one created under `none` is never sent later. |
+| `--directory-garam-url` | `CODEHUB_DIRECTORY_GARAM_URL` | no | The base URL of garam's policy service, which the entity changes are sent to; required with `garam`. |
+| `--directory-delivery-wait` | `CODEHUB_DIRECTORY_DELIVERY_WAIT` | no | Seconds, at most 3600, creating a repository waits for its change to reach the receiver, 2 by default; the creation is answered either way, and an undelivered change is retried. |
 
 ## Runner options
 

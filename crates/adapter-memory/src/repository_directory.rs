@@ -1,22 +1,84 @@
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use app::domain::name::{OrganisationName, RepositoryName};
 use app::domain::repository::RepositoryId;
+use app::port::driven::directory_changes::{ChangeKind, RepositoryChange};
 use app::port::driven::repository_directory::{DirectoryError, RepositoryDirectory};
 
+use crate::directory_outbox::MemoryDirectoryOutbox;
 use crate::lock;
 
-#[derive(Default)]
-struct Directory {
-    organisations: BTreeMap<OrganisationName, BTreeMap<RepositoryName, RepositoryId>>,
-    repositories: u64,
+/// An outbox entry and the time its lease lapses; an entry never claimed has lapsed already.
+pub(crate) struct Entry {
+    pub(crate) change: RepositoryChange,
+    pub(crate) lease_expires_at: i64,
 }
 
-/// A repository directory in memory; it numbers repositories from 1 in creation order.
+#[derive(Default)]
+pub(crate) struct Directory {
+    organisations: BTreeMap<OrganisationName, BTreeMap<RepositoryName, RepositoryId>>,
+    repositories: u64,
+    /// The entries not yet deleted, in the order written.
+    pub(crate) outbox: Vec<Entry>,
+    /// The sequence of the last change written for each repository.
+    sequences: BTreeMap<RepositoryId, u64>,
+}
+
+/// A repository directory in memory; it numbers repositories from 1 in creation order, and writes
+/// each creation as an outbox entry under the lock the creation is made in.
 #[derive(Default)]
 pub struct MemoryRepositoryDirectory {
-    directory: Mutex<Directory>,
+    directory: Arc<Mutex<Directory>>,
+}
+
+impl MemoryRepositoryDirectory {
+    /// The outbox over the entries this directory writes.
+    #[must_use]
+    pub fn outbox(&self) -> MemoryDirectoryOutbox {
+        MemoryDirectoryOutbox::new(Arc::clone(&self.directory))
+    }
+
+    /// Writes the entry of a further change to `repository`, with a sequence one above its last,
+    /// as the directory does for a deletion once repositories can be deleted. `None` where there
+    /// is no such repository.
+    #[must_use]
+    pub fn record_change(
+        &self,
+        repository: RepositoryId,
+        kind: ChangeKind,
+    ) -> Option<RepositoryChange> {
+        let mut directory = lock(&self.directory);
+        let (organisation, name) =
+            directory
+                .organisations
+                .iter()
+                .find_map(|(organisation, repositories)| {
+                    repositories
+                        .iter()
+                        .find(|(_, id)| **id == repository)
+                        .map(|(name, _)| (organisation.clone(), name.clone()))
+                })?;
+        let sequence = directory
+            .sequences
+            .get(&repository)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
+        directory.sequences.insert(repository, sequence);
+        let change = RepositoryChange {
+            organisation,
+            name,
+            repository,
+            kind,
+            sequence,
+        };
+        directory.outbox.push(Entry {
+            change: change.clone(),
+            lease_expires_at: i64::MIN,
+        });
+        Some(change)
+    }
 }
 
 impl RepositoryDirectory for MemoryRepositoryDirectory {
@@ -50,6 +112,17 @@ impl RepositoryDirectory for MemoryRepositoryDirectory {
         }
         repositories.insert(repository.clone(), id);
         directory.repositories = directory.repositories.saturating_add(1);
+        directory.sequences.insert(id, 1);
+        directory.outbox.push(Entry {
+            change: RepositoryChange {
+                organisation: organisation.clone(),
+                name: repository.clone(),
+                repository: id,
+                kind: ChangeKind::Created,
+                sequence: 1,
+            },
+            lease_expires_at: i64::MIN,
+        });
         Ok(id)
     }
 

@@ -12,6 +12,7 @@ pub mod checks;
 pub mod history;
 pub mod landing;
 pub mod object_store;
+pub mod outbox;
 pub mod reverts;
 pub mod runner_deployment;
 pub mod runners;
@@ -32,7 +33,8 @@ use app::domain::tree::Entry;
 use app::port::driven::authorisation_decision::AuthorisationDecision;
 use app::port::driven::changeset_log::{ChangesetLog, Ref};
 use app::port::driven::derived_data::DerivedData;
-use app::port::driven::directory_changes::DirectoryChanges;
+use app::port::driven::directory_changes::{ChangeKind, DirectoryChanges, RepositoryChange};
+use app::port::driven::directory_outbox::DirectoryOutbox;
 use app::port::driven::draft_store::DraftStore;
 use app::port::driven::membership::Membership;
 use app::port::driven::object_store::ObjectStore;
@@ -43,6 +45,7 @@ use app::port::driving::source_control::Landing;
 use app::port::driving::source_control::{SourceControl, SourceControlError};
 use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
+use app::use_case::relay::{Delivery, DirectoryRelay, RelayEnvironment};
 use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
 use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
 
@@ -56,6 +59,7 @@ pub type Repos<'a, H> = RepositoriesService<
     <H as Deployment>::Authorisation,
     <H as Deployment>::Membership,
     <H as Deployment>::Changes,
+    <H as Deployment>::Delivery,
 >;
 
 /// The source-control service over a deployment's adapters.
@@ -86,6 +90,10 @@ pub trait Deployment: Sized + Send + Sync {
     type Authorisation: AuthorisationDecision + Sync;
     /// The directory changes reported.
     type Changes: DirectoryChanges + Sync;
+    /// The directory outbox.
+    type Outbox: DirectoryOutbox + Sync;
+    /// The delivery that follows a repository's creation.
+    type Delivery: Delivery + Sync;
 
     /// A deployment of its own, with no repository.
     fn start() -> impl Future<Output = Self> + Send;
@@ -108,6 +116,18 @@ pub trait Deployment: Sized + Send + Sync {
     fn authorisation(&self) -> &Self::Authorisation;
     /// The directory changes reported.
     fn changes(&self) -> &Self::Changes;
+    /// The directory outbox, over the entries the repository directory writes.
+    fn outbox(&self) -> &Self::Outbox;
+    /// The delivery of a repository's outbox entries to the directory changes.
+    fn delivery(&self) -> &Self::Delivery;
+
+    /// Writes the entry of a further change to `repository`, as the repository directory does for
+    /// a deletion once repositories can be deleted, and returns it.
+    fn write_change(
+        &self,
+        repository: RepositoryId,
+        kind: ChangeKind,
+    ) -> impl Future<Output = RepositoryChange> + Send;
 
     /// The repositories port over this deployment's adapters, administered by codehub.
     fn repositories(&self) -> Repos<'_, Self> {
@@ -123,6 +143,7 @@ pub trait Deployment: Sized + Send + Sync {
                 authorisation: self.authorisation(),
                 membership: self.membership(),
                 changes: self.changes(),
+                delivery: self.delivery(),
             },
             administration,
         )
@@ -201,6 +222,98 @@ pub struct Repo<'a, H> {
     pub harness: &'a H,
     /// The repository's identifier.
     pub id: RepositoryId,
+}
+
+/// The environment of a relay that runs in the real time of the test.
+pub struct RealTime;
+
+impl RelayEnvironment for RealTime {
+    fn now(&self) -> i64 {
+        let since = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        i64::try_from(since.as_secs()).unwrap()
+    }
+
+    fn sleep(&self, duration: std::time::Duration) -> impl Future<Output = ()> + Send {
+        tokio::time::sleep(duration)
+    }
+
+    fn log(&self, line: &str) {
+        eprintln!("{line}");
+    }
+}
+
+/// A receiver that refuses every repository change, and counts the attempts.
+#[derive(Default)]
+pub struct Holding {
+    attempts: std::sync::atomic::AtomicUsize,
+}
+
+impl Holding {
+    /// How many repository changes were offered to it.
+    pub fn attempts(&self) -> usize {
+        self.attempts.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl DirectoryChanges for Holding {
+    async fn repository_changed(&self, _change: &RepositoryChange) -> bool {
+        self.attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        false
+    }
+
+    async fn organisation_changed(
+        &self,
+        _change: &app::port::driven::directory_changes::OrganisationChange,
+    ) {
+    }
+}
+
+/// The environment of a relay in a test that reads the outbox afterwards: a clock at the start of
+/// time, so that what a failed delivery holds back is claimable at any time a test names, and
+/// sleeps that never end.
+pub struct Frozen;
+
+impl RelayEnvironment for Frozen {
+    fn now(&self) -> i64 {
+        i64::MIN
+    }
+
+    fn sleep(&self, _duration: std::time::Duration) -> impl Future<Output = ()> + Send {
+        std::future::pending()
+    }
+
+    fn log(&self, _line: &str) {}
+}
+
+/// The relay of an in-memory deployment: it takes each creation's entry from the outbox and offers
+/// it to a receiver that refuses it, so that the entry stays for the test to read.
+pub struct HeldRelay {
+    /// The receiver the relay delivers to.
+    pub receiver: std::sync::Arc<Holding>,
+    relay: DirectoryRelay<adapter_memory::MemoryDirectoryOutbox, Holding, Frozen>,
+}
+
+impl HeldRelay {
+    /// A relay over `outbox`.
+    pub fn new(outbox: adapter_memory::MemoryDirectoryOutbox) -> Self {
+        let receiver = std::sync::Arc::new(Holding::default());
+        let relay = DirectoryRelay::new(
+            std::sync::Arc::new(outbox),
+            std::sync::Arc::clone(&receiver),
+            std::sync::Arc::new(Frozen),
+            std::time::Duration::from_secs(2),
+        );
+        Self { receiver, relay }
+    }
+}
+
+impl Delivery for HeldRelay {
+    fn deliver(&self, repository: RepositoryId) -> impl Future<Output = ()> + Send {
+        self.relay.deliver(repository)
+    }
 }
 
 /// The draft name `name`.

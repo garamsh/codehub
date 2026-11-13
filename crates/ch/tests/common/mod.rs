@@ -190,6 +190,7 @@ fn repositories(stores: &'static Stores) -> impl Repositories + Send + Sync + 's
             authorisation: &stores.authorisation,
             membership: &stores.membership,
             changes: &(),
+            delivery: &(),
         },
         Administration::BuiltIn,
     )
