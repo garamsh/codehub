@@ -5,6 +5,7 @@ pub mod changeset_log;
 pub mod check_definitions;
 pub mod derived_data;
 pub mod directory_changes;
+pub mod directory_outbox;
 pub mod draft_store;
 pub mod identity_verification;
 pub mod job_queue;

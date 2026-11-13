@@ -13,6 +13,7 @@ pub mod landing_gates;
 pub mod last_green;
 pub mod members;
 pub mod read_file;
+pub mod relay;
 pub mod repositories;
 pub mod revert;
 pub mod runners;
