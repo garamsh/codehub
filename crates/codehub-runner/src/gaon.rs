@@ -12,6 +12,7 @@ use rustix::rand::{GetRandomFlags, getrandom};
 use serde_json::{Value, json};
 use tokio::time::Instant;
 
+use crate::config::JobUser;
 use crate::executor::{End, Execution, Executor, ExecutorError, Stop};
 use crate::gaon::api::{Api, ApiError, Kind, Listed};
 use crate::gaon::results::{Expectation, Results};
@@ -42,6 +43,7 @@ const SECRET_BYTES: usize = 32;
 pub struct GaonExecutor {
     api: Api,
     image: String,
+    user: JobUser,
     result_url: String,
     results: Results,
     poll: Duration,
@@ -65,13 +67,14 @@ fn new_secret() -> Result<String, ExecutorError> {
 }
 
 impl GaonExecutor {
-    /// An executor that creates its objects through `api`, in `image`, and tells MicroVMs to post
-    /// their results to `result_url`, which `results` accepts.
+    /// An executor that creates its objects through `api`, in `image` as `user`, and tells
+    /// MicroVMs to post their results to `result_url`, which `results` accepts.
     #[must_use]
-    pub fn new(api: Api, image: String, result_url: &str, results: Results) -> Self {
+    pub fn new(api: Api, image: String, user: JobUser, result_url: &str, results: Results) -> Self {
         Self {
             api,
             image,
+            user,
             result_url: result_url.trim_end_matches('/').to_owned(),
             results,
             poll: POLL,
@@ -154,6 +157,7 @@ impl GaonExecutor {
             "metadata": { "name": name, "labels": self.api.labels() },
             "spec": {
                 "image": self.image,
+                "user": self.user.as_str(),
                 "resources": { "requests": {}, "limits": {} },
                 "runStrategy": "Once",
                 "command": ["codehub-runner", "run-job", "--job", DESCRIPTION_PATH],

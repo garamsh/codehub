@@ -96,6 +96,7 @@ The runner is configured by options, and by the variables where the table gives 
 | `--gaon-result-listen` | `CODEHUB_RUNNER_GAON_RESULT_LISTEN` | no | The address the runner listens on, in plain HTTP, for the results of jobs, such as `0.0.0.0:8090`. |
 | `--gaon-result-url` | `CODEHUB_RUNNER_GAON_RESULT_URL` | no | The URL a job's MicroVM reaches that listener at. |
 | `--gaon-runner-name` | `CODEHUB_RUNNER_GAON_RUNNER_NAME` | no | The value of the label `runner.codehub.garam.sh/name` on every MicroVM and Secret this runner creates: 1 to 63 alphanumerics, `-`, `_` or `.`, beginning and ending with an alphanumeric, and unique among the runners of one gaon cluster. The runner deletes every object that carries it when it starts. |
+| `--gaon-job-user` | `CODEHUB_RUNNER_GAON_JOB_USER` | no | The numeric `uid:gid` a job's MicroVM runs as (`spec.user`), default `10001:10001`, the user of the runner image. The MicroVM's description file is owned by it; gaon makes a file without an owner root-owned, which the image's user could not read, and refuses a user given by name. |
 
 `codehub-runner run-job` is the mode a job's MicroVM runs under gaon: it takes the path of the job file, needs neither the server nor credentials, and is not for a person to run.
 

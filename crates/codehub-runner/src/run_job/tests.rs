@@ -111,6 +111,30 @@ async fn a_result_that_cannot_be_posted_is_a_failure() {
     assert!(error.contains("posting the result failed"), "{error}");
 }
 
+/// A listener that answers every post with `status`, and the URL to post to.
+async fn answering(status: u16) -> String {
+    let status = axum::http::StatusCode::from_u16(status).unwrap();
+    let app = Router::new().route("/results/{id}", post_route(move || async move { status }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{address}/results/14")
+}
+
+#[tokio::test]
+async fn a_conflict_from_the_listener_is_a_posted_result_and_an_unauthorised_is_not() {
+    let window = Duration::from_millis(100);
+    let conflict = Description::new(&job(14, "true"), answering(409).await, "s".into());
+    run_within(&write("conflict", &conflict), window)
+        .await
+        .unwrap();
+    let refused = Description::new(&job(15, "true"), answering(401).await, "s".into());
+    let error = run_within(&write("refused", &refused), window)
+        .await
+        .unwrap_err();
+    assert!(error.contains("401"), "{error}");
+}
+
 #[tokio::test]
 async fn a_file_that_is_not_a_description_is_a_failure() {
     let path = std::env::temp_dir().join(format!("run-job-test-{}-garbage", std::process::id()));

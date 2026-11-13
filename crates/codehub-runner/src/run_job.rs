@@ -233,7 +233,10 @@ async fn post(
             .await
             .map_err(|error| error.without_url().to_string())
             .and_then(|response| {
-                if response.status().is_success() {
+                // 409: the listener already holds this job's result.
+                if response.status().is_success()
+                    || response.status() == reqwest::StatusCode::CONFLICT
+                {
                     Ok(())
                 } else {
                     Err(format!("the runner answered {}", response.status()))

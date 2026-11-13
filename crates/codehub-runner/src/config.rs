@@ -95,6 +95,39 @@ pub struct GaonConfig {
         required_if_eq("executor", "gaon")
     )]
     pub runner_name: Option<String>,
+
+    /// The numeric `uid:gid` a job's MicroVM runs as: it owns the description file, and must be
+    /// the user of the image.
+    #[arg(
+        long = "gaon-job-user",
+        env = "CODEHUB_RUNNER_GAON_JOB_USER",
+        default_value = "10001:10001"
+    )]
+    pub job_user: JobUser,
+}
+
+/// A numeric `uid:gid`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JobUser(String);
+
+impl JobUser {
+    /// The text gaon takes as `spec.user`.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for JobUser {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        let numeric = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+        match text.split_once(':') {
+            Some((uid, gid)) if numeric(uid) && numeric(gid) => Ok(Self(text.to_owned())),
+            _ => Err("a job user is a numeric <uid>:<gid>, as 10001:10001".to_owned()),
+        }
+    }
 }
 
 fn https_url(text: &str) -> Result<String, String> {
@@ -383,6 +416,32 @@ mod tests {
         assert!(refused("--gaon-runner-name", "has space"));
         assert!(refused("--gaon-runner-name", long));
         assert!(!refused("--gaon-runner-name", "ok.name_1-b"));
+    }
+
+    #[test]
+    fn the_job_user_defaults_to_the_image_user_and_takes_only_a_numeric_uid_and_gid() {
+        let config = with_gaon(&gaon()).unwrap();
+        assert_eq!(config.gaon.job_user.as_str(), "10001:10001");
+        let with_user = |user: &'static str| {
+            let mut options = gaon();
+            options.push(("--gaon-job-user", user));
+            with_gaon(&options)
+        };
+        assert_eq!(
+            with_user("1000:2000").unwrap().gaon.job_user.as_str(),
+            "1000:2000"
+        );
+        for refused in [
+            "root",
+            "root:root",
+            "1000",
+            "1000:",
+            ":1000",
+            "1000:wheel",
+            "-1:0",
+        ] {
+            assert!(with_user(refused).is_err(), "{refused} is refused");
+        }
     }
 
     #[test]

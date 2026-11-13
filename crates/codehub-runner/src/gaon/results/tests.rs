@@ -103,6 +103,29 @@ async fn a_malformed_body_is_refused_without_using_up_the_job_post() {
     assert_eq!(expectation.take(), Some(posted()));
 }
 
+#[tokio::test]
+async fn a_full_output_tail_of_control_bytes_is_taken_and_a_body_past_the_limit_is_not() {
+    let results = Results::default();
+    let base = listen(&results).await;
+    let mut expectation = results.expect(1, "right");
+    let full = Posted {
+        end: PostedEnd::Exited(1),
+        output: "\u{1}".repeat(crate::host::OUTPUT_LIMIT),
+    };
+    let text = serde_json::to_string(&full).unwrap();
+    assert!(
+        text.len() > 6 * crate::host::OUTPUT_LIMIT,
+        "each byte takes 6 in JSON"
+    );
+    assert_eq!(post(&base, 1, Some("right"), &text).await, StatusCode::OK);
+    assert_eq!(expectation.take(), Some(full));
+    let past = "x".repeat(BODY_LIMIT + 1);
+    assert_eq!(
+        post(&base, 1, Some("right"), &past).await,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+}
+
 #[test]
 fn digests_are_the_same_only_where_every_byte_is() {
     let a = [7_u8; 32];

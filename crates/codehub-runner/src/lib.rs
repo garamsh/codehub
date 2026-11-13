@@ -171,7 +171,7 @@ async fn gaon_executor(gaon: GaonConfig) -> Result<GaonExecutor, Error> {
             eprintln!("the result listener ended: {error}");
         }
     });
-    let executor = GaonExecutor::new(api, image, &result_url, results);
+    let executor = GaonExecutor::new(api, image, gaon.job_user, &result_url, results);
     executor.clean().await.map_err(Error::Gaon)?;
     Ok(executor)
 }

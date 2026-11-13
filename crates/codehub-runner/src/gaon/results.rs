@@ -12,10 +12,12 @@ use axum::routing::post;
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
+use crate::host::OUTPUT_LIMIT;
 use crate::run_job::Posted;
 
-/// The most a posted result may weigh, in bytes.
-const BODY_LIMIT: usize = 256 * 1024;
+/// The most a posted result may weigh, in bytes: an output tail of control bytes, each of which
+/// JSON writes in 6, and room for the rest of the body.
+const BODY_LIMIT: usize = 6 * OUTPUT_LIMIT + 4 * 1024;
 
 struct Slot {
     digest: [u8; 32],

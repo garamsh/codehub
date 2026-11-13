@@ -39,6 +39,8 @@ pub enum ApiError {
         code: u16,
         /// The `reason` of gaon's error body, or empty.
         reason: String,
+        /// The `message` of gaon's error body, or empty.
+        message: String,
     },
     /// The request was not sent or its answer not read.
     Transport(String),
@@ -55,8 +57,20 @@ impl ApiError {
 impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Status { code, reason } if reason.is_empty() => write!(f, "gaon answered {code}"),
-            Self::Status { code, reason } => write!(f, "gaon answered {code} {reason}"),
+            Self::Status {
+                code,
+                reason,
+                message,
+            } => {
+                write!(f, "gaon answered {code}")?;
+                if !reason.is_empty() {
+                    write!(f, " {reason}")?;
+                }
+                if !message.is_empty() {
+                    write!(f, ": {message}")?;
+                }
+                Ok(())
+            }
             Self::Transport(reason) => write!(f, "gaon could not be reached: {reason}"),
         }
     }
@@ -139,14 +153,16 @@ impl Api {
         if status.is_success() {
             Ok(body)
         } else {
-            let reason = body
-                .get("reason")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
+            let text = |key: &str| {
+                body.get(key)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
             Err(ApiError::Status {
                 code: status.as_u16(),
-                reason,
+                reason: text("reason"),
+                message: text("message"),
             })
         }
     }

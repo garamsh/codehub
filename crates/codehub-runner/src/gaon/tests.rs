@@ -111,7 +111,9 @@ impl Stub {
 fn error(code: StatusCode, reason: &str) -> (StatusCode, Json<Value>) {
     (
         code,
-        Json(json!({ "code": code.as_u16(), "reason": reason, "message": reason })),
+        Json(
+            json!({ "code": code.as_u16(), "reason": reason, "message": format!("{reason} in detail") }),
+        ),
     )
 }
 
@@ -385,7 +387,14 @@ async fn rig(guest: Guest) -> Rig {
         RUNNER.to_owned(),
     );
     let result_url = format!("http://{listener}");
-    let executor = GaonExecutor::new(api, IMAGE.to_owned(), &result_url, results).with_timing(
+    let executor = GaonExecutor::new(
+        api,
+        IMAGE.to_owned(),
+        "4242:4343".parse().unwrap(),
+        &result_url,
+        results,
+    )
+    .with_timing(
         std::time::Duration::from_millis(10),
         std::time::Duration::from_secs(5),
     );
@@ -458,6 +467,7 @@ async fn a_job_creates_a_secret_then_a_microvm_that_carry_the_label_and_referenc
     let spec = &microvm.body.as_ref().unwrap()["spec"];
     assert_eq!(spec["runStrategy"], "Once");
     assert_eq!(spec["image"], IMAGE);
+    assert_eq!(spec["user"], "4242:4343");
     assert_eq!(
         spec["command"],
         json!([
@@ -692,6 +702,7 @@ async fn a_refused_request_is_an_executor_error_that_does_not_carry_the_token() 
     rig.stub.inner().fail_puts = true;
     let error = run(&rig, &job(1, "true")).await.unwrap_err();
     assert!(matches!(&error, ExecutorError::Orchestrator(reason) if reason.contains("500")));
+    assert!(error.to_string().contains("Internal in detail"), "{error}");
     for text in [error.to_string(), format!("{error:?}")] {
         assert!(!text.contains("token-one"), "{text}");
     }
