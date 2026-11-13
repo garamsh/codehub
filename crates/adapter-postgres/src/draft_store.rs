@@ -75,46 +75,6 @@ type Row = (
 );
 
 impl DraftStore for PostgresDraftStore {
-    async fn stage(
-        &self,
-        repository: RepositoryId,
-        draft: &DraftId,
-        base: Option<Address>,
-        path: Path,
-        change: Change,
-    ) -> Result<(), DraftStoreError> {
-        let (kind, content) = change_columns(change);
-        let mut transaction = self.pool.begin().await.map_err(backend)?;
-        // The no-op update returns the row of a draft already held, with its own base.
-        let id = sqlx::query_scalar::<_, i64>(
-            "insert into drafts (repository, issuer, subject, name, base) \
-             values ($1, $2, $3, $4, $5) \
-             on conflict (repository, issuer, subject, name) do update set name = drafts.name \
-             returning id",
-        )
-        .bind(repository_column(repository)?)
-        .bind(draft.principal.issuer())
-        .bind(draft.principal.subject())
-        .bind(draft.name.as_str())
-        .bind(base.as_ref().map(|base| base.digest().as_slice()))
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(backend)?;
-        sqlx::query(
-            "insert into draft_changes (draft, path, kind, content) values ($1, $2, $3, $4) \
-             on conflict (draft, path) do update \
-             set kind = excluded.kind, content = excluded.content",
-        )
-        .bind(id)
-        .bind(conversion::path_column(&path))
-        .bind(kind)
-        .bind(content)
-        .execute(&mut *transaction)
-        .await
-        .map_err(backend)?;
-        transaction.commit().await.map_err(backend)
-    }
-
     async fn open(
         &self,
         repository: RepositoryId,

@@ -16,8 +16,8 @@ use app::port::driving::members::Members;
 use app::port::driving::repositories::{Repositories, RepositoriesError};
 use app::port::driving::source_control::LandError;
 use app::port::driving::source_control::ReadFileError;
-use app::port::driving::source_control::StageError;
 use app::port::driving::source_control::UploadError;
+use app::port::driving::source_control::WorkspaceError;
 use app::port::driving::source_control::{SourceControl, SourceControlError};
 use app::use_case::administration::Administration;
 use app::use_case::members::{MembersAdapters, MembersService};
@@ -82,9 +82,9 @@ pub async fn staging_a_file_whose_object_was_never_uploaded_is_rejected<H: Deplo
         source_control
             .stage(&ada, repo.id, &draft, path(), file)
             .await,
-        Err(SourceControlError::Stage(StageError::ObjectMissing(
-            content
-        )))
+        Err(SourceControlError::Workspace(
+            WorkspaceError::ObjectMissing(content)
+        ))
     );
 
     // Control: uploaded to another repository it is still missing here; uploaded here it stages.
@@ -93,9 +93,9 @@ pub async fn staging_a_file_whose_object_was_never_uploaded_is_rejected<H: Deplo
         source_control
             .stage(&ada, repo.id, &draft, path(), file)
             .await,
-        Err(SourceControlError::Stage(StageError::ObjectMissing(
-            content
-        )))
+        Err(SourceControlError::Workspace(
+            WorkspaceError::ObjectMissing(content)
+        ))
     );
     assert_eq!(repo.upload("bytes").await, content);
     assert_eq!(

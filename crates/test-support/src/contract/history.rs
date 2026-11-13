@@ -94,3 +94,29 @@ pub async fn a_history_query_without_a_changeset_reads_at_main<H: Deployment>() 
         [landed[0]]
     );
 }
+
+/// A history query returns each version's landing message.
+pub async fn a_history_query_returns_each_versions_landing_message<H: Deployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    for (name, message, content) in [("one", "add a", "a1"), ("two", "change a", "a2")] {
+        let draft = draft(name);
+        repo.stage(&ada, &draft, &[("a", content)]).await;
+        repo.land(&ada, &draft, message).await.unwrap();
+    }
+
+    let versions = harness
+        .source_control()
+        .history(&ada, repo.id, None, &"a".parse().unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        versions
+            .iter()
+            .map(|version| version.message.as_str())
+            .collect::<Vec<_>>(),
+        ["change a", "add a"]
+    );
+}

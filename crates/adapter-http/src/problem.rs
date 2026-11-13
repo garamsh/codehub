@@ -22,7 +22,6 @@ use app::port::driving::source_control::LandError;
 use app::port::driving::source_control::ListFilesError;
 use app::port::driving::source_control::ReadFileError;
 use app::port::driving::source_control::SourceControlError;
-use app::port::driving::source_control::StageError;
 use app::port::driving::source_control::UploadError;
 use app::port::driving::source_control::WorkspaceError;
 use axum::Json;
@@ -281,19 +280,6 @@ impl From<UploadError> for Problem {
     }
 }
 
-impl From<StageError> for Problem {
-    fn from(error: StageError) -> Self {
-        match error {
-            StageError::ObjectMissing(address) => Self::bad_request(format!(
-                "the content {address} is not uploaded to this repository"
-            )),
-            StageError::Objects(error) => error.into(),
-            StageError::Log(error) => error.into(),
-            StageError::Drafts(error) => error.into(),
-        }
-    }
-}
-
 impl From<LandError> for Problem {
     fn from(error: LandError) -> Self {
         match error {
@@ -371,7 +357,6 @@ impl From<SourceControlError> for Problem {
         match error {
             SourceControlError::Access(error) => error.into(),
             SourceControlError::Upload(error) => error.into(),
-            SourceControlError::Stage(error) => error.into(),
             SourceControlError::Land(error) => error.into(),
             SourceControlError::ReadFile(error) => error.into(),
             SourceControlError::History(error) => error.into(),

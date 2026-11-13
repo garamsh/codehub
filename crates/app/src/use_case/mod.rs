@@ -20,6 +20,5 @@ pub mod relay;
 pub mod repositories;
 pub mod runners;
 pub mod source_control;
-pub mod stage;
 pub mod upload;
 pub mod workspace;

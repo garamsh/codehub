@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use crate::domain::address::Address;
 use crate::domain::changeset::Change;
 use crate::domain::draft::Edit;
-use crate::domain::file_version::FileVersionNode;
 use crate::domain::name::DraftName;
 use crate::domain::path::{Path, Prefix};
 use crate::domain::principal::Caller;
@@ -18,7 +17,7 @@ use crate::port::driven::object_store::{Grant, ObjectStore};
 use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driving::source_control::{
     FileContent, LandError, Landing, ListedFile, PathDiff, SourceControl, SourceControlError,
-    Workspace,
+    Version, Workspace,
 };
 use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::post_land_checks::PostLandChecks;
@@ -205,7 +204,7 @@ where
         repository: RepositoryId,
         at: Option<Address>,
         path: &Path,
-    ) -> Result<Vec<FileVersionNode>, SourceControlError> {
+    ) -> Result<Vec<Version>, SourceControlError> {
         self.inner.history(caller, repository, at, path).await
     }
 }

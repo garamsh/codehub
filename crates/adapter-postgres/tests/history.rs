@@ -15,3 +15,8 @@ async fn a_path_history_query_returns_its_version_chain_newest_first() {
 async fn a_history_query_without_a_changeset_reads_at_main() {
     history::a_history_query_without_a_changeset_reads_at_main::<Harness>().await;
 }
+
+#[tokio::test]
+async fn a_history_query_returns_each_versions_landing_message() {
+    history::a_history_query_returns_each_versions_landing_message::<Harness>().await;
+}

@@ -3098,7 +3098,8 @@
           "path",
           "kind",
           "content",
-          "previous"
+          "previous",
+          "message"
         ],
         "properties": {
           "changeset": {
@@ -3118,6 +3119,10 @@
             "items": {
               "$ref": "#/components/schemas/Address"
             }
+          },
+          "message": {
+            "type": "string",
+            "description": "The landing message of the changeset that introduced this version."
           }
         }
       },

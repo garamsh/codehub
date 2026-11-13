@@ -5,17 +5,18 @@ use std::collections::BTreeMap;
 
 use crate::domain::address::Address;
 use crate::domain::derivation;
-use crate::domain::file_version::{self, FileVersionNode, FileVersions};
+use crate::domain::file_version::{self, FileVersions};
 use crate::domain::path::Path;
 use crate::domain::repository::RepositoryId;
 use crate::port::driven::changeset_log::{ChangesetLog, Ref};
 use crate::port::driven::derived_data::{DerivedData, DerivedDataError};
-use crate::port::driving::source_control::HistoryError;
+use crate::port::driving::source_control::{HistoryError, Version};
 
 /// The versions of `path` as of the changeset `at`, or as of `main` where `at` is `None`, newest
 /// first; none where `main` is unset.
 ///
-/// Derives and stores the file-version nodes of `at` and of each ancestor that lacks them.
+/// Derives and stores the file-version nodes of `at` and of each ancestor that lacks them, and reads
+/// each version's message from its changeset.
 ///
 /// # Errors
 ///
@@ -27,7 +28,7 @@ pub async fn history<L: ChangesetLog, D: DerivedData>(
     repository: RepositoryId,
     at: Option<Address>,
     path: &Path,
-) -> Result<Vec<FileVersionNode>, HistoryError> {
+) -> Result<Vec<Version>, HistoryError> {
     let at = match at {
         Some(at) => at,
         None => match log.read_ref(repository, Ref::Main).await? {
@@ -44,7 +45,19 @@ pub async fn history<L: ChangesetLog, D: DerivedData>(
     let mut nodes = BTreeMap::new();
     loop {
         match file_version::history(path, &value, &nodes) {
-            Ok(versions) => return Ok(versions.into_iter().cloned().collect()),
+            Ok(versions) => {
+                let mut found = Vec::with_capacity(versions.len());
+                for node in versions {
+                    found.push(Version {
+                        changeset: node.changeset,
+                        path: node.path.clone(),
+                        file: node.file,
+                        previous: node.previous.clone(),
+                        message: log.get(repository, node.changeset).await?.message,
+                    });
+                }
+                return Ok(found);
+            }
             Err(file_version::HistoryError::MissingNode(address)) => {
                 let node = derived.file_version_node(repository, address).await?;
                 nodes.insert(address, node);

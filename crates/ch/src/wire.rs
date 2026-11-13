@@ -186,6 +186,8 @@ pub struct Version {
     pub content: String,
     /// The changesets this version follows.
     pub previous: Vec<String>,
+    /// Why the changeset landed.
+    pub message: String,
 }
 
 /// The versions of a file, newest first.
