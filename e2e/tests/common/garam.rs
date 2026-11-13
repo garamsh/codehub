@@ -257,27 +257,38 @@ impl Garam {
             message(4, &resource),
         ]
         .concat();
-        self.policy(&person.org, "owner", &message(1, &role_link));
+        self.policy(&person.org, "owner", &message(1, &role_link), None);
     }
 
     /// Forbids every write under `src` in `person`'s organisation, and nothing else.
     ///
     /// A guardrail the platform's console would write; written here through `CreatePolicy` and
-    /// `ActivatePolicy` as the platform. The text is garam's own test of the path context.
+    /// `ActivatePolicy` as the platform, with the owner as the writer. The text is garam's own test of the path context.
     ///
     /// # Panics
     ///
     /// Panics where [`Garam::make_owner`] does.
     pub fn forbid_writes_under_src(&self, person: &Person) {
         let guardrail = r#"forbid ( principal, action == Codehub::Action::"repo.write", resource ) when { context has path && (context.path == "src" || context.path like "src/*") };"#;
-        self.policy(&person.org, "no-src", &string(2, guardrail));
+        self.policy(
+            &person.org,
+            "no-src",
+            &string(2, guardrail),
+            Some(&person.grn),
+        );
     }
 
-    /// Creates and activates the policy `name` with `body` in the organisation `org`.
-    fn policy(&self, org: &str, name: &str, body: &[u8]) {
+    /// Creates and activates the policy `name` with `body` in the organisation `org`, as the
+    /// platform. Only a role link is written without a writer; any other policy names the person
+    /// `writer`, who must hold the right to write it.
+    fn policy(&self, org: &str, name: &str, body: &[u8], writer: Option<&str>) {
+        let writer = writer.map_or_else(Vec::new, |grn| {
+            message(1, &[string(1, "Iam::User"), string(2, grn)].concat())
+        });
         let id = format!("grn:{org}/iam/policy/codehub-e2e-{name}");
         let org_grn = format!("grn:root/iam/org/{org}");
         let create = [
+            writer.clone(),
             string(2, &org_grn),
             string(3, &id),
             string(4, &format!("codehub-e2e-{name}")),
@@ -287,7 +298,7 @@ impl Garam {
         self.grpc("CreatePolicy", &create);
         self.grpc(
             "ActivatePolicy",
-            &[string(2, &org_grn), string(3, &id)].concat(),
+            &[writer, string(2, &org_grn), string(3, &id)].concat(),
         );
     }
 
