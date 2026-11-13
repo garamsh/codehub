@@ -1,6 +1,7 @@
 //! The `codehub-runner` binary's library and its composition site: claims the checks of a
 //! codehub server and runs them on this machine.
 
+pub mod check_executor;
 pub mod config;
 pub mod core;
 pub mod executor;
@@ -15,9 +16,10 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 pub use crate::config::Config;
-use crate::config::{Command, ExecutorKind, GaonConfig};
+use crate::config::{CheckExecutor, Command, ExecutorKind, GaonConfig};
 use crate::core::Mode;
 use crate::executor::ExecutorError;
 use crate::gaon::GaonExecutor;
@@ -84,8 +86,10 @@ impl std::error::Error for Error {}
 /// An [`Error`] where a setting is missing or unusable, where the gaon driver cannot start, or
 /// where `--once` could not claim.
 pub async fn run(config: Config) -> Result<ExitCode, Error> {
-    if let Some(Command::RunJob { job }) = &config.command {
-        return Ok(run_job::run(job).await);
+    match config.command {
+        Some(Command::RunJob { job }) => return Ok(run_job::run(&job).await),
+        Some(Command::CheckExecutor(check)) => return check_executor(*check).await,
+        None => {}
     }
     let http = reqwest::Client::new();
     let mut hidden = None;
@@ -129,6 +133,26 @@ pub async fn run(config: Config) -> Result<ExitCode, Error> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Runs the executor check: builds the executor `--executor` names as the runner does, with no
+/// server and no token, runs one job through it, and prints how it ended.
+async fn check_executor(check: CheckExecutor) -> Result<ExitCode, Error> {
+    let timeout = Duration::from_secs(check.timeout);
+    let outcome = match check.executor {
+        ExecutorKind::Host => {
+            let work_dir = check.work_dir.unwrap_or_else(std::env::temp_dir);
+            let executor = HostExecutor::new(work_dir, reqwest::Client::new(), None);
+            check_executor::run(&executor, &check.command, timeout).await
+        }
+        ExecutorKind::Gaon => match gaon_executor(check.gaon).await {
+            Ok(executor) => check_executor::run(&executor, &check.command, timeout).await,
+            // Listing gaon at start is the executor's setup failing, which is what the check reports.
+            Err(Error::Gaon(error)) => check_executor::Outcome::of(Err(error)),
+            Err(error) => return Err(error),
+        },
+    };
+    Ok(outcome.finish())
 }
 
 /// Builds the gaon driver, starts its result listener, and removes what an earlier run left.

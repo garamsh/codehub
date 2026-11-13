@@ -707,3 +707,36 @@ async fn a_refused_request_is_an_executor_error_that_does_not_carry_the_token() 
         assert!(!text.contains("token-one"), "{text}");
     }
 }
+
+#[tokio::test]
+async fn the_executor_check_runs_one_job_through_the_stub_and_exits_with_the_posted_code() {
+    let rig = rig(posts(3, "from the guest\n", &[("Failed", true)])).await;
+    let outcome =
+        crate::check_executor::run(&rig.executor, "make test", Duration::from_secs(60)).await;
+    assert_eq!(outcome.code, 3);
+    assert_eq!(outcome.stdout, "exited with code 3\nfrom the guest\n");
+    let calls = rig.stub.calls();
+    let created = puts(&calls);
+    let kinds: Vec<_> = created.iter().map(|call| call.kind.as_str()).collect();
+    assert_eq!(kinds, ["secrets", "microvms"]);
+    let name = created[0].name.clone().unwrap();
+    assert!(name.starts_with("codehub-job-"), "{name}");
+    for call in &created {
+        assert_eq!(call.name.as_deref(), Some(name.as_str()));
+        let labels = &call.body.as_ref().unwrap()["metadata"]["labels"];
+        assert_eq!(labels[RUNNER_LABEL], RUNNER);
+    }
+    let deleted: Vec<_> = calls
+        .iter()
+        .filter(|call| call.method == "DELETE")
+        .map(|call| (call.kind.as_str(), call.name.as_deref()))
+        .collect();
+    assert_eq!(
+        deleted,
+        [
+            ("microvms", Some(name.as_str())),
+            ("secrets", Some(name.as_str()))
+        ]
+    );
+    assert!(rig.stub.held().is_empty());
+}

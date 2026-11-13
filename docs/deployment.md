@@ -8,6 +8,7 @@ This file is the contract between codehub and whoever declares its deployment. I
 - Images
 - Server settings
 - Runner options
+- Checking an executor
 - The runner on gaon
 - What the server needs
 - Health
@@ -99,6 +100,10 @@ The runner is configured by options, and by the variables where the table gives 
 | `--gaon-job-user` | `CODEHUB_RUNNER_GAON_JOB_USER` | no | The numeric `uid:gid` a job's MicroVM runs as (`spec.user`), default `10001:10001`, the user of the runner image. The MicroVM's description file is owned by it; gaon makes a file without an owner root-owned, which the image's user could not read, and refuses a user given by name. |
 
 `codehub-runner run-job` is the mode a job's MicroVM runs under gaon: it takes the path of the job file, needs neither the server nor credentials, and is not for a person to run.
+
+## Checking an executor
+
+`codehub-runner check-executor --command <command> [--timeout <seconds>]` runs one job with no files and that command through the executor that `--executor` and its settings configure (`--work-dir` for `host`, the gaon options for `gaon`), and exits with the command's code. An operator runs it to check an executor's setup before registering a runner (ADR 0047). It contacts no codehub server, so it needs neither `--server` nor a token setting. It stops the job as timed out after `--timeout` seconds, 600 by default, prints one line naming how the job ended and then the output tail, and exits 1 for an end that is not a code from 0 to 255 and 125 for an executor error. With `--executor gaon` it removes the objects that carry `--gaon-runner-name` when it starts, as the runner does, so give it a name of its own and never a live runner's: that runner's job in flight would be deleted.
 
 ## The runner on gaon
 

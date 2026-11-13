@@ -29,6 +29,43 @@ pub enum Command {
         #[arg(long)]
         job: PathBuf,
     },
+    /// Runs one job with no files and a given command through the configured executor, with no
+    /// server, and exits with the command's code.
+    CheckExecutor(Box<CheckExecutor>),
+}
+
+/// The settings of `check-executor`: the executor's, as the runner takes them, and the job's.
+#[derive(Args, Debug)]
+pub struct CheckExecutor {
+    /// The command to run under `/bin/sh -c`.
+    #[arg(long)]
+    pub command: String,
+
+    /// Seconds after which the job is stopped as timed out.
+    #[arg(
+        long,
+        default_value_t = crate::check_executor::DEFAULT_TIMEOUT_SECONDS,
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub timeout: u64,
+
+    /// Where the job's directories are made, for the host executor; the system's temporary
+    /// directory where absent.
+    #[arg(long, env = "CODEHUB_RUNNER_WORK_DIR")]
+    pub work_dir: Option<PathBuf>,
+
+    /// Where the job's command runs.
+    #[arg(
+        long,
+        env = "CODEHUB_RUNNER_EXECUTOR",
+        value_enum,
+        default_value = "host"
+    )]
+    pub executor: ExecutorKind,
+
+    /// The gaon driver's settings.
+    #[command(flatten)]
+    pub gaon: GaonConfig,
 }
 
 /// The gaon driver's settings, each required where the executor is `gaon`.
@@ -453,5 +490,40 @@ mod tests {
         ));
         assert!(config.server.is_none());
         assert!(parse(&["run-job"]).is_err(), "the job file is required");
+    }
+
+    #[test]
+    fn check_executor_needs_neither_a_server_nor_credentials() {
+        let config = parse(&["check-executor", "--command", "echo x"]).unwrap();
+        let Some(Command::CheckExecutor(check)) = config.command else {
+            panic!("the subcommand is parsed");
+        };
+        assert_eq!(check.command, "echo x");
+        assert_eq!(check.timeout, 600);
+        assert_eq!(check.executor, ExecutorKind::Host);
+        assert!(config.server.is_none());
+        assert!(
+            parse(&["check-executor"]).is_err(),
+            "the command is required"
+        );
+        assert!(parse(&["check-executor", "--command", "x", "--timeout", "0"]).is_err());
+    }
+
+    #[test]
+    fn check_executor_on_gaon_is_refused_without_any_one_of_its_settings() {
+        let with = |options: &[(&str, &str)]| {
+            let mut args = vec!["check-executor", "--command", "x", "--executor", "gaon"];
+            for (flag, value) in options {
+                args.extend([*flag, *value]);
+            }
+            parse(&args)
+        };
+        assert!(with(&gaon()).is_ok());
+        for missing in 0..gaon().len() {
+            let mut options = gaon();
+            let (flag, _) = options.remove(missing);
+            let error = with(&options).unwrap_err().to_string();
+            assert!(error.contains(flag), "{flag} is named: {error}");
+        }
     }
 }
