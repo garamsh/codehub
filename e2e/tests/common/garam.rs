@@ -14,7 +14,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
 use test_support::{TestDatabase, env};
 
-use super::Server;
+use super::{Server, TokenUser};
 
 /// How long a request, a command or a wait for garam may take.
 const BOUND: Duration = Duration::from_secs(60);
@@ -83,11 +83,28 @@ impl Garam {
     ///
     /// Panics where `Server::start` does.
     pub fn server(&self, database: &TestDatabase, key: &Path) -> Server {
-        self.server_at(database, key, &env("CODEHUB_GARAM_E2E_POLICY_URL"))
+        self.server_at(database, key, &env("CODEHUB_GARAM_E2E_POLICY_URL"), "garam")
     }
 
-    /// Starts `codehub` as [`Garam::server`] does, asking the decision point at `policy`.
-    fn server_at(&self, database: &TestDatabase, key: &Path, policy: &str) -> Server {
+    /// Starts `codehub` as [`Garam::server`] does, with the directory outbox discarding what it
+    /// would deliver to garam (`CODEHUB_DIRECTORY_CHANGES=none`).
+    ///
+    /// # Panics
+    ///
+    /// Panics where `Server::start` does.
+    pub fn server_without_delivery(&self, database: &TestDatabase, key: &Path) -> Server {
+        self.server_at(database, key, &env("CODEHUB_GARAM_E2E_POLICY_URL"), "none")
+    }
+
+    /// Starts `codehub` as [`Garam::server`] does, asking the decision point at `policy`, with the
+    /// directory outbox set to `changes`.
+    fn server_at(
+        &self,
+        database: &TestDatabase,
+        key: &Path,
+        policy: &str,
+        changes: &str,
+    ) -> Server {
         let kid = std::fs::read_to_string(self.key("codehub.kid")).unwrap();
         Server::start_with(
             database,
@@ -113,7 +130,7 @@ impl Garam {
                     "CODEHUB_AUTHZEN_CLIENT_ID",
                     "grn:{organisation}/iam/service/codehub".to_owned(),
                 ),
-                ("CODEHUB_DIRECTORY_CHANGES", "garam".to_owned()),
+                ("CODEHUB_DIRECTORY_CHANGES", changes.to_owned()),
                 ("CODEHUB_DIRECTORY_GARAM_URL", policy.to_owned()),
                 ("SSL_CERT_FILE", env("CODEHUB_GARAM_E2E_CA")),
             ],
@@ -127,7 +144,12 @@ impl Garam {
     ///
     /// Panics where `Server::start` does.
     pub fn server_without_decision_point(&self, database: &TestDatabase) -> Server {
-        self.server_at(database, &self.key("codehub.pem"), "https://localhost:9")
+        self.server_at(
+            database,
+            &self.key("codehub.pem"),
+            "https://localhost:9",
+            "garam",
+        )
     }
 
     /// Runs `sql` in garam's database `database` (`garam` or `policy`) and returns its output.
@@ -141,7 +163,7 @@ impl Garam {
         } else {
             "postgres"
         };
-        let out = Command::new("docker")
+        let out = bounded("docker")
             .args(["compose", "-f"])
             .arg(&self.compose)
             .args(["exec", "-T", service, "psql", "-U", "garam", "-d", database])
@@ -341,8 +363,9 @@ impl Garam {
             "{}/garam.policy.v1.PolicyService/{method}",
             env("CODEHUB_GARAM_E2E_POLICY_URL")
         );
-        let out = Command::new("curl")
-            .args(["-sS", "--http2", "--cacert"])
+        let out = bounded("curl")
+            .args(["-sS", "--max-time", &BOUND.as_secs().to_string()])
+            .args(["--http2", "--cacert"])
             .arg(env("CODEHUB_GARAM_E2E_CA"))
             .args(["-H", "content-type: application/grpc", "-H", "te: trailers"])
             .args(["-H", &format!("authorization: Bearer {jwt}")])
@@ -371,6 +394,56 @@ impl Garam {
             status, "0",
             "{method} answered gRPC status {status}:\n{headers}"
         );
+    }
+
+    /// Whether garam's policy service holds the entity of the repository `id` in the organisation
+    /// `org`, which codehub's directory outbox delivers once a repository is created.
+    ///
+    /// # Panics
+    ///
+    /// Panics where [`Garam::psql`] does.
+    pub fn holds_repository(&self, org: &str, id: u64) -> bool {
+        let grn = format!("grn:{org}/codehub/repo/{id}");
+        self.psql(
+            "policy",
+            &format!(
+                "SELECT count(*) FROM entities WHERE entity_id = '{grn}' AND document IS NOT NULL"
+            ),
+        ) == "1"
+    }
+
+    /// Waits, for the bound, until garam holds the repository `id` of `org`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if it does not within the bound.
+    pub fn wait_for_repository(&self, org: &str, id: u64) {
+        let deadline = Instant::now() + BOUND;
+        while !self.holds_repository(org, id) {
+            assert!(
+                Instant::now() < deadline,
+                "garam did not hold repository {id} of {org} after the bound"
+            );
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
+    /// Creates the repository `organisation/name` as `owner`, and returns its identity. Creation
+    /// answers once the outbox's delivery wait elapses whether or not garam has the repository,
+    /// so this waits until it does: a step that depends on garam knowing the repository waits on
+    /// that.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the creation fails or garam does not hold the repository within the bound.
+    pub async fn create_repository(&self, owner: &TokenUser, org: &str, name: &str) -> u64 {
+        let out = owner
+            .ok(&["--json", "repo", "create", &format!("{org}/{name}")])
+            .await;
+        let created: Value = serde_json::from_str(&out).unwrap();
+        let id = created["id"].as_u64().unwrap();
+        self.wait_for_repository(org, id);
+        id
     }
 
     /// Waits until garam's platform has delivered every entity it holds to the policy service.
@@ -425,12 +498,21 @@ impl Garam {
     }
 }
 
+/// `program` run under `timeout` for the bound, so a stalled command fails the test instead of
+/// hanging it.
+fn bounded(program: &str) -> Command {
+    let mut command = Command::new("timeout");
+    command.arg(BOUND.as_secs().to_string()).arg(program);
+    command
+}
+
 /// `n` random bytes in hex.
 fn rand_hex(n: usize) -> String {
-    let out = Command::new("openssl")
+    let out = bounded("openssl")
         .args(["rand", "-hex", &n.to_string()])
         .output()
         .unwrap();
+    assert!(out.status.success(), "openssl could not make random bytes");
     String::from_utf8(out.stdout).unwrap().trim().to_owned()
 }
 
@@ -450,7 +532,7 @@ fn hex_sha256(bytes: &[u8]) -> String {
 fn sign(key: &Path, input: &[u8]) -> Vec<u8> {
     use std::io::Write as _;
     use std::process::Stdio;
-    let mut child = Command::new("openssl")
+    let mut child = bounded("openssl")
         .args(["dgst", "-sha256", "-sign"])
         .arg(key)
         .stdin(Stdio::piped())

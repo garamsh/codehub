@@ -2,7 +2,8 @@
 # Brings up the garam stack (dev/garam/compose.yaml) with fresh throwaway keys, runs the end-to-end
 # test against it (e2e/tests/garam.rs) and removes the stack, its volumes and the keys at every
 # exit, whatever the test's result. Run from the repository root by `make e2e-garam`.
-# Arguments pass to `cargo test` (`-- --ignored` runs the ignored tests).
+# Arguments pass to `cargo test`, after the test selection. Every wait is bounded, so a stalled
+# service fails the run instead of hanging it.
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -32,11 +33,11 @@ sh "$here/keys.sh" "$dir"
 
 # The policy service trusts the keys the running issuer publishes, so the api and the gateway
 # start first and the policy service after the keys are fetched.
-compose up --detach --wait gateway machine
-curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-delay 1 --cacert "$dir/ca.crt" \
+compose up --detach --wait --wait-timeout 120 gateway machine
+curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-delay 1 --max-time 10 --cacert "$dir/ca.crt" \
     "$CODEHUB_GARAM_E2E_ISSUER/oauth/jwks" >"$dir/issuer-jwks.json"
-compose up --detach --wait policy
-compose run --rm -T --no-deps api policy-feed start
+compose up --detach --wait --wait-timeout 120 policy
+timeout 120 docker compose -f "$CODEHUB_GARAM_E2E_COMPOSE" run --rm -T --no-deps api policy-feed start
 
 # Pointed at by the test: SSL_CERT_FILE is what lets codehub trust the certificate authority.
 CODEHUB_GARAM_E2E_CA=$dir/ca.crt

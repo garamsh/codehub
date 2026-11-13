@@ -19,7 +19,7 @@ e2e: services
 	cargo build --locked -p codehub -p ch -p codehub-runner
 	set -a && . dev/check-env.sh && set +a && TEST_SELECTOR="-p e2e" sh scripts/test-count.sh -- --skip garam_
 
-# The e2e tests whose names start with garam_ run against garam's published images (dev/garam), which
+# The e2e tests whose names contain garam_ run against garam's published images (dev/garam), which
 # the pipeline cannot pull, so `e2e` skips them and this target runs them: it starts the garam
 # stack, runs them and removes the stack and its keys at every exit. Needs the images in the local
 # Docker image store; it is not part of `ci`.

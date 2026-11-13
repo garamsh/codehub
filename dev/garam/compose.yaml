@@ -6,11 +6,14 @@ name: codehub-garam-e2e
 # CODEHUB_GARAM_E2E_DIR and removes the project and its volumes at every exit.
 #
 # Images are pinned by digest (tag kept for the reader). Mover: the PM, when garam releases; the
-# digests are the ones the PM verified for garam 0.8.0 (v0.8.0, 2a4d987). The PostgreSQL image is the one
-# garam's own stack pins. The host ports are dev/garam/env.sh's: the gateway for the issuer, the
+# digests are those recorded for garam 0.8.0 (release v0.8.0 at garamsh/garam
+# 2a4d987842899c43e18bf4904a79a6d346d20b73) in
+# https://github.com/garamsh/codehub/issues/137#issuecomment-6842874033. The PostgreSQL image is the
+# one garam's own stack pins. The host ports are dev/garam/env.sh's: the gateway for the issuer, the
 # machine listener for the token endpoint and the policy service for AuthZEN's HTTP binding.
 #
-# The containers run as the host's user, so the keys stay mode 0600 on the host.
+# Only the garam services (server and policy) run as the host's user, so the keys they read stay
+# mode 0600 on the host; the PostgreSQL and Caddy containers do not.
 x-server: &server
   image: 486152169996.dkr.ecr.ap-northeast-2.amazonaws.com/garam/server:0.8.0@sha256:898c44f06b6514525fb2c015135aa123bf086388a0b5d7ec37244b0daa7f21c7
   user: "${CODEHUB_GARAM_E2E_USER:?the host user the run script names}"

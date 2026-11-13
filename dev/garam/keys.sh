@@ -9,6 +9,9 @@ set -eu
 dir=${1:?the directory to write the keys into}
 umask 077
 
+# Every openssl call is bounded, so a stalled one fails the run.
+openssl() { timeout 30 openssl "$@"; }
+
 b64u() { basenc --base64url -w0 | tr -d =; }
 
 # The RSA modulus of the key $1 as base64url, and the RFC 7638 thumbprint garam reads as the kid.
