@@ -14,13 +14,22 @@ use serde_json::{Value, json};
 #[cfg(test)]
 const QUICK: [&str; 4] = ["--poll-interval-ms", "50", "--timeout", "2"];
 
-/// A server with the repository `<org>/app` of `ada`, its first landing and a runner `runner`
-/// registered in the organisation. Returns the organisation, the changeset and the runner's
-/// token.
+/// A server with the repository `<org>/app` of `ada`, its first landing, whose tree defines
+/// `checks` and so queues them, and a runner `runner` registered in the organisation. Returns
+/// the organisation, the changeset and the runner's token.
 #[cfg(test)]
-async fn landed(server: &Server, ada: &User) -> (String, String, String) {
+async fn landed(server: &Server, ada: &User, checks: &[(&str, bool)]) -> (String, String, String) {
     let org = repository(ada).await;
     put(ada, "default", "a.txt", "one\n").await;
+    if !checks.is_empty() {
+        put(
+            ada,
+            "default",
+            ".codehub/checks.toml",
+            &server.checks_file(checks),
+        )
+        .await;
+    }
     let changeset = ada.ok(&["land", "-m", "one"]).await.trim().to_owned();
     ada.ok(&["runner", "register", "runner", "--issuer", Server::ISSUER])
         .await;
@@ -31,9 +40,7 @@ async fn landed(server: &Server, ada: &User) -> (String, String, String) {
 async fn shows_last_green_none_and_a_line_per_job_of_the_head_of_main() {
     let server = serve().await;
     let ada = server.user("ada");
-    let (org, changeset, _) = landed(&server, &ada).await;
-    server.queue_check(&org, &changeset, "build", true).await;
-    server.queue_check(&org, &changeset, "lint", false).await;
+    let (_, changeset, _) = landed(&server, &ada, &[("build", true), ("lint", false)]).await;
 
     let expected = "last-green none\nbuild blocking queued -\nlint non-blocking queued -\n";
     assert_eq!(ada.ok(&["checks"]).await, expected);
@@ -45,9 +52,7 @@ async fn shows_last_green_none_and_a_line_per_job_of_the_head_of_main() {
 async fn shows_the_state_and_exit_code_of_each_job_and_where_last_green_stands() {
     let server = serve().await;
     let ada = server.user("ada");
-    let (org, changeset, runner) = landed(&server, &ada).await;
-    server.queue_check(&org, &changeset, "build", true).await;
-    server.queue_check(&org, &changeset, "lint", false).await;
+    let (_, changeset, runner) = landed(&server, &ada, &[("build", true), ("lint", false)]).await;
 
     server.finish_job(&runner, "passed", Some(0)).await;
     assert_eq!(
@@ -67,8 +72,7 @@ async fn shows_the_state_and_exit_code_of_each_job_and_where_last_green_stands()
 async fn names_the_changeset_that_reverts_a_failed_blocking_check() {
     let server = serve().await;
     let ada = server.user("ada");
-    let (org, changeset, runner) = landed(&server, &ada).await;
-    server.queue_check(&org, &changeset, "build", true).await;
+    let (_, changeset, runner) = landed(&server, &ada, &[("build", true)]).await;
     server.finish_job(&runner, "failed", Some(3)).await;
 
     let shown = ada.ok(&["checks", &changeset]).await;
@@ -84,8 +88,7 @@ async fn names_the_changeset_that_reverts_a_failed_blocking_check() {
 async fn names_the_paths_of_a_revert_that_conflicts() {
     let server = serve().await;
     let ada = server.user("ada");
-    let (org, changeset, runner) = landed(&server, &ada).await;
-    server.queue_check(&org, &changeset, "build", true).await;
+    let (_, changeset, runner) = landed(&server, &ada, &[("build", true)]).await;
     put(&ada, "default", "a.txt", "two\n").await;
     ada.ok(&["land", "-m", "two"]).await;
     server.finish_job(&runner, "failed", Some(1)).await;
@@ -101,8 +104,7 @@ async fn names_the_paths_of_a_revert_that_conflicts() {
 async fn shows_the_reason_of_a_revert_that_failed() {
     let server = serve().await;
     let ada = server.user("ada");
-    let (org, changeset, runner) = landed(&server, &ada).await;
-    server.queue_check(&org, &changeset, "build", true).await;
+    let (org, changeset, runner) = landed(&server, &ada, &[("build", true)]).await;
     server.finish_job(&runner, "failed", Some(3)).await;
     server
         .record_failed_revert(&org, &changeset, "revert not landed: log down")
@@ -129,8 +131,7 @@ async fn shows_the_reason_of_a_revert_that_failed() {
 async fn prints_the_checks_as_json() {
     let server = serve().await;
     let ada = server.user("ada");
-    let (org, changeset, runner) = landed(&server, &ada).await;
-    server.queue_check(&org, &changeset, "build", true).await;
+    let (_, changeset, runner) = landed(&server, &ada, &[("build", true)]).await;
     server.finish_job(&runner, "passed", Some(0)).await;
 
     let shown: Value = serde_json::from_str(&ada.ok(&["--json", "checks"]).await).unwrap();
@@ -147,7 +148,7 @@ async fn exits_5_for_a_repository_the_caller_may_not_see() {
     let server = serve().await;
     let ada = server.user("ada");
     let bob = server.user("bob");
-    let (org, changeset, _) = landed(&server, &ada).await;
+    let (org, changeset, _) = landed(&server, &ada, &[]).await;
     bob.ok(&["use", &format!("{org}/app")]).await;
 
     let hidden = bob.ch(&["checks", &changeset]).await;
@@ -162,9 +163,7 @@ async fn exits_5_for_a_repository_the_caller_may_not_see() {
 async fn waits_and_exits_0_when_every_blocking_check_passed() {
     let server = serve().await;
     let ada = server.user("ada");
-    let (org, changeset, runner) = landed(&server, &ada).await;
-    server.queue_check(&org, &changeset, "build", true).await;
-    server.queue_check(&org, &changeset, "lint", false).await;
+    let (_, _, runner) = landed(&server, &ada, &[("build", true), ("lint", false)]).await;
 
     let mut args = vec!["checks", "--wait"];
     args.extend(QUICK);
@@ -187,9 +186,7 @@ async fn waits_and_exits_0_when_every_blocking_check_passed() {
 async fn waits_and_exits_4_when_a_blocking_check_failed_or_timed_out() {
     let server = serve().await;
     let ada = server.user("ada");
-    let (org, changeset, runner) = landed(&server, &ada).await;
-    server.queue_check(&org, &changeset, "build", true).await;
-    server.queue_check(&org, &changeset, "lint", true).await;
+    let (_, changeset, runner) = landed(&server, &ada, &[("build", true), ("lint", true)]).await;
     server.finish_job(&runner, "failed", Some(2)).await;
     server.finish_job(&runner, "timed_out", None).await;
 
@@ -217,9 +214,7 @@ async fn waits_and_exits_4_when_a_blocking_check_failed_or_timed_out() {
 async fn waits_and_exits_4_naming_the_jobs_that_had_not_ended_at_the_timeout() {
     let server = serve().await;
     let ada = server.user("ada");
-    let (org, changeset, runner) = landed(&server, &ada).await;
-    server.queue_check(&org, &changeset, "build", true).await;
-    server.queue_check(&org, &changeset, "lint", true).await;
+    let (_, changeset, runner) = landed(&server, &ada, &[("build", true), ("lint", true)]).await;
     server.finish_job(&runner, "passed", Some(0)).await;
 
     let run = ada

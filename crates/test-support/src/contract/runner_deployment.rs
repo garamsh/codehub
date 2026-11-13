@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use adapter_memory::MemoryObjectStore;
+use adapter_memory::{MemoryIdentityVerification, MemoryObjectStore};
 use app::domain::address::Address;
 use app::domain::check::{CheckDefinition, Command, Timeout};
 use app::domain::name::{Label, OrganisationName};
@@ -13,13 +13,15 @@ use app::port::driven::job_queue::JobQueue;
 use app::port::driven::runner_registry::RunnerRegistry;
 use app::port::driving::runners::Runners;
 use app::port::driving::source_control::{SourceControl, SourceControlError};
-use app::use_case::checked_source_control::{CheckedAdapters, CheckedSourceControl};
-use app::use_case::checks::{ChecksAdapters, ChecksService};
-use app::use_case::jobs::{JobsAdapters, JobsService};
+use app::use_case::administration::Administration;
+use app::use_case::assembly::Assembly;
+use app::use_case::checked_source_control::CheckedSourceControl;
+use app::use_case::checks::ChecksService;
+use app::use_case::jobs::JobsService;
 use app::use_case::landing_attempts::LandingAttempts;
-use app::use_case::runners::{RunnersAdapters, RunnersService};
+use app::use_case::runners::RunnersService;
 
-use super::{Deployment, Repo, Service, draft};
+use super::{Deployment, MAX_UPLOAD_SIZE, Repo, Service, draft};
 
 /// Source control that queues the checks of what it lands, over a deployment's adapters.
 pub type Checked<'a, H> = CheckedSourceControl<
@@ -57,6 +59,24 @@ pub type ChecksOf<'a, H> = ChecksService<
     <H as RunnerDeployment>::Definitions,
 >;
 
+/// The driving ports over a deployment's adapters.
+pub type AssemblyOf<'a, H> = Assembly<
+    'a,
+    MemoryObjectStore,
+    <H as Deployment>::Log,
+    <H as Deployment>::Derived,
+    <H as Deployment>::Drafts,
+    <H as Deployment>::Directory,
+    <H as Deployment>::Authorisation,
+    <H as Deployment>::Membership,
+    <H as RunnerDeployment>::Queue,
+    <H as RunnerDeployment>::Registry,
+    <H as RunnerDeployment>::Definitions,
+    <H as Deployment>::Changes,
+    <H as Deployment>::Delivery,
+    MemoryIdentityVerification,
+>;
+
 /// How long a claim or a heartbeat holds a job, in seconds.
 pub const LEASE: i64 = 30;
 
@@ -82,62 +102,49 @@ pub trait RunnerDeployment: Deployment {
     /// format and `outcome` is what it reads as.
     fn teach(&self, text: &str, outcome: Result<Vec<CheckDefinition>, CheckFileError>);
 
-    /// The runners port over this deployment's adapters.
-    fn runners(&self) -> RunnersService<'_, Self::Registry, Self::Directory, Self::Authorisation> {
-        RunnersService::new(RunnersAdapters {
-            registry: self.registry(),
+    /// The driving ports over this deployment's adapters, assembled as the application ships
+    /// them, with the lease [`LEASE`].
+    fn assembly(&self) -> AssemblyOf<'_, Self> {
+        Assembly {
+            objects: self.objects(),
+            log: self.log(),
+            derived: self.derived(),
+            drafts: self.drafts(),
             directory: self.directory(),
             authorisation: self.authorisation(),
-        })
+            membership: self.membership(),
+            queue: self.queue(),
+            registry: self.registry(),
+            definitions: self.definitions(),
+            changes: self.changes(),
+            delivery: self.delivery(),
+            identity: self.identity(),
+
+            administration: Administration::BuiltIn,
+            max_upload_size: MAX_UPLOAD_SIZE,
+            attempts: LandingAttempts::default(),
+            lease: LEASE,
+        }
+    }
+
+    /// The runners port over this deployment's adapters.
+    fn runners(&self) -> RunnersService<'_, Self::Registry, Self::Directory, Self::Authorisation> {
+        self.assembly().runners()
     }
 
     /// The jobs port over this deployment's adapters, with the lease [`LEASE`].
     fn jobs(&self) -> JobsOf<'_, Self> {
-        JobsService::new(
-            JobsAdapters {
-                registry: self.registry(),
-                queue: self.queue(),
-                objects: self.objects(),
-                derived: self.derived(),
-                log: self.log(),
-                directory: self.directory(),
-                definitions: self.definitions(),
-            },
-            LEASE,
-            LandingAttempts::default(),
-        )
+        self.assembly().jobs()
     }
 
     /// The checks port over this deployment's adapters.
     fn checks(&self) -> ChecksOf<'_, Self> {
-        ChecksService::new(
-            ChecksAdapters {
-                queue: self.queue(),
-                log: self.log(),
-                directory: self.directory(),
-                authorisation: self.authorisation(),
-                objects: self.objects(),
-                derived: self.derived(),
-                definitions: self.definitions(),
-            },
-            LandingAttempts::default(),
-        )
+        self.assembly().checks()
     }
 
     /// Source control that queues the checks of what it lands.
     fn checked_source_control(&self) -> Checked<'_, Self> {
-        CheckedSourceControl::new(
-            self.source_control(),
-            CheckedAdapters {
-                objects: self.objects(),
-                derived: self.derived(),
-                log: self.log(),
-                directory: self.directory(),
-                queue: self.queue(),
-                definitions: self.definitions(),
-            },
-            LandingAttempts::default(),
-        )
+        self.assembly().source_control()
     }
 }
 

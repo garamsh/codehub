@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use app::domain::address::Address;
 use app::domain::check::{CheckDefinition, Command, Timeout};
-use app::domain::job::{JobId, NewJob};
+use app::domain::job::JobId;
 use app::domain::name::{OrganisationName, RepositoryName};
 use app::domain::principal::Principal;
 use app::domain::repository::RepositoryId;
@@ -20,18 +20,10 @@ use app::domain::revert::Revert;
 use app::port::driven::job_queue::JobQueue;
 use app::port::driven::object_store::ObjectStore;
 use app::port::driven::repository_directory::RepositoryDirectory;
-use app::port::driving::members::Members;
 use app::port::driving::repositories::Repositories;
-use app::port::driving::source_control::SourceControl;
 use app::use_case::administration::Administration;
-use app::use_case::authentication::AuthenticationService;
-use app::use_case::checks::{ChecksAdapters, ChecksService};
-use app::use_case::jobs::{JobsAdapters, JobsService};
+use app::use_case::assembly::Assembly;
 use app::use_case::landing_attempts::LandingAttempts;
-use app::use_case::members::{MembersAdapters, MembersService};
-use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
-use app::use_case::runners::{RunnersAdapters, RunnersService};
-use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
@@ -111,29 +103,69 @@ pub struct Api {
     router: Router,
 }
 
+/// The driving ports over the in-memory adapters of `Stores`.
+type Wired = Assembly<
+    'static,
+    MemoryObjectStore,
+    MemoryChangesetLog,
+    MemoryDerivedData,
+    MemoryDraftStore,
+    MemoryRepositoryDirectory,
+    MemoryAuthorisationDecision,
+    MemoryMembership,
+    MemoryJobQueue,
+    MemoryRunnerRegistry,
+    MemoryCheckDefinitions,
+    (),
+    (),
+    MemoryIdentityVerification,
+>;
+
+/// The driving ports over `stores`, with members administered as `administration` says.
+fn assembly(stores: &'static Stores, administration: Administration) -> Wired {
+    Assembly {
+        objects: &stores.objects,
+        log: &stores.log,
+        derived: &stores.derived,
+        drafts: &stores.drafts,
+        directory: &stores.directory,
+        authorisation: &stores.authorisation,
+        membership: &stores.membership,
+        queue: &stores.queue,
+        registry: &stores.registry,
+        definitions: &stores.definitions,
+        changes: &(),
+        delivery: &(),
+        identity: &stores.identity,
+
+        administration,
+        max_upload_size: MAX_UPLOAD_SIZE,
+        attempts: LandingAttempts::default(),
+        lease: LEASE,
+    }
+}
+
+/// The router over `stores`, with members administered as `administration` says.
+pub fn router(stores: &'static Stores, administration: Administration) -> Router {
+    let assembly = assembly(stores, administration);
+    router_with(stores, administration, assembly.repositories())
+}
+
 /// The router over `stores`, with the repositories port replaced by `repositories`.
-pub fn router_with<R>(stores: &'static Stores, repositories: R) -> Router
+pub fn router_with<R>(
+    stores: &'static Stores,
+    administration: Administration,
+    repositories: R,
+) -> Router
 where
     R: Repositories + Send + Sync + 'static,
 {
+    let assembly = assembly(stores, administration);
     adapter_http::router(
-        AuthenticationService::new(&stores.identity),
+        assembly.authentication(),
         repositories,
-        members(stores),
-        source_control(stores),
-    )
-}
-
-fn repositories(stores: &'static Stores) -> impl Repositories + Send + Sync + 'static {
-    RepositoriesService::new(
-        RepositoriesAdapters {
-            directory: &stores.directory,
-            authorisation: &stores.authorisation,
-            membership: &stores.membership,
-            changes: &(),
-            delivery: &(),
-        },
-        Administration::BuiltIn,
+        assembly.members(),
+        assembly.source_control(),
     )
 }
 
@@ -142,39 +174,13 @@ fn pause(duration: Duration) -> Pause {
 }
 
 fn runner_router(stores: &'static Stores) -> Router {
+    let assembly = assembly(stores, Administration::BuiltIn);
     adapter_http::runner_router(
-        AuthenticationService::new(&stores.identity),
-        repositories(stores),
-        RunnersService::new(RunnersAdapters {
-            registry: &stores.registry,
-            directory: &stores.directory,
-            authorisation: &stores.authorisation,
-        }),
-        JobsService::new(
-            JobsAdapters {
-                registry: &stores.registry,
-                queue: &stores.queue,
-                objects: &stores.objects,
-                derived: &stores.derived,
-                log: &stores.log,
-                directory: &stores.directory,
-                definitions: &stores.definitions,
-            },
-            LEASE,
-            LandingAttempts::default(),
-        ),
-        ChecksService::new(
-            ChecksAdapters {
-                queue: &stores.queue,
-                log: &stores.log,
-                directory: &stores.directory,
-                authorisation: &stores.authorisation,
-                objects: &stores.objects,
-                derived: &stores.derived,
-                definitions: &stores.definitions,
-            },
-            LandingAttempts::default(),
-        ),
+        assembly.authentication(),
+        assembly.repositories(),
+        assembly.runners(),
+        assembly.jobs(),
+        assembly.checks(),
         RunnerSettings {
             hold: HOLD,
             retry_interval: Duration::from_millis(50),
@@ -184,37 +190,12 @@ fn runner_router(stores: &'static Stores) -> Router {
     )
 }
 
-fn members(stores: &'static Stores) -> impl Members + Send + Sync + 'static {
-    MembersService::new(
-        MembersAdapters {
-            directory: &stores.directory,
-            authorisation: &stores.authorisation,
-            membership: &stores.membership,
-        },
-        Administration::BuiltIn,
-    )
-}
-
-fn source_control(stores: &'static Stores) -> impl SourceControl + Send + Sync + 'static {
-    SourceControlService::new(
-        SourceControlAdapters {
-            objects: &stores.objects,
-            log: &stores.log,
-            derived: &stores.derived,
-            drafts: &stores.drafts,
-            directory: &stores.directory,
-            authorisation: &stores.authorisation,
-        },
-        MAX_UPLOAD_SIZE,
-    )
-}
-
 impl Default for Api {
     fn default() -> Self {
         let stores = Stores::leaked();
         Self {
             stores,
-            router: router_with(stores, repositories(stores)).merge(runner_router(stores)),
+            router: router(stores, Administration::BuiltIn).merge(runner_router(stores)),
         }
     }
 }
@@ -363,25 +344,31 @@ impl Api {
         .await
     }
 
-    /// Queues the check `name`, blocking and with `labels`, against `changeset` of `org`/`app`.
+    /// The text of a check file that defines `checks`, each a blocking check with a name and the
+    /// labels it requires, and that the fixture's definitions read as those checks. A landing
+    /// whose tree holds it at `.codehub/checks.toml` queues them.
     ///
     /// # Panics
     ///
-    /// Panics when the queue refuses it.
-    pub async fn queue_check(&self, org: &str, changeset: &str, name: &str, labels: &[&str]) {
-        let job = NewJob {
-            organisation: org.parse().unwrap(),
-            repository: self.repository_id(org).await,
-            changeset: changeset.parse().unwrap(),
-            check: CheckDefinition {
+    /// Panics when a name or a label is not valid.
+    #[must_use]
+    pub fn checks_file(&self, checks: &[(&str, &[&str])]) -> String {
+        let text: String = checks
+            .iter()
+            .map(|(name, labels)| format!("{name} {}\n", labels.join(" ")))
+            .collect();
+        let definitions = checks
+            .iter()
+            .map(|(name, labels)| CheckDefinition {
                 name: name.parse().unwrap(),
                 command: Command::new("true").unwrap(),
                 labels: labels.iter().map(|label| label.parse().unwrap()).collect(),
                 blocking: true,
                 timeout: Timeout::new(60).unwrap(),
-            },
-        };
-        self.stores.queue.queue(vec![job]).await.unwrap();
+            })
+            .collect();
+        self.stores.definitions.teach(&text, Ok(definitions));
+        text
     }
 
     /// Records the revert of job `job` as failed with `reason`, in place of what was recorded,
