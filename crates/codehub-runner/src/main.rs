@@ -9,7 +9,7 @@ use codehub_runner::Config;
 #[tokio::main]
 async fn main() -> ExitCode {
     match codehub_runner::run(Config::parse()).await {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => {
             // Nowhere left to report a failed stderr write.
             let _ = writeln!(std::io::stderr(), "codehub-runner: {error}");

@@ -46,6 +46,22 @@ pub enum ExecutorError {
     },
     /// The command could not be started.
     Spawn(std::io::Error),
+    /// The description of the job is larger than the orchestrator holds.
+    DescriptionTooLarge {
+        /// The description's size, with its key, in bytes.
+        size: usize,
+        /// The most the orchestrator holds, in bytes.
+        limit: usize,
+    },
+    /// The orchestrator could not be reached or refused a request.
+    Orchestrator(String),
+    /// The job ended on the orchestrator without posting a result.
+    NoResult {
+        /// The phase it ended in.
+        phase: String,
+        /// The reason the orchestrator gave, where it gave one.
+        reason: Option<String>,
+    },
 }
 
 impl fmt::Display for ExecutorError {
@@ -57,6 +73,18 @@ impl fmt::Display for ExecutorError {
                 write!(f, "the bytes of {path} do not match its address")
             }
             Self::Spawn(error) => write!(f, "starting the command failed: {error}"),
+            Self::DescriptionTooLarge { size, limit } => write!(
+                f,
+                "the job's description is {size} bytes, over the {limit} the orchestrator holds"
+            ),
+            Self::Orchestrator(reason) => write!(f, "the orchestrator failed: {reason}"),
+            Self::NoResult { phase, reason } => {
+                write!(f, "the job ended {phase} without a result")?;
+                match reason {
+                    Some(reason) => write!(f, ": {reason}"),
+                    None => Ok(()),
+                }
+            }
         }
     }
 }
