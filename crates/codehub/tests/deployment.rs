@@ -30,6 +30,42 @@ fn the_release_version_is_the_tag_without_its_v() {
 }
 
 #[test]
+fn the_release_version_keeps_a_dev_or_rc_suffix() {
+    assert_eq!(
+        release_version("v0.1.0-dev.1"),
+        Ok("0.1.0-dev.1".to_owned())
+    );
+    assert_eq!(
+        release_version("v0.1.0-dev.12"),
+        Ok("0.1.0-dev.12".to_owned())
+    );
+    assert_eq!(release_version("v0.1.0-rc.3"), Ok("0.1.0-rc.3".to_owned()));
+}
+
+#[test]
+fn the_release_version_refuses_a_suffix_that_is_not_dev_or_rc_with_a_positive_number() {
+    assert_eq!(
+        release_version("v0.1.0-dev.1"),
+        Ok("0.1.0-dev.1".to_owned()),
+        "the control form is accepted"
+    );
+    for tag in [
+        "v0.1.0-dev.0",
+        "v0.1.0-dev.01",
+        "v0.1.0-rc.007",
+        "v0.1.0-beta.1",
+        "v0.1.0-dev",
+        "v0.1.0-rc",
+        "v0.1.0-dev.",
+        "v0.1.0-dev.1.2",
+        "v0.1.0-dev.1a",
+        "v0.1.0-DEV.1",
+    ] {
+        assert!(release_version(tag).is_err(), "{tag:?} was accepted");
+    }
+}
+
+#[test]
 fn the_release_version_refuses_a_tag_that_is_not_vx_y_z() {
     for tag in [
         "v1.2",

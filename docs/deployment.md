@@ -15,12 +15,12 @@ This file is the contract between codehub and whoever declares its deployment. I
 
 ## Images
 
-A tag `vX.Y.Z` of this repository publishes both images, tagged `X.Y.Z` and never `latest` (`.github/workflows/release.yml`). Each is built from the repository root with the Dockerfile named below.
+A tag `vX.Y.Z`, `vX.Y.Z-dev.N` or `vX.Y.Z-rc.N` of this repository publishes both images, tagged with the version (the tag without its `v`) and never `latest` (`.github/workflows/release.yml`). N is a positive number with no leading zero. A tag with a suffix makes a GitHub pre-release that is not marked latest; any other tag publishes nothing. Each is built from the repository root with the Dockerfile named below.
 
 | Image | Dockerfile | Entrypoint | Notes |
 |---|---|---|---|
-| `codehub/server:X.Y.Z` | `deploy/server.Dockerfile` | `/usr/local/bin/codehub` | Exposes port 8080. |
-| `codehub/runner:X.Y.Z` | `deploy/runner.Dockerfile` | `/usr/local/bin/codehub-runner` | Holds `/bin/sh` and coreutils, which the host driver runs a job's command under. |
+| `codehub/server:<version>` | `deploy/server.Dockerfile` | `/usr/local/bin/codehub` | Exposes port 8080. |
+| `codehub/runner:<version>` | `deploy/runner.Dockerfile` | `/usr/local/bin/codehub-runner` | Holds `/bin/sh` and coreutils, which the host driver runs a job's command under. |
 
 - Both run as user 10001, not root, and are based on `debian:trixie-slim` with CA certificates.
 - Both carry `org.opencontainers.image.version` and `org.opencontainers.image.revision` labels.
