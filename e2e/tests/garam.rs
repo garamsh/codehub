@@ -3,8 +3,8 @@
 //!
 //! These tests need the stack that `make e2e-garam` starts and stops, and `make e2e` skips them.
 //! The tests that expect garam to allow something write the role links the platform writes, with
-//! `CreatePolicy` as the platform. They also need the
-//! directory outbox, which tells garam about each repository.
+//! `CreatePolicy` as the platform. The directory outbox tells garam about each repository, so
+//! those tests passing is the assertion that garam holds a repository's entity once it is created.
 //!
 //! In external mode `ch` exits 3 for a token the server rejects, 5 for a decision that denies and
 //! 1 for a server error such as a decision point that could not be asked.
@@ -104,7 +104,6 @@ async fn garam_allows_an_owner_to_create_a_repository() {
 }
 
 #[tokio::test]
-#[ignore = "needs the directory outbox (garamsh/codehub#142): garam holds no entity for the repository"]
 async fn garam_allows_an_owner_to_land_a_change() {
     let garam = Garam::running();
     let person = garam.person().await;
@@ -123,7 +122,6 @@ async fn garam_allows_an_owner_to_land_a_change() {
 }
 
 #[tokio::test]
-#[ignore = "needs the directory outbox (garamsh/codehub#142): garam holds no entity for the repository"]
 async fn garam_denies_a_path_its_guardrail_forbids_beside_one_it_allows() {
     let garam = Garam::running();
     let person = garam.person().await;

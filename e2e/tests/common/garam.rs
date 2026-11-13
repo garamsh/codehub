@@ -113,6 +113,8 @@ impl Garam {
                     "CODEHUB_AUTHZEN_CLIENT_ID",
                     "grn:{organisation}/iam/service/codehub".to_owned(),
                 ),
+                ("CODEHUB_DIRECTORY_CHANGES", "garam".to_owned()),
+                ("CODEHUB_DIRECTORY_GARAM_URL", policy.to_owned()),
                 ("SSL_CERT_FILE", env("CODEHUB_GARAM_E2E_CA")),
             ],
         )
