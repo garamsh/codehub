@@ -41,7 +41,7 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0022-metadata-storage-details.md` — ADR 0022, metadata lives in one shared PostgreSQL schema, migrated forward-only at server start
 - `adr/0023-object-storage-details.md` — ADR 0023, objects are keyed per repository, verified by checksum, and uploaded in one part
 - `adr/0024-http-api-conventions.md` — ADR 0024, the HTTP API is versioned in the path, described by OpenAPI 3.1 and reports errors as problem details
-- `adr/0025-cli-m2-verbs-and-state.md` — ADR 0025, the M2 CLI has a fixed set of verbs, keeps three items of local state and speaks plain HTTP
+- `adr/0025-cli-m2-verbs-and-state.md` — ADR 0025, the M2 CLI has a fixed set of verbs, keeps three items of local state and speaks plain HTTP; the verb list as the whole surface and the three items as all local state are superseded by ADR 0048 for views
 - `interfaces.md` — the `ch` CLI and the API behind it: what each may do, and what stays server-side
 - `adr/0010-cli-and-mcp-interfaces.md` — ADR 0010, the CLI and the MCP server are first-class interfaces over server-side work; the MCP part is superseded by ADR 0026
 - `adr/0015-server-api-transport.md` — ADR 0015, the server API is HTTP with JSON described by OpenAPI, and object bytes move by presigned URL
@@ -74,3 +74,4 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0045-health-probes-outside-v1.md` — ADR 0045, the server answers unauthenticated liveness and readiness probes outside `/v1`; sets aside two statements of ADR 0024 for those routes
 - `adr/0046-gaon-executor-driver.md` — ADR 0046, a gaon executor driver runs each job in a run-once MicroVM, and the job reports its result back to the runner
 - `adr/0047-runner-check-executor.md` — ADR 0047, `codehub-runner check-executor` runs one job with a given command through the configured executor, without a server
+- `adr/0048-server-workspace-and-disposable-view.md` — ADR 0048, a draft is the caller's server-side workspace, opened as a disposable view and snapshotted by each `ch` command; supersedes ADR 0025's verb list as the whole surface and its three items of local state, for views

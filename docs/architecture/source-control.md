@@ -27,6 +27,12 @@ How versions of a repository's content are stored, changed, landed and queried.
 - **A landing that lost the compare-and-swap leaves its changeset and derived rows**, which a retry reuses because they are content-addressed; removal waits for the retention decision (ADR 0022).
 - **Object keys are `<repository id>/<sha256 hex>`.** Uploads are single-part with `x-amz-checksum-sha256` signed, so the store verifies the bytes against the address; objects are not compressed, so the address covers the stored bytes. The server refuses a grant above a configured maximum no larger than S3's single-PUT limit, and presigned URLs expire after a configured time, 15 minutes by default (ADR 0023).
 - **There are no work branches.** Pending work is a server-side draft changeset outside the log (ADR 0012).
+- **A draft is the caller's workspace** (ADR 0048):
+  - its base is fixed at `main` when it is opened, and is absent where `main` is unset, and it carries a description that a landing without a message takes as its message;
+  - it closes when it lands, and one workspace serves one task, so following `main` within a task is not provided;
+  - its changes are recorded path by path or as one snapshot of several paths applied together, and a restore removes a path's change;
+  - the server answers what it changes against its base, as statuses and as a line diff.
+- **A changeset's files are listed with a download grant each**, under an optional path prefix; read is asked for every listed path in one decision, and a caller holding no `read` grant for any one of them is refused the whole listing (ADR 0048).
 - **Moving a ref is a compare-and-swap on that ref alone**, comparing the ref's current changeset identifier, and is separate from creating the changeset (ADR 0012).
 - **Landing is performed on the server**, in this order:
   - rebase the changeset onto the current `main`;
@@ -132,10 +138,10 @@ The ports below follow from the decisions, named for the conversation and in the
 - **Object store** — put and get immutable objects by content address, answer an object's size without its bytes, and issue presigned URLs through which clients upload and download object bytes directly to and from the store, so the bytes do not pass through the server API (ADR 0015). Served by an S3-compatible adapter; the same technology also holds filesystem images, delivered the same way (`docs/architecture/execution.md`, ADR 0008).
 - **Changeset log** — append a changeset, read the log, read a ref, and move a ref by compare-and-swap on that ref alone. Served by a PostgreSQL adapter, the log as a table (ADR 0013, ADR 0022).
 - **Derived data** — read and write computed trees, file-version nodes, blame and skip lists for a repository. Served by PostgreSQL (ADR 0022).
-- **Draft store** — put and get draft changesets, held outside the log until they land (ADR 0012). Served by PostgreSQL (ADR 0022).
+- **Draft store** — put and get draft changesets with their description, held outside the log until they land (ADR 0012, ADR 0048). Served by PostgreSQL (ADR 0022).
 - **Check dispatch** — ask for the post-land checks to run and receive their results. Served by the job queue port (`docs/architecture/runner.md`).
 - **Check definitions** — read the checks a changeset declares from the bytes of `.codehub/checks.toml`. Served by a TOML adapter, and an in-memory adapter for tests (ADR 0035).
-- Driving adapters are the server API behind `ch` (`docs/architecture/interfaces.md`). They reach the application through four driving ports: **source control** (stage a change into a draft, grant an upload, land a draft on `main`, read a file and read a path's history), **repositories** (create organisations and repositories), **members** (add and remove members and grants) and **authentication** (verify the credential presented with a request).
+- Driving adapters are the server API behind `ch` (`docs/architecture/interfaces.md`). They reach the application through four driving ports: **source control** (open, read, describe, snapshot, restore and diff a workspace, stage a change into a draft, grant an upload, land a draft on `main`, read a file, list a changeset's files and read a path's history), **repositories** (create organisations and repositories), **members** (add and remove members and grants) and **authentication** (verify the credential presented with a request).
 
 ## Rationale
 
@@ -146,6 +152,7 @@ The ports below follow from the decisions, named for the conversation and in the
 - The file kind and a file against a directory are ADR 0019: the kind apart from content, so a kind change on one side and a content change on the other both survive; a file against a directory at tree application, because the two paths never meet in the per-path merge and the tree cannot hold both. The kind as part of the content, one side's kind always winning, a per-path rule for a file against a directory and resolving it by preferring one side were not taken.
 - The project-defined encoding and the changeset identifier are ADR 0016: one encoding per value, because an address is a hash of bytes; the identifier as the address, so a changeset is checked like any other object and is named before it is appended. Deterministic CBOR and an identifier assigned by the log were not taken.
 - PostgreSQL for the metadata, the log and the refs, and the object store for blobs, are ADR 0013. SQLite behind a single writer, a distributed SQL database now, and log segments in the object store were not taken.
+- Why a draft is a workspace snapshotted by `ch` rather than staged file by file, and why the diff is the server's: ADR 0048. A lazy filesystem view, a syncing daemon, landing part of a workspace and a client-side diff were not taken.
 - Where derived data and drafts live, how PostgreSQL is run, and what a lost landing leaves: ADR 0022. A shared schema was taken over a schema per organisation, and the object store for derived data was not taken.
 - The retry of a lost swap inside the server, measured against the client's retry: ADR 0036. The default pool size and the bound on the sum of pools: ADR 0037. The fair gate per process, over a lock across replicas and over a limit on waiting landings: ADR 0039. All three rest on `docs/scale-baseline.md`.
 - The trigger for distributed SQL, over moving now, a trigger by agent count and leaving it open: ADR 0040.
