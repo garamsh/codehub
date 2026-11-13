@@ -1,6 +1,6 @@
 # ADR 0034: A runner is a registered principal that long-polls the HTTP API and runs jobs on its host
 
-> Status: accepted
+> Status: accepted; "the only driver built is the host driver" superseded by ADR-0046
 > Date: 2026-11-12
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.

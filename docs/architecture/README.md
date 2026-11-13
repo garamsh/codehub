@@ -58,9 +58,9 @@ Current architecture of the system and the decisions behind it. This file is the
 - `execution.md` — caches, derived images, delivery through object storage, executor drivers
 - `runner.md` — runner registration, polling, labels, pools, job lifecycle
 - `adr/0007-cache-model-c.md` — ADR 0007, caches are versioned workspace data with images derived from them
-- `adr/0008-image-delivery-and-executor-drivers.md` — ADR 0008, images delivered through object storage, environment known only to executor drivers
+- `adr/0008-image-delivery-and-executor-drivers.md` — ADR 0008, images delivered through object storage, environment known only to executor drivers; microvm as the runner's default is superseded by ADR 0046
 - `adr/0009-runner-registration-and-job-protocol.md` — ADR 0009, runners follow the GitHub Actions self-hosted runner model; the registration token, runner credentials and mutual TLS are superseded by ADR 0034
-- `adr/0034-runners-are-principals-polling-over-http.md` — ADR 0034, a runner is a registered principal that long-polls the HTTP API and runs jobs on its host
+- `adr/0034-runners-are-principals-polling-over-http.md` — ADR 0034, a runner is a registered principal that long-polls the HTTP API and runs jobs on its host; the host driver as the only one built is superseded by ADR 0046
 - `adr/0035-post-land-checks-last-green-and-revert.md` — ADR 0035, post-land checks are configured in the repository, move `last-green` and revert a blocking failure
 - `adr/0036-server-retries-a-lost-landing-swap.md` — ADR 0036, the server retries a landing that lost the compare-and-swap on `main`, up to a bound
 - `adr/0037-connection-pool-sizing.md` — ADR 0037, each server process pools 40 PostgreSQL connections by default, and the sum stays below the server's limit
@@ -72,3 +72,4 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0043-authzen-grn-profile.md` — ADR 0043, the AuthZEN adapter has a GRN profile speaking garam's contract, naming a repository by its id and a path as context; supersedes ADR 0042's server error for `unauthorized_client`, and parts of ADR 0021, ADR 0028 and ADR 0030 in that profile
 - `adr/0044-directory-changes-through-an-outbox.md` — ADR 0044, repository changes are delivered at least once from an outbox written in the repository's transaction; supersedes ADR 0030's at-most-once delivery for them
 - `adr/0045-health-probes-outside-v1.md` — ADR 0045, the server answers unauthenticated liveness and readiness probes outside `/v1`; sets aside two statements of ADR 0024 for those routes
+- `adr/0046-gaon-executor-driver.md` — ADR 0046, a gaon executor driver runs each job in a run-once MicroVM, and the job reports its result back to the runner
