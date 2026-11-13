@@ -8,6 +8,7 @@ This file is the contract between codehub and whoever declares its deployment. I
 - Images
 - Server settings
 - Runner options
+- The runner on gaon
 - What the server needs
 - Health
 - How the runner reaches the server
@@ -87,6 +88,22 @@ The runner is configured by options, and by the variables where the table gives 
 | `--client-secret-env` | `CODEHUB_RUNNER_CLIENT_SECRET_ENV` | no | The name of the variable holding the OAuth client secret. |
 | `--work-dir` | `CODEHUB_RUNNER_WORK_DIR` | no | Where each job's directory is made; the system's temporary directory where absent. |
 | `--once` | - | no | Claim once, run the job, and exit. |
+| `--executor` | `CODEHUB_RUNNER_EXECUTOR` | no | Where a job's command runs: `host` (default), a process of the runner's machine, or `gaon`, a run-once MicroVM on gaon (ADR 0046). `gaon` needs the seven gaon options below, and the runner refuses to start without any one. |
+| `--gaon-url` | `CODEHUB_RUNNER_GAON_URL` | no | The gaon API server's root URL, `https://` and ending in `/apis/compute.gaon.garam.sh/v1alpha1`; the runner sends its token only over https. |
+| `--gaon-ca-file` | `CODEHUB_RUNNER_GAON_CA_FILE` | no | The PEM file of the certificate authority that signed the API server's certificate; it is the only authority the runner trusts for gaon. |
+| `--gaon-token-file` | `CODEHUB_RUNNER_GAON_TOKEN_FILE` | no | A file holding the gaon service-account token, read again before each request; the file's content is a secret. |
+| `--gaon-image` | `CODEHUB_RUNNER_GAON_IMAGE` | no | The image jobs run in, `<repository>@sha256:<digest>`: a digest, never a tag. It holds `codehub-runner` and what the jobs' commands need. |
+| `--gaon-result-listen` | `CODEHUB_RUNNER_GAON_RESULT_LISTEN` | no | The address the runner listens on, in plain HTTP, for the results of jobs, such as `0.0.0.0:8090`. |
+| `--gaon-result-url` | `CODEHUB_RUNNER_GAON_RESULT_URL` | no | The URL a job's MicroVM reaches that listener at. |
+| `--gaon-runner-name` | `CODEHUB_RUNNER_GAON_RUNNER_NAME` | no | The value of the label `runner.codehub.garam.sh/name` on every MicroVM and Secret this runner creates: 1 to 63 alphanumerics, `-`, `_` or `.`, beginning and ending with an alphanumeric, and unique among the runners of one gaon cluster. The runner deletes every object that carries it when it starts. |
+
+`codehub-runner run-job` is the mode a job's MicroVM runs under gaon: it takes the path of the job file, needs neither the server nor credentials, and is not for a person to run.
+
+## The runner on gaon
+
+With `--executor gaon` the runner creates, reads, lists and deletes MicroVMs and Secrets of the group `compute.gaon.garam.sh` as the identity its token names. Give that identity a ClusterRole and a ClusterRoleBinding that allow `create`, `get`, `list` and `delete` on `microvms` and `secrets` in `compute.gaon.garam.sh`, each rule with a `labelSelector` on `runner.codehub.garam.sh/name` equal to the runner's `--gaon-runner-name`, so that the identity reaches only the objects of its own runner. The runner lists only with that selector.
+
+Egress and ingress are the cluster's. A job's MicroVM must reach the object store's download URLs and the result URL, and the runner's own MicroVM must declare the port of `--gaon-result-listen` in its `spec.ports`, or the runner cannot receive a result. A job whose MicroVM cannot post its result ends as an executor error naming the MicroVM's final phase.
 
 ## What the server needs
 
@@ -104,7 +121,7 @@ Both probes are unauthenticated and sit outside `/v1`.
 | Liveness | `GET /healthz` | 200 while the process serves requests; depends on nothing. |
 | Readiness | `GET /readyz` | 200 where PostgreSQL and the object store each answer within 2 seconds; otherwise 503, with a problem detail naming the one that did not. A missing bucket is not detected: the probe asks for an object, and a 404 for it is an answer whether the object or the bucket is missing. |
 
-The runner serves no port, so it has no probe.
+With the host driver the runner serves no port; with the gaon driver it serves only the result listener, which is not a probe. Either way it has no probe.
 
 ## How the runner reaches the server
 
