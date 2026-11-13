@@ -1,0 +1,185 @@
+name: codehub-garam-e2e
+
+# garam as codehub's OIDC issuer and AuthZEN decision point, from garam's published images, for
+# `make e2e-garam` (dev/garam/run.sh). It is not part of compose.yaml: the pipeline cannot pull
+# these images. The run script names the variables below, writes the key material in
+# CODEHUB_GARAM_E2E_DIR and removes the project and its volumes at every exit.
+#
+# Images are pinned by digest (tag kept for the reader). Mover: the PM, when garam releases; the
+# digests are those recorded for garam 0.8.0 (release v0.8.0 at garamsh/garam
+# 2a4d987842899c43e18bf4904a79a6d346d20b73) in
+# https://github.com/garamsh/codehub/issues/137#issuecomment-6842874033. The PostgreSQL image is the
+# one garam's own stack pins. The host ports are dev/garam/env.sh's: the gateway for the issuer, the
+# machine listener for the token endpoint and the policy service for AuthZEN's HTTP binding.
+#
+# Only the garam services (server and policy) run as the host's user, so the keys they read stay
+# mode 0600 on the host; the PostgreSQL and Caddy containers do not.
+x-server: &server
+  image: 486152169996.dkr.ecr.ap-northeast-2.amazonaws.com/garam/server:0.8.0@sha256:898c44f06b6514525fb2c015135aa123bf086388a0b5d7ec37244b0daa7f21c7
+  user: "${CODEHUB_GARAM_E2E_USER:?the host user the run script names}"
+  pull_policy: never
+
+x-policy: &policy
+  image: 486152169996.dkr.ecr.ap-northeast-2.amazonaws.com/garam/policy:0.8.0@sha256:99e70651587666430e8bc9b7d8a3d459d04927c51a992c313173a816e2856936
+  user: "${CODEHUB_GARAM_E2E_USER:?the host user the run script names}"
+  pull_policy: never
+
+x-postgres: &postgres
+  image: postgres:17.11-alpine3.24@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U garam"]
+    interval: 2s
+    timeout: 5s
+    retries: 10
+    start_period: 60s
+
+x-issuer: &issuer https://localhost:${CODEHUB_GARAM_E2E_GATEWAY_PORT:?set by dev/garam/env.sh}/api
+
+services:
+  postgres:
+    <<: *postgres
+    environment:
+      POSTGRES_USER: garam
+      POSTGRES_PASSWORD: garam
+      POSTGRES_DB: garam
+
+  policy-postgres:
+    <<: *postgres
+    environment:
+      POSTGRES_USER: garam
+      POSTGRES_PASSWORD: garam
+      POSTGRES_DB: policy
+
+  migrate:
+    <<: *server
+    command: ["migrate"]
+    environment:
+      GARAM_DATABASE_URL: postgres://garam:garam@postgres:5432/garam?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  authz:
+    <<: *server
+    command: ["serve", "authz"]
+    environment:
+      GARAM_DATABASE_URL: postgres://garam:garam@postgres:5432/garam?sslmode=disable
+      GARAM_GRPC_ADDR: ":9090"
+      GARAM_METRICS_ADDR: ":9091"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/garam", "probe", "http://127.0.0.1:9091/readyz"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  api:
+    <<: *server
+    command: ["serve", "api"]
+    environment:
+      GARAM_DATABASE_URL: postgres://garam:garam@postgres:5432/garam?sslmode=disable
+      GARAM_HTTP_ADDR: ":8080"
+      GARAM_AUTHZ_ADDR: authz:9090
+      GARAM_COOKIE_SECURE: "false"
+      GARAM_IDENTITY_ISSUER: *issuer
+      GARAM_POLICY_TOKEN_ISSUER: *issuer
+      GARAM_POLICY_SIGNING_KEY_FILE: /keys/signing.pem
+      GARAM_IDENTITY_SERVICE_KEYS_FILE: /keys/service-keys.json
+      GARAM_POLICY_ADDR: policy:8443
+      GARAM_POLICY_CA_FILE: /keys/ca.crt
+      GARAM_MACHINE_TOKEN_URL: https://machine:8443/oauth/token
+    volumes:
+      - ${CODEHUB_GARAM_E2E_DIR:?the directory of keys the run script made}:/keys:ro
+    depends_on:
+      authz:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/garam", "probe", "http://127.0.0.1:8080/readyz"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  machine:
+    <<: *server
+    command: ["serve", "machine"]
+    environment:
+      GARAM_DATABASE_URL: postgres://garam:garam@postgres:5432/garam?sslmode=disable
+      GARAM_AUTHZ_ADDR: authz:9090
+      GARAM_MACHINE_ADDR: ":8443"
+      GARAM_MACHINE_HEALTH_ADDR: ":8444"
+      GARAM_MACHINE_TLS_CERT_FILE: /keys/tls.crt
+      GARAM_MACHINE_TLS_KEY_FILE: /keys/tls.key
+      GARAM_MACHINE_SERVER_ROOT_FILE: /keys/ca.crt
+      GARAM_CA_KEY_FILE: /keys/kek.hex
+      GARAM_MACHINE_ISSUER: https://machine:8443
+      GARAM_MACHINE_TOKEN_URL: https://machine:8443/oauth/token
+      GARAM_IDENTITY_ISSUER: *issuer
+      GARAM_POLICY_SIGNING_KEY_FILE: /keys/signing.pem
+      GARAM_IDENTITY_SERVICE_KEYS_FILE: /keys/service-keys.json
+    ports:
+      - "127.0.0.1:${CODEHUB_GARAM_E2E_MACHINE_PORT:?set by dev/garam/env.sh}:8443"
+    volumes:
+      - ${CODEHUB_GARAM_E2E_DIR:?the directory of keys the run script made}:/keys:ro
+    depends_on:
+      authz:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/garam", "probe", "http://127.0.0.1:8444/readyz"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  policy-migrate:
+    <<: *policy
+    command: ["migrate"]
+    environment:
+      POLICY_DATABASE_URL: postgres://garam:garam@policy-postgres:5432/policy?sslmode=disable
+    depends_on:
+      policy-postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # Trusts the keys the running api publishes, which the run script fetches into issuer-jwks.json
+  # before it starts this service.
+  policy:
+    <<: *policy
+    command: ["serve"]
+    environment:
+      POLICY_ADDR: 0.0.0.0:8443
+      POLICY_HEALTH_ADDR: 0.0.0.0:8091
+      POLICY_DATABASE_URL: postgres://garam:garam@policy-postgres:5432/policy?sslmode=disable
+      POLICY_TOKEN_ISSUER: *issuer
+      POLICY_JWKS_FILE: /keys/issuer-jwks.json
+      POLICY_TLS_CERT_FILE: /keys/tls.crt
+      POLICY_TLS_KEY_FILE: /keys/tls.key
+    ports:
+      - "127.0.0.1:${CODEHUB_GARAM_E2E_POLICY_PORT:?set by dev/garam/env.sh}:8443"
+    volumes:
+      - ${CODEHUB_GARAM_E2E_DIR:?the directory of keys the run script made}:/keys:ro
+    depends_on:
+      policy-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/policy", "probe", "http://127.0.0.1:8091/readyz"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  # garam requires its issuer identifier to be an https URL with the path /api, and codehub
+  # fetches the discovery document and the keys from it, so the api is served there. The route
+  # strips /api as a deployment's gateway does.
+  gateway:
+    image: mirror.gcr.io/library/caddy:2.11.9-alpine@sha256:0bbb055bda6793c999bde78b1b5ce3e89f829fb031af2cf50056ea1246559fee
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${CODEHUB_GARAM_E2E_DIR:?the directory of keys the run script made}:/keys:ro
+    environment:
+      CODEHUB_GARAM_E2E_GATEWAY_PORT: ${CODEHUB_GARAM_E2E_GATEWAY_PORT:?set by dev/garam/env.sh}
+    ports:
+      - "127.0.0.1:${CODEHUB_GARAM_E2E_GATEWAY_PORT}:${CODEHUB_GARAM_E2E_GATEWAY_PORT}"
+    depends_on:
+      api:
+        condition: service_healthy

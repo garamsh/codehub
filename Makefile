@@ -1,4 +1,4 @@
-.PHONY: lint format test e2e loadtest loadtest-smoke build images ci services services-down
+.PHONY: lint format test e2e e2e-garam loadtest loadtest-smoke build images ci services services-down
 
 lint:
 	CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets --locked
@@ -17,7 +17,15 @@ test: services
 # and variables as `test`.
 e2e: services
 	cargo build --locked -p codehub -p ch -p codehub-runner
-	set -a && . dev/check-env.sh && set +a && TEST_SELECTOR="-p e2e" sh scripts/test-count.sh
+	set -a && . dev/check-env.sh && set +a && TEST_SELECTOR="-p e2e" sh scripts/test-count.sh -- --skip garam_
+
+# The e2e tests whose names contain garam_ run against garam's published images (dev/garam), which
+# the pipeline cannot pull, so `e2e` skips them and this target runs them: it starts the garam
+# stack, runs them and removes the stack and its keys at every exit. Needs the images in the local
+# Docker image store; it is not part of `ci`.
+e2e-garam: services
+	cargo build --locked -p codehub -p ch
+	set -a && . dev/check-env.sh && set +a && sh dev/garam/run.sh
 
 # The load harness against two codehub replicas and the check services: a smoke run of every
 # scenario in the debug build, which fails on an unexpected status or a replica that dies.
