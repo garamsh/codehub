@@ -1,0 +1,54 @@
+name: garam-e2e
+
+# Runs `make e2e-garam` against garam's images, which only the garam-e2e environment may pull:
+# the pull role's trust policy admits only that environment's subject of this repository. Action
+# pins take the form ci.yml states.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: read-all
+
+env:
+  # Role of aurora#780: read access on garam/server and garam/policy only, audience sts.amazonaws.com.
+  AWS_ROLE: arn:aws:iam::486152169996:role/github-actions-codehub-pull
+  AWS_REGION: ap-northeast-2
+
+jobs:
+  garam-e2e:
+    # Mover: the .github/ owner in CODEOWNERS (@sauce-git) moves this label when a newer versioned label is published.
+    runs-on: ubuntu-24.04
+    environment: garam-e2e
+    permissions:
+      # A job's block replaces the workflow's, so the checkout's read is written beside the
+      # federated pull credential.
+      contents: read
+      id-token: write
+    steps:
+      - name: Record runner image
+        run: echo "ImageOS=$ImageOS ImageVersion=$ImageVersion"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      # The references are read from the compose file, the one place they are written. A pull by
+      # tag@digest resolves by the digest, so the image the compose file names is the one in the
+      # store. The count guards against a reference the pattern no longer matches.
+      - name: Pull garam's images
+        run: |
+          refs=$(sed -n 's/^ *image: \(.*\/garam\/\(server\|policy\):[^ ]*@sha256:[0-9a-f]*\)$/\1/p' dev/garam/compose.yaml)
+          test "$(printf '%s\n' "$refs" | wc -l)" -eq 2
+          for ref in $refs; do
+            docker pull "$ref"
+          done
+
+      - name: Run the garam end-to-end test
+        run: make e2e-garam
