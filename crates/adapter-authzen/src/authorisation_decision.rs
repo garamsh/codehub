@@ -1,26 +1,24 @@
-use std::fmt::Write;
-use std::sync::{Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
+use app::domain::path::Path;
 use app::domain::principal::Principal;
 use app::port::driven::authorisation_decision::{
     Action, AuthorisationDecision, AuthorisationError, Decision, Resource,
 };
+use oauth_client::{TokenClient, TokenError};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-/// Bound on each request to the token endpoint and to the decision point.
+/// Bound on each request to the decision point.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// A token is replaced when it is this close to its expiry.
-const EXPIRY_MARGIN: Duration = Duration::from_secs(5);
 
 /// Authorisation by an AuthZEN 1.0 decision point. A decision is one evaluation request, and
 /// decisions on many resources are one evaluations request where the adapter is enabled for it
 /// and the decision point's metadata advertises it, read on first use (ADR 0041); the bearer
-/// token is held, the decision never.
+/// token is held by the token client, the decision never.
 pub struct AuthzenAuthorisationDecision {
     http: reqwest::Client,
     metadata_endpoint: String,
@@ -30,45 +28,31 @@ pub struct AuthzenAuthorisationDecision {
     evaluations_endpoint: Mutex<Option<Option<String>>>,
     /// Whether decisions on many resources may be one evaluations request (ADR 0041).
     access_evaluations: bool,
-    token_endpoint: String,
-    client_id: String,
-    client_secret: String,
-    token: Mutex<Option<Token>>,
+    tokens: Arc<TokenClient>,
+    profile: Profile,
 }
 
-/// A bearer token and the time after which it is replaced; `None` where the endpoint named no
-/// lifetime, so that it is kept until the decision point refuses it.
-#[derive(Clone)]
-struct Token {
-    value: String,
-    expires_at: Option<Instant>,
-}
-
-impl Token {
-    fn is_fresh(&self) -> bool {
-        self.expires_at
-            .is_none_or(|expires_at| Instant::now() + EXPIRY_MARGIN < expires_at)
-    }
-}
-
-/// The members of a token response (RFC 6749 §5.1) the adapter reads.
-#[derive(Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    token_type: String,
-    expires_in: Option<u64>,
+/// The names the adapter sends: what a decision point is written against (ADR 0043).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Profile {
+    /// The neutral names of ADR 0030: the type `principal` with the issuer as a property, the
+    /// actions `create_organisation` to `write`, and a repository by its name.
+    Plain,
+    /// garam's contract: the type `grn`, a repository by its id, the `codehub:` actions, and a
+    /// path as `context.path`.
+    Grn,
 }
 
 /// The member of an evaluation response (AuthZEN 1.0 §6.2) the adapter reads.
 #[derive(Deserialize)]
-struct Evaluation {
+struct Evaluated {
     decision: bool,
 }
 
 /// The member of an evaluations response (AuthZEN 1.0 §7.2) the adapter reads.
 #[derive(Deserialize)]
 struct Evaluations {
-    evaluations: Vec<Evaluation>,
+    evaluations: Vec<Evaluated>,
 }
 
 /// The member of the decision point's metadata (AuthZEN 1.0 §9) the adapter reads.
@@ -77,9 +61,9 @@ struct Metadata {
     access_evaluations_endpoint: Option<String>,
 }
 
-impl From<Evaluation> for Decision {
-    fn from(evaluation: Evaluation) -> Self {
-        if evaluation.decision {
+impl From<Evaluated> for Decision {
+    fn from(evaluated: Evaluated) -> Self {
+        if evaluated.decision {
             Self::Allow
         } else {
             Self::Deny
@@ -93,19 +77,45 @@ enum Answer<T> {
     Unauthorised,
 }
 
+/// What is asked of one resource: the resource as the profile names it, and the context that goes
+/// with it.
+struct Evaluation {
+    resource: Value,
+    context: Option<Value>,
+}
+
+impl Evaluation {
+    /// The body of an evaluation request (AuthZEN 1.0 §6.1).
+    fn request(&self, subject: &Value, action: &Value) -> Value {
+        let mut body = json!({"subject": subject, "action": action, "resource": self.resource});
+        if let (Some(context), Some(members)) = (&self.context, body.as_object_mut()) {
+            members.insert("context".to_owned(), context.clone());
+        }
+        body
+    }
+
+    /// An entry of an evaluations request (AuthZEN 1.0 §7.1), whose context is its own.
+    fn entry(&self) -> Value {
+        let mut entry = json!({"resource": self.resource});
+        if let (Some(context), Some(members)) = (&self.context, entry.as_object_mut()) {
+            members.insert("context".to_owned(), context.clone());
+        }
+        entry
+    }
+}
+
 impl AuthzenAuthorisationDecision {
     /// An adapter that evaluates at `<base_url>/access/v1/evaluation` and reads the decision
-    /// point's metadata at `<base_url>/.well-known/authzen-configuration`, with a bearer token
-    /// obtained from `token_endpoint` as the client `client_id` with `client_secret`.
+    /// point's metadata at `<base_url>/.well-known/authzen-configuration`, with the bearer tokens
+    /// of `tokens` and the names of `profile`.
     ///
     /// # Errors
     ///
     /// [`AuthorisationError::Backend`] where the HTTP client cannot be built.
     pub fn new(
         base_url: &str,
-        token_endpoint: &str,
-        client_id: &str,
-        client_secret: &str,
+        tokens: Arc<TokenClient>,
+        profile: Profile,
     ) -> Result<Self, AuthorisationError> {
         let http = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
@@ -118,10 +128,8 @@ impl AuthzenAuthorisationDecision {
             evaluation_endpoint: format!("{base_url}/access/v1/evaluation"),
             evaluations_endpoint: Mutex::new(None),
             access_evaluations: false,
-            token_endpoint: token_endpoint.to_owned(),
-            client_id: client_id.to_owned(),
-            client_secret: client_secret.to_owned(),
-            token: Mutex::new(None),
+            tokens,
+            profile,
         })
     }
 
@@ -133,52 +141,6 @@ impl AuthzenAuthorisationDecision {
     pub const fn with_access_evaluations(mut self, enabled: bool) -> Self {
         self.access_evaluations = enabled;
         self
-    }
-
-    /// The held token while it is fresh, and a newly obtained one otherwise or where `renew`.
-    async fn bearer(&self, renew: bool) -> Result<String, AuthorisationError> {
-        let held = self
-            .token
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        if !renew && let Some(token) = held.filter(Token::is_fresh) {
-            return Ok(token.value);
-        }
-        let token = self.obtain_token().await?;
-        let value = token.value.clone();
-        *self.token.lock().unwrap_or_else(PoisonError::into_inner) = Some(token);
-        Ok(value)
-    }
-
-    async fn obtain_token(&self) -> Result<Token, AuthorisationError> {
-        let response: TokenResponse = self
-            .http
-            .post(&self.token_endpoint)
-            .basic_auth(
-                form_urlencode(&self.client_id),
-                Some(form_urlencode(&self.client_secret)),
-            )
-            .form(&[("grant_type", "client_credentials")])
-            .send()
-            .await
-            .map_err(backend)?
-            .error_for_status()
-            .map_err(backend)?
-            .json()
-            .await
-            .map_err(backend)?;
-        if !response.token_type.eq_ignore_ascii_case("bearer") {
-            return Err(AuthorisationError::Backend(
-                "the token endpoint issued a token that is not a bearer token".to_owned(),
-            ));
-        }
-        Ok(Token {
-            value: response.access_token,
-            expires_at: response
-                .expires_in
-                .map(|seconds| Instant::now() + Duration::from_secs(seconds)),
-        })
     }
 
     /// The evaluations endpoint the metadata advertises, or none. The metadata is read on first
@@ -237,24 +199,172 @@ impl AuthzenAuthorisationDecision {
         Ok(Answer::Decided(answer))
     }
 
-    /// The answer to `body` posted to `endpoint`; where the token is refused, another is
-    /// obtained and the request is sent once more.
+    /// The answer to `body` posted to `endpoint` with `organisation`'s token; where the token is
+    /// refused, another is obtained and the request is sent once more. `None` where the token
+    /// endpoint refuses the client for the organisation, which denies (ADR 0043).
     async fn ask<T: DeserializeOwned>(
         &self,
+        organisation: &str,
         endpoint: &str,
         body: &Value,
-    ) -> Result<T, AuthorisationError> {
-        let bearer = self.bearer(false).await?;
-        if let Answer::Decided(answer) = self.post(endpoint, &bearer, body).await? {
-            return Ok(answer);
+    ) -> Result<Option<T>, AuthorisationError> {
+        let token = match self.tokens.token(organisation).await {
+            Ok(token) => token,
+            Err(error) => return self.refusal(error),
+        };
+        if let Answer::Decided(answer) = self.post(endpoint, token.as_str(), body).await? {
+            return Ok(Some(answer));
         }
-        let bearer = self.bearer(true).await?;
-        match self.post(endpoint, &bearer, body).await? {
-            Answer::Decided(answer) => Ok(answer),
+        let token = match self.tokens.renewed(organisation).await {
+            Ok(token) => token,
+            Err(error) => return self.refusal(error),
+        };
+        match self.post(endpoint, token.as_str(), body).await? {
+            Answer::Decided(answer) => Ok(Some(answer)),
             Answer::Unauthorised => Err(AuthorisationError::Backend(
                 "the decision point refused a newly obtained bearer token".to_owned(),
             )),
         }
+    }
+
+    /// What a failure to obtain a token comes to: no answer where the endpoint refuses a client
+    /// that is one per organisation as `unauthorized_client`, and a failure otherwise.
+    fn refusal<T>(&self, error: TokenError) -> Result<Option<T>, AuthorisationError> {
+        match error {
+            TokenError::UnauthorizedClient if self.tokens.binds_organisation() => Ok(None),
+            TokenError::UnauthorizedClient | TokenError::Failed(_) => {
+                Err(AuthorisationError::Backend(error.to_string()))
+            }
+        }
+    }
+
+    /// The subject as the profile names it.
+    fn subject_value(&self, subject: &Principal) -> Value {
+        match self.profile {
+            Profile::Plain => json!({
+                "type": "principal",
+                "id": subject.subject(),
+                "properties": {"issuer": subject.issuer()},
+            }),
+            Profile::Grn => json!({"type": "grn", "id": subject.subject()}),
+        }
+    }
+
+    /// What to ask for `action` on `resource`, or `None` where the path is not valid UTF-8, which
+    /// is denied without asking (ADR 0043).
+    fn evaluation(&self, action: Action, resource: &Resource) -> Option<Evaluation> {
+        let path = match resource {
+            Resource::Path { path, .. } => Some(utf8_path(path)?),
+            Resource::Organisation(_) | Resource::Repository { .. } => None,
+        };
+        Some(match self.profile {
+            Profile::Plain => Evaluation {
+                resource: plain_resource(resource, path),
+                context: None,
+            },
+            Profile::Grn => Evaluation {
+                resource: grn_resource(resource),
+                context: path
+                    .filter(|_| matches!(action, Action::Read | Action::Write))
+                    .map(|path| json!({"path": path})),
+            },
+        })
+    }
+
+    /// The decisions on `evaluations`, all for `organisation`, in order: one evaluations request
+    /// where `batch` and the decision point offers it, one evaluation request each otherwise.
+    /// `None` where the token endpoint refuses the client for the organisation.
+    async fn decide_group(
+        &self,
+        subject: &Value,
+        action: &Value,
+        organisation: &str,
+        evaluations: &[Evaluation],
+        batch: bool,
+    ) -> Result<Option<Vec<Decision>>, AuthorisationError> {
+        let endpoint = if batch && self.access_evaluations {
+            self.evaluations_endpoint().await?
+        } else {
+            None
+        };
+        let Some(endpoint) = endpoint else {
+            let mut decisions = Vec::with_capacity(evaluations.len());
+            for evaluation in evaluations {
+                let body = evaluation.request(subject, action);
+                let answer: Option<Evaluated> = self
+                    .ask(organisation, &self.evaluation_endpoint, &body)
+                    .await?;
+                let Some(answer) = answer else {
+                    return Ok(None);
+                };
+                decisions.push(answer.into());
+            }
+            return Ok(Some(decisions));
+        };
+        let body = json!({
+            "subject": subject,
+            "action": action,
+            "evaluations": evaluations.iter().map(Evaluation::entry).collect::<Vec<_>>(),
+        });
+        let answer: Option<Evaluations> = self.ask(organisation, &endpoint, &body).await?;
+        let Some(answer) = answer else {
+            return Ok(None);
+        };
+        if answer.evaluations.len() != evaluations.len() {
+            return Err(AuthorisationError::Backend(format!(
+                "the decision point answered {} decisions for {} resources",
+                answer.evaluations.len(),
+                evaluations.len()
+            )));
+        }
+        Ok(Some(
+            answer.evaluations.into_iter().map(Decision::from).collect(),
+        ))
+    }
+
+    /// The decisions on `resources`, in order. A resource denied without asking, or whose
+    /// organisation's token is refused as `unauthorized_client`, is denied.
+    async fn decide_resources(
+        &self,
+        subject: &Principal,
+        action: Action,
+        resources: &[Resource],
+        batch: bool,
+    ) -> Result<Vec<Decision>, AuthorisationError> {
+        let action_value = json!({"name": action_name(self.profile, action)?});
+        let subject = self.subject_value(subject);
+        let mut decisions = vec![Decision::Deny; resources.len()];
+        // The resources to ask about, grouped by the organisation whose token asks for them, in
+        // the order the organisations first appear; where one token serves all, one group.
+        let mut groups: Vec<(&str, Vec<usize>, Vec<Evaluation>)> = Vec::new();
+        for (index, resource) in resources.iter().enumerate() {
+            let Some(evaluation) = self.evaluation(action, resource) else {
+                continue;
+            };
+            let organisation = if self.tokens.binds_organisation() {
+                organisation_of(resource)
+            } else {
+                ""
+            };
+            match groups.iter_mut().find(|(name, ..)| *name == organisation) {
+                Some((_, indexes, evaluations)) => {
+                    indexes.push(index);
+                    evaluations.push(evaluation);
+                }
+                None => groups.push((organisation, vec![index], vec![evaluation])),
+            }
+        }
+        for (organisation, indexes, evaluations) in groups {
+            let answers = self
+                .decide_group(&subject, &action_value, organisation, &evaluations, batch)
+                .await?;
+            for (index, answer) in indexes.into_iter().zip(answers.into_iter().flatten()) {
+                if let Some(decision) = decisions.get_mut(index) {
+                    *decision = answer;
+                }
+            }
+        }
+        Ok(decisions)
     }
 }
 
@@ -265,13 +375,10 @@ impl AuthorisationDecision for AuthzenAuthorisationDecision {
         action: Action,
         resource: &Resource,
     ) -> Result<Decision, AuthorisationError> {
-        let body = json!({
-            "subject": subject_value(subject),
-            "action": {"name": action_name(action)},
-            "resource": resource_value(resource),
-        });
-        let evaluation: Evaluation = self.ask(&self.evaluation_endpoint, &body).await?;
-        Ok(evaluation.into())
+        let decisions = self
+            .decide_resources(subject, action, std::slice::from_ref(resource), false)
+            .await?;
+        Ok(decisions.first().copied().unwrap_or(Decision::Deny))
     }
 
     async fn decide_all(
@@ -280,107 +387,97 @@ impl AuthorisationDecision for AuthzenAuthorisationDecision {
         action: Action,
         resources: &[Resource],
     ) -> Result<Vec<Decision>, AuthorisationError> {
-        if resources.is_empty() {
-            return Ok(Vec::new());
-        }
-        let endpoint = if self.access_evaluations {
-            self.evaluations_endpoint().await?
-        } else {
-            None
-        };
-        let Some(endpoint) = endpoint else {
-            let mut decisions = Vec::with_capacity(resources.len());
-            for resource in resources {
-                decisions.push(self.decide(subject, action, resource).await?);
-            }
-            return Ok(decisions);
-        };
-        let body = json!({
-            "subject": subject_value(subject),
-            "action": {"name": action_name(action)},
-            "evaluations": resources
-                .iter()
-                .map(|resource| json!({"resource": resource_value(resource)}))
-                .collect::<Vec<_>>(),
-        });
-        let answer: Evaluations = self.ask(&endpoint, &body).await?;
-        if answer.evaluations.len() != resources.len() {
-            return Err(AuthorisationError::Backend(format!(
-                "the decision point answered {} decisions for {} resources",
-                answer.evaluations.len(),
-                resources.len()
-            )));
-        }
-        Ok(answer.evaluations.into_iter().map(Decision::from).collect())
+        self.decide_resources(subject, action, resources, true)
+            .await
     }
 }
 
-fn subject_value(subject: &Principal) -> Value {
-    json!({
-        "type": "principal",
-        "id": subject.subject(),
-        "properties": {"issuer": subject.issuer()},
+/// The name of `action` in `profile`; the GRN profile has none for administering members, which
+/// external mode never asks (ADR 0030, ADR 0043).
+fn action_name(profile: Profile, action: Action) -> Result<&'static str, AuthorisationError> {
+    Ok(match (profile, action) {
+        (Profile::Plain, Action::CreateOrganisation) => "create_organisation",
+        (Profile::Plain, Action::CreateRepository) => "create_repository",
+        (Profile::Plain, Action::AdministerMembers) => "administer_members",
+        (Profile::Plain, Action::AdministerRunners) => "administer_runners",
+        (Profile::Plain, Action::Read) => "read",
+        (Profile::Plain, Action::Write) => "write",
+        (Profile::Grn, Action::CreateOrganisation) => "codehub:org.use",
+        (Profile::Grn, Action::CreateRepository) => "codehub:repo.create",
+        (Profile::Grn, Action::AdministerRunners) => "codehub:runner.administer",
+        (Profile::Grn, Action::Read) => "codehub:repo.read",
+        (Profile::Grn, Action::Write) => "codehub:repo.write",
+        (Profile::Grn, Action::AdministerMembers) => {
+            return Err(AuthorisationError::Backend(
+                "the grn profile has no action for administering members".to_owned(),
+            ));
+        }
     })
 }
 
-const fn action_name(action: Action) -> &'static str {
-    match action {
-        Action::CreateOrganisation => "create_organisation",
-        Action::CreateRepository => "create_repository",
-        Action::AdministerMembers => "administer_members",
-        Action::AdministerRunners => "administer_runners",
-        Action::Read => "read",
-        Action::Write => "write",
+/// The organisation a resource is in, by whose token it is asked about.
+fn organisation_of(resource: &Resource) -> &str {
+    match resource {
+        Resource::Organisation(organisation)
+        | Resource::Repository { organisation, .. }
+        | Resource::Path { organisation, .. } => organisation.as_str(),
     }
 }
 
-fn resource_value(resource: &Resource) -> Value {
+/// The path's components joined by `/`, or `None` where one is not valid UTF-8.
+fn utf8_path(path: &Path) -> Option<String> {
+    let components = path
+        .components()
+        .iter()
+        .map(|component| std::str::from_utf8(component.as_bytes()).ok())
+        .collect::<Option<Vec<_>>>()?;
+    Some(components.join("/"))
+}
+
+fn plain_resource(resource: &Resource, path: Option<String>) -> Value {
     match resource {
         Resource::Organisation(organisation) => {
             json!({"type": "organisation", "id": organisation.as_str()})
         }
         Resource::Repository {
             organisation, name, ..
-        } => json!({
-            "type": "repository",
-            "id": format!("{organisation}/{name}"),
-            "properties": {"organisation": organisation.as_str(), "repository": name.as_str()},
-        }),
-        Resource::Path {
-            organisation,
-            name,
-            path,
-            ..
-        } => json!({
-            "type": "repository",
-            "id": format!("{organisation}/{name}"),
-            "properties": {
+        }
+        | Resource::Path {
+            organisation, name, ..
+        } => {
+            let mut properties = json!({
                 "organisation": organisation.as_str(),
                 "repository": name.as_str(),
-                "path": path.to_string(),
-            },
-        }),
+            });
+            if let (Some(path), Some(members)) = (path, properties.as_object_mut()) {
+                members.insert("path".to_owned(), Value::String(path));
+            }
+            json!({
+                "type": "repository",
+                "id": format!("{organisation}/{name}"),
+                "properties": properties,
+            })
+        }
     }
+}
+
+fn grn_resource(resource: &Resource) -> Value {
+    let id = match resource {
+        Resource::Organisation(organisation) => format!("grn:root/iam/org/{organisation}"),
+        Resource::Repository {
+            organisation,
+            repository,
+            ..
+        }
+        | Resource::Path {
+            organisation,
+            repository,
+            ..
+        } => format!("grn:{organisation}/codehub/repo/{repository}"),
+    };
+    json!({"type": "grn", "id": id})
 }
 
 fn backend(error: reqwest::Error) -> AuthorisationError {
     AuthorisationError::Backend(error.to_string())
-}
-
-/// `text` in the `application/x-www-form-urlencoded` byte serialisation, which RFC 6749 §2.3.1
-/// applies to the client id and secret before they are joined for HTTP Basic.
-fn form_urlencode(text: &str) -> String {
-    let mut encoded = String::with_capacity(text.len());
-    for byte in text.bytes() {
-        match byte {
-            b'*' | b'-' | b'.' | b'_' => encoded.push(char::from(byte)),
-            b' ' => encoded.push('+'),
-            _ if byte.is_ascii_alphanumeric() => encoded.push(char::from(byte)),
-            // Writing to a String does not fail.
-            _ => {
-                let _ = write!(encoded, "%{byte:02X}");
-            }
-        }
-    }
-    encoded
 }

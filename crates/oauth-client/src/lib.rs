@@ -8,10 +8,11 @@
 //! until they are within a few seconds of their `expires_in`; a refusal of the client as
 //! `unauthorized_client` is a distinct outcome, and is never held.
 //!
-//! The assertion's `iss`, `sub` and `client_id` are the client id, its `aud` is the issuer
-//! identifier as one string, its lifetime is 30 seconds, it carries a fresh `jti`, and its header
-//! has `typ` `client-authentication+jwt` and, where configured, `kid`. The algorithm follows the
-//! key: ES256 for a P-256 key and RS256 for an RSA key, both PEM PKCS#8.
+//! The client id is sent as the `client_id` parameter. The assertion's `iss` and `sub` are the
+//! client id, its `aud` is the issuer identifier as one string, its lifetime is 30 seconds, it
+//! carries a fresh `jti`, and its header has `typ` `client-authentication+jwt` and, where
+//! configured, `kid`. The algorithm follows the key: ES256 for a P-256 key and RS256 for an RSA
+//! key, both PEM PKCS#8.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -162,7 +163,6 @@ pub struct TokenClient {
 struct Claims<'a> {
     iss: &'a str,
     sub: &'a str,
-    client_id: &'a str,
     aud: &'a str,
     iat: u64,
     exp: u64,
@@ -311,9 +311,19 @@ impl TokenClient {
                     Some(form_urlencode(client_secret)),
                 );
             }
-            Credentials::Assertion { .. } => {
+            Credentials::Assertion {
+                client_id_template,
+                key,
+                algorithm,
+                key_id,
+                issuer,
+            } => {
+                let client_id = client_id_template.replace(ORGANISATION_PLACEHOLDER, organisation);
+                let assertion =
+                    sign_assertion(key, *algorithm, key_id.as_deref(), issuer, &client_id)?;
+                form.push(("client_id", client_id));
                 form.push(("client_assertion_type", CLIENT_ASSERTION_TYPE.to_owned()));
-                form.push(("client_assertion", self.assertion(organisation)?));
+                form.push(("client_assertion", assertion));
             }
         }
         if let Some(audience) = &self.audience {
@@ -347,40 +357,32 @@ impl TokenClient {
         }
         Ok((Token(response.access_token), response.expires_in))
     }
+}
 
-    /// The signed assertion by which the client authenticates for `organisation`.
-    fn assertion(&self, organisation: &str) -> Result<String, TokenError> {
-        let Credentials::Assertion {
-            client_id_template,
-            key,
-            algorithm,
-            key_id,
-            issuer,
-        } = &self.credentials
-        else {
-            return Err(TokenError::Failed(
-                "the client does not authenticate by assertion".to_owned(),
-            ));
-        };
-        let client_id = client_id_template.replace(ORGANISATION_PLACEHOLDER, organisation);
-        let issued_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(failed)?
-            .as_secs();
-        let mut header = Header::new(*algorithm);
-        header.typ = Some(ASSERTION_TYPE.to_owned());
-        header.kid.clone_from(key_id);
-        let claims = Claims {
-            iss: &client_id,
-            sub: &client_id,
-            client_id: &client_id,
-            aud: issuer,
-            iat: issued_at,
-            exp: issued_at + ASSERTION_LIFETIME.as_secs(),
-            jti: jti()?,
-        };
-        jsonwebtoken::encode(&header, &claims, key).map_err(failed)
-    }
+/// The assertion by which the client `client_id` authenticates, signed with `key`.
+fn sign_assertion(
+    key: &EncodingKey,
+    algorithm: Algorithm,
+    key_id: Option<&str>,
+    issuer: &str,
+    client_id: &str,
+) -> Result<String, TokenError> {
+    let issued_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(failed)?
+        .as_secs();
+    let mut header = Header::new(algorithm);
+    header.typ = Some(ASSERTION_TYPE.to_owned());
+    header.kid = key_id.map(str::to_owned);
+    let claims = Claims {
+        iss: client_id,
+        sub: client_id,
+        aud: issuer,
+        iat: issued_at,
+        exp: issued_at + ASSERTION_LIFETIME.as_secs(),
+        jti: jti()?,
+    };
+    jsonwebtoken::encode(&header, &claims, key).map_err(failed)
 }
 
 /// The signing key of `pem` and the algorithm that follows it, found by signing once.

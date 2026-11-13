@@ -6,7 +6,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use adapter_authzen::AuthzenAuthorisationDecision;
+use adapter_authzen::{AuthzenAuthorisationDecision, Profile};
 use app::domain::name::{OrganisationName, RepositoryName};
 use app::domain::path::Path;
 use app::domain::principal::Principal;
@@ -14,6 +14,7 @@ use app::domain::repository::RepositoryId;
 use app::port::driven::authorisation_decision::{
     Action, AuthorisationDecision, AuthorisationError, Decision, Resource,
 };
+use oauth_client::{Authentication, TokenClient};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -68,6 +69,22 @@ fn bob() -> Principal {
     principal(&env("CODEHUB_TEST_KEYCLOAK_SUBJECT_BOB"))
 }
 
+/// A token client for `token_endpoint` that authenticates as `client_id` with `secret`.
+#[cfg(test)]
+fn secret_tokens(token_endpoint: &str, client_id: &str, secret: &str) -> Arc<TokenClient> {
+    Arc::new(
+        TokenClient::new(
+            token_endpoint,
+            None,
+            Authentication::ClientSecret {
+                client_id: client_id.to_owned(),
+                client_secret: secret.to_owned(),
+            },
+        )
+        .unwrap(),
+    )
+}
+
 #[cfg(test)]
 fn keycloak_token_endpoint() -> String {
     format!(
@@ -82,9 +99,12 @@ fn keycloak_token_endpoint() -> String {
 fn real_adapter_with_secret(secret: &str) -> AuthzenAuthorisationDecision {
     AuthzenAuthorisationDecision::new(
         &env("CODEHUB_TEST_AUTHZEN_URL"),
-        &keycloak_token_endpoint(),
-        &env("CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_ID"),
-        secret,
+        secret_tokens(
+            &keycloak_token_endpoint(),
+            &env("CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_ID"),
+            secret,
+        ),
+        Profile::Plain,
     )
     .unwrap()
 }
@@ -248,9 +268,12 @@ async fn fails_where_the_decision_point_is_unreachable() {
     drop(listener);
     let adapter = AuthzenAuthorisationDecision::new(
         &url,
-        &keycloak_token_endpoint(),
-        &env("CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_ID"),
-        &env("CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_SECRET"),
+        secret_tokens(
+            &keycloak_token_endpoint(),
+            &env("CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_ID"),
+            &env("CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_SECRET"),
+        ),
+        Profile::Plain,
     )
     .unwrap();
 
@@ -303,9 +326,12 @@ impl Stub {
     fn adapter(&self) -> AuthzenAuthorisationDecision {
         AuthzenAuthorisationDecision::new(
             &self.url,
-            &format!("{}/token", self.url),
-            "resource-client",
-            "resource-secret",
+            secret_tokens(
+                &format!("{}/token", self.url),
+                "resource-client",
+                "resource-secret",
+            ),
+            Profile::Plain,
         )
         .unwrap()
     }
@@ -544,9 +570,8 @@ async fn form_urlencodes_the_client_credentials_before_basic_encoding_them() {
     let stub = stub_with(3600, decision_reply(true)).await;
     let adapter = AuthzenAuthorisationDecision::new(
         &stub.url,
-        &format!("{}/token", stub.url),
-        "cli:ent",
-        "p:w%d s",
+        secret_tokens(&format!("{}/token", stub.url), "cli:ent", "p:w%d s"),
+        Profile::Plain,
     )
     .unwrap();
     let subject = Principal::new("https://issuer.example", "user-1").unwrap();
