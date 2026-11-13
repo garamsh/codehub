@@ -314,7 +314,7 @@ Stop `codehub` with Ctrl-C, and the runner. To start over, drop the database wit
 
 The same `codehub` with garam as the OIDC issuer and the AuthZEN decision point, in the `grn` profile with `private_key_jwt`, and with garam told about each repository through the directory outbox. `docs/deployment.md` lists every setting; this section names the ones garam mode needs and runs the end-to-end test that shows them working. The decisions behind them are ADR 0042, 0043 and 0044 (`docs/architecture/`).
 
-The output below was produced on 2026-11-13 from the commit `9d375124b4defdc790006f837013b20b9459ea31` plus this file's change, with the services of `compose.yaml` stopped or running (`make e2e-garam` starts them if needed) and garam 0.8.0's images in the local Docker image store.
+The output below was produced on 2026-11-13 from the commit `9d375124b4defdc790006f837013b20b9459ea31` plus this file's change, with garam 0.8.0's images in the local Docker image store. `make e2e-garam` starts the services of `compose.yaml` itself.
 
 ### Settings
 
