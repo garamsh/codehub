@@ -15,6 +15,7 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "proce
 [dev-dependencies]
 axum = { workspace = true, features = ["http1", "json", "tokio"] }
 serde_json = { workspace = true }
+test-support = { path = "../test-support" }
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lints]

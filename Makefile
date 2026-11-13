@@ -1,4 +1,4 @@
-.PHONY: lint format test e2e loadtest loadtest-smoke build ci services services-down
+.PHONY: lint format test e2e loadtest loadtest-smoke build images ci services services-down
 
 lint:
 	CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets --locked
@@ -35,6 +35,26 @@ loadtest: services
 
 build:
 	cargo build --workspace --all-targets --locked
+
+# Builds the server and runner images (deploy/), then runs each image's binary with --help and
+# checks that it runs as a user other than root. IMAGE_VERSION and IMAGE_REVISION are the
+# image's version and revision labels.
+IMAGE_VERSION ?= dev
+IMAGE_REVISION ?= $(shell git rev-parse HEAD)
+
+images:
+	set -eu; \
+	for name in server runner; do \
+		image=codehub/$$name:$(IMAGE_VERSION); \
+		docker build -f deploy/$$name.Dockerfile \
+			--build-arg IMAGE_VERSION=$(IMAGE_VERSION) --build-arg IMAGE_REVISION=$(IMAGE_REVISION) \
+			-t $$image .; \
+		docker run --rm $$image --help; \
+		uid=$$(docker run --rm --entrypoint id $$image -u); \
+		size=$$(docker image inspect --format '{{.Size}}' $$image); \
+		echo "images: $$image runs as uid $$uid, $$size bytes"; \
+		test "$$uid" != 0; \
+	done
 
 ci: lint format test e2e loadtest-smoke build
 

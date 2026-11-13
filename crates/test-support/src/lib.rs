@@ -16,6 +16,7 @@
 mod ch;
 pub mod contract;
 mod database;
+mod deployment;
 mod keycloak;
 mod server;
 
@@ -24,6 +25,7 @@ use std::time::Duration;
 
 pub use ch::{ChUser, Run};
 pub use database::TestDatabase;
+pub use deployment::assert_contract;
 pub use keycloak::{introspection_settings, keycloak_token, token_endpoint};
 pub use server::{Server, pairs};
 

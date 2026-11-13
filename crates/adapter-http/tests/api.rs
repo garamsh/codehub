@@ -690,6 +690,7 @@ async fn documents_every_route_and_routes_every_documented_operation() {
     let routed: BTreeSet<(String, String)> = adapter_http::ROUTES
         .iter()
         .chain(adapter_http::RUNNER_ROUTES)
+        .chain(adapter_http::HEALTH_ROUTES)
         .flat_map(|(path, methods)| {
             methods
                 .iter()
@@ -712,8 +713,13 @@ async fn documents_every_route_and_routes_every_documented_operation() {
         }
         uri.push_str(rest);
         let method = Method::from_bytes(method.to_uppercase().as_bytes()).unwrap();
-        let reply = api.send(method.clone(), &uri, None, None).await;
-        let expected = if uri == "/v1/openapi.json" {
+        let probe = uri == "/healthz" || uri == "/readyz";
+        let reply = if probe {
+            send(health(None), method.clone(), &uri, None, None).await
+        } else {
+            api.send(method.clone(), &uri, None, None).await
+        };
+        let expected = if uri == "/v1/openapi.json" || probe {
             StatusCode::OK
         } else {
             StatusCode::UNAUTHORIZED
@@ -725,6 +731,47 @@ async fn documents_every_route_and_routes_every_documented_operation() {
     let unknown = api.send(Method::GET, "/v1/nothing", None, None).await;
     assert_eq!(unknown.status, StatusCode::NOT_FOUND);
     assert_eq!(unknown.content_type, PROBLEM);
+}
+
+/// Readiness that holds, or fails with `reason`.
+#[cfg(test)]
+struct Dependencies(Option<&'static str>);
+
+#[cfg(test)]
+impl adapter_http::Readiness for Dependencies {
+    async fn check(&self) -> Result<(), adapter_http::NotReady> {
+        self.0
+            .map_or(Ok(()), |reason| Err(adapter_http::NotReady(reason)))
+    }
+}
+
+#[cfg(test)]
+fn health(failing: Option<&'static str>) -> axum::Router {
+    adapter_http::health_router(Dependencies(failing))
+}
+
+#[tokio::test]
+async fn answers_the_probes_without_a_token() {
+    for path in ["/healthz", "/readyz"] {
+        let reply = send(health(None), Method::GET, path, None, None).await;
+        assert_eq!(reply.status, StatusCode::OK, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn answers_readyz_with_503_and_the_reason_where_a_dependency_does_not_answer() {
+    let reason = "PostgreSQL did not answer";
+    let not_ready = send(health(Some(reason)), Method::GET, "/readyz", None, None).await;
+    assert_eq!(not_ready.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(not_ready.content_type, PROBLEM);
+    assert_eq!(not_ready.body["status"], 503);
+    assert_eq!(not_ready.body["detail"], reason);
+    // The controls: liveness depends on nothing, so it holds beside the failure, and the same
+    // route answers 200 where the dependencies answer.
+    let live = send(health(Some(reason)), Method::GET, "/healthz", None, None).await;
+    assert_eq!(live.status, StatusCode::OK);
+    let ready = send(health(None), Method::GET, "/readyz", None, None).await;
+    assert_eq!(ready.status, StatusCode::OK);
 }
 
 #[cfg(test)]

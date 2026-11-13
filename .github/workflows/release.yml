@@ -1,0 +1,127 @@
+name: release
+
+# A `vX.Y.Z` tag publishes codehub/server:X.Y.Z and codehub/runner:X.Y.Z, and no other tag. The
+# push role's trust policy admits only the subject refs/tags/v* of this repository, so no other
+# trigger gets a credential. Action pins take the form ci.yml states.
+on:
+  push:
+    tags: ["v*"]
+
+permissions: read-all
+
+# No concurrency group: a group cancels a pending run when a newer one queues behind it, so a
+# `vX.Y.Z` tag could publish nothing.
+
+env:
+  # Role of aurora#750: trusts refs/tags/v* of this repository, audience sts.amazonaws.com.
+  AWS_ROLE: arn:aws:iam::486152169996:role/github-actions-codehub
+  AWS_REGION: ap-northeast-2
+
+jobs:
+  images:
+    # Mover: the .github/ owner in CODEOWNERS (@sauce-git) moves this label when a newer versioned label is published.
+    runs-on: ubuntu-24.04
+    permissions:
+      # A job's block replaces the workflow's, so the checkout's read is written beside the
+      # federated push credential.
+      contents: read
+      id-token: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      registry: ${{ steps.ecr.outputs.registry }}
+      server-digest: ${{ steps.push.outputs.server-digest }}
+      runner-digest: ${{ steps.push.outputs.runner-digest }}
+    steps:
+      - name: Record runner image
+        run: echo "ImageOS=$ImageOS ImageVersion=$ImageVersion" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The repositories are tag-immutable, so a tag that is not vX.Y.Z is refused before
+      # anything is built or pushed. The tag name reaches the shell through the environment.
+      - id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version=$(sh scripts/release-version.sh "$REF_NAME")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - id: revision
+        run: echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Both images are built into the runner's image store before either is pushed, so a failed
+      # build publishes nothing. A push that fails between the two leaves only the server
+      # published; the repositories are tag-immutable, so a re-run cannot repair it and the
+      # repair is the next version.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: deploy/server.Dockerfile
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          push: false
+          load: true
+          build-args: |
+            IMAGE_REVISION=${{ steps.revision.outputs.revision }}
+            IMAGE_VERSION=${{ steps.version.outputs.version }}
+          tags: ${{ steps.ecr.outputs.registry }}/codehub/server:${{ steps.version.outputs.version }}
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: deploy/runner.Dockerfile
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          push: false
+          load: true
+          build-args: |
+            IMAGE_REVISION=${{ steps.revision.outputs.revision }}
+            IMAGE_VERSION=${{ steps.version.outputs.version }}
+          tags: ${{ steps.ecr.outputs.registry }}/codehub/runner:${{ steps.version.outputs.version }}
+
+      # The digest is the one the registry stores, read back after the push.
+      - id: push
+        env:
+          SERVER: ${{ steps.ecr.outputs.registry }}/codehub/server:${{ steps.version.outputs.version }}
+          RUNNER: ${{ steps.ecr.outputs.registry }}/codehub/runner:${{ steps.version.outputs.version }}
+        run: |
+          docker image inspect "$SERVER" "$RUNNER" > /dev/null
+          docker push "$SERVER"
+          docker push "$RUNNER"
+          for pair in "server=$SERVER" "runner=$RUNNER"; do
+            digest=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${pair#*=}")
+            echo "${pair%%=*}-digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "${pair#*=}@$digest" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+  release:
+    needs: images
+    # Mover: the .github/ owner in CODEOWNERS (@sauce-git) moves this label when a newer versioned label is published.
+    runs-on: ubuntu-24.04
+    permissions:
+      # The release is the only thing this workflow writes back.
+      contents: write
+    steps:
+      - name: Record runner image
+        run: echo "ImageOS=$ImageOS ImageVersion=$ImageVersion" >> "$GITHUB_STEP_SUMMARY"
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          body: |
+            ${{ needs.images.outputs.registry }}/codehub/server:${{ needs.images.outputs.version }}
+            ${{ needs.images.outputs.server-digest }}
+
+            ${{ needs.images.outputs.registry }}/codehub/runner:${{ needs.images.outputs.version }}
+            ${{ needs.images.outputs.runner-digest }}
