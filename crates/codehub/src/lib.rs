@@ -5,12 +5,14 @@ use std::fmt;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use adapter_http::{Pause, RunnerSettings};
 use adapter_toml::TomlCheckDefinitions;
 
-use adapter_authzen::AuthzenAuthorisationDecision;
+use adapter_authzen::{AuthzenAuthorisationDecision, Profile};
 use adapter_introspection::IntrospectionIdentityVerification;
 use adapter_oidc::OidcIdentityVerification;
 use adapter_postgres::{
@@ -37,6 +39,7 @@ use app::use_case::members::{MembersAdapters, MembersService};
 use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
 use app::use_case::runners::{RunnersAdapters, RunnersService};
 use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
+use oauth_client::{Authentication, InvalidClient, TokenClient};
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -45,7 +48,7 @@ mod settings;
 
 use readiness::Probe;
 use settings::require;
-pub use settings::{Authorisation, Config, Identity};
+pub use settings::{Authorisation, AuthzenClientAuthentication, AuthzenProfile, Config, Identity};
 
 /// Why the server did not start or stopped serving.
 #[derive(Debug)]
@@ -61,6 +64,12 @@ pub enum Error {
     /// A setting the selected identity or authorisation mode needs is missing; carries its flag
     /// and variable.
     MissingSetting(&'static str),
+    /// Settings that cannot go together; carries what to change.
+    IncompatibleSettings(&'static str),
+    /// The file named by `CODEHUB_AUTHZEN_KEY_FILE` could not be read.
+    KeyFile(PathBuf, std::io::Error),
+    /// The AuthZEN client could not be built from its settings.
+    Client(InvalidClient),
     /// The check definitions reader could not be built.
     Definitions(PathError),
     /// The runner lease does not exceed the heartbeat interval; carries both, in seconds.
@@ -93,6 +102,17 @@ impl fmt::Display for Error {
                     "the selected identity or authorisation mode needs {setting}"
                 )
             }
+            Self::IncompatibleSettings(reason) => f.write_str(reason),
+            Self::KeyFile(path, error) => write!(
+                f,
+                "reading the key file {} named by CODEHUB_AUTHZEN_KEY_FILE failed: {error}",
+                path.display()
+            ),
+            Self::Client(error) => write!(
+                f,
+                "the AuthZEN client settings (CODEHUB_AUTHZEN_CLIENT_ID, \
+                 CODEHUB_AUTHZEN_KEY_FILE) are invalid: {error}"
+            ),
             Self::Definitions(error) => {
                 write!(f, "configuring the check definitions failed: {error}")
             }
@@ -218,31 +238,89 @@ fn verifier(config: &Config) -> Result<Verifier, Error> {
     .map_err(Error::Identity)
 }
 
-/// Builds the authorisation decision `config` selects, over `database` where it is PostgreSQL.
-fn decider(config: &Config, database: &Database) -> Result<Decider, Error> {
-    match config.authorisation {
-        Authorisation::Postgres => Ok(Decider::Postgres(PostgresAuthorisationDecision::new(
-            database,
-        ))),
-        Authorisation::Authzen => AuthzenAuthorisationDecision::new(
-            require(&config.authzen_url, "--authzen-url (CODEHUB_AUTHZEN_URL)")?,
-            require(
-                &config.authzen_token_endpoint,
-                "--authzen-token-endpoint (CODEHUB_AUTHZEN_TOKEN_ENDPOINT)",
-            )?,
-            require(
-                &config.authzen_client_id,
-                "--authzen-client-id (CODEHUB_AUTHZEN_CLIENT_ID)",
-            )?,
-            require(
-                &config.authzen_client_secret,
-                "--authzen-client-secret (CODEHUB_AUTHZEN_CLIENT_SECRET)",
-            )?,
-        )
-        .map(|decider| decider.with_access_evaluations(config.authzen_evaluations))
-        .map(|decider| Decider::Authzen(Box::new(decider)))
-        .map_err(Error::Authorisation),
+/// Builds the AuthZEN decision point's adapter where `config` selects it, with the one token
+/// client it shares, before anything else is connected. The profile and the client
+/// authentication are checked together: the `grn` profile speaks to a decision point that binds
+/// each token to an organisation (ADR 0043), so it needs `private-key-jwt` (ADR 0042) and is
+/// refused where the AuthZEN adapter is not selected.
+fn authzen(config: &Config) -> Result<Option<AuthzenAuthorisationDecision>, Error> {
+    if config.authorisation != Authorisation::Authzen {
+        if config.authzen_profile == AuthzenProfile::Grn {
+            return Err(Error::IncompatibleSettings(
+                "CODEHUB_AUTHZEN_PROFILE=grn needs CODEHUB_AUTHORISATION=authzen",
+            ));
+        }
+        return Ok(None);
     }
+    let url = require(&config.authzen_url, "--authzen-url (CODEHUB_AUTHZEN_URL)")?;
+    let token_endpoint = require(
+        &config.authzen_token_endpoint,
+        "--authzen-token-endpoint (CODEHUB_AUTHZEN_TOKEN_ENDPOINT)",
+    )?;
+    let client_id = require(
+        &config.authzen_client_id,
+        "--authzen-client-id (CODEHUB_AUTHZEN_CLIENT_ID)",
+    )?;
+    let authentication = match config.authzen_client_authentication {
+        AuthzenClientAuthentication::ClientSecret => {
+            if config.authzen_profile == AuthzenProfile::Grn {
+                return Err(Error::IncompatibleSettings(
+                    "CODEHUB_AUTHZEN_PROFILE=grn needs \
+                     CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION=private-key-jwt",
+                ));
+            }
+            Authentication::ClientSecret {
+                client_id: client_id.to_owned(),
+                client_secret: require(
+                    &config.authzen_client_secret,
+                    "--authzen-client-secret (CODEHUB_AUTHZEN_CLIENT_SECRET)",
+                )?
+                .to_owned(),
+            }
+        }
+        AuthzenClientAuthentication::PrivateKeyJwt => {
+            let key_file = config
+                .authzen_key_file
+                .as_ref()
+                .ok_or(Error::MissingSetting(
+                    "--authzen-key-file (CODEHUB_AUTHZEN_KEY_FILE)",
+                ))?;
+            let issuer = require(
+                &config.authzen_issuer,
+                "--authzen-issuer (CODEHUB_AUTHZEN_ISSUER)",
+            )?;
+            let key_pem =
+                std::fs::read(key_file).map_err(|error| Error::KeyFile(key_file.clone(), error))?;
+            Authentication::PrivateKeyJwt {
+                client_id_template: client_id.to_owned(),
+                key_pem,
+                key_id: config.authzen_key_id.clone(),
+                issuer: issuer.to_owned(),
+            }
+        }
+    };
+    let tokens = TokenClient::new(
+        token_endpoint,
+        config.authzen_audience.clone(),
+        authentication,
+    )
+    .map_err(Error::Client)?;
+    let profile = match config.authzen_profile {
+        AuthzenProfile::Plain => Profile::Plain,
+        AuthzenProfile::Grn => Profile::Grn,
+    };
+    AuthzenAuthorisationDecision::new(url, Arc::new(tokens), profile)
+        .map(|decider| Some(decider.with_access_evaluations(config.authzen_evaluations)))
+        .map_err(Error::Authorisation)
+}
+
+/// The authorisation decision: the `authzen` adapter where [`authzen`] built one, else PostgreSQL
+/// over `database`.
+fn decider(database: &Database, authzen: Option<AuthzenAuthorisationDecision>) -> Decider {
+    authzen.map_or_else(
+        || Decider::Postgres(PostgresAuthorisationDecision::new(database)),
+        |decider| Decider::Authzen(Box::new(decider)),
+    )
 }
 
 /// Connects, migrates, binds and serves until SIGTERM or SIGINT, then finishes the requests in
@@ -254,6 +332,7 @@ fn decider(config: &Config, database: &Database) -> Result<Decider, Error> {
 pub async fn run(config: Config) -> Result<(), Error> {
     config.check_runner_lease()?;
     let identity = verifier(&config)?;
+    let authzen = authzen(&config)?;
     let administration = match config.authorisation {
         Authorisation::Postgres => Administration::BuiltIn,
         Authorisation::Authzen => Administration::External,
@@ -262,7 +341,7 @@ pub async fn run(config: Config) -> Result<(), Error> {
         .await
         .map_err(Error::Database)?;
     database.migrate().await.map_err(Error::Database)?;
-    let authorisation = decider(&config, &database)?;
+    let authorisation = decider(&database, authzen);
     let objects = S3ObjectStore::new(
         &config.s3_endpoint,
         &config.s3_region,

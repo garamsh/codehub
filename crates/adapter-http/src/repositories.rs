@@ -22,6 +22,13 @@ pub struct Created {
     name: String,
 }
 
+#[derive(Serialize)]
+pub struct CreatedRepository {
+    name: String,
+    /// The repository's identity, which a decision point may name it by.
+    id: u64,
+}
+
 pub async fn create_organisation<P: Services>(
     State(ports): State<Arc<P>>,
     Authenticated(caller): Authenticated,
@@ -40,12 +47,18 @@ pub async fn create_repository<P: Services>(
     Authenticated(caller): Authenticated,
     Params(organisation): Params<String>,
     Body(new): Body<NewName>,
-) -> Result<(StatusCode, Json<Created>), Problem> {
+) -> Result<(StatusCode, Json<CreatedRepository>), Problem> {
     let organisation = parse("organisation name", &organisation)?;
     let name = parse("repository name", &new.name)?;
-    ports
+    let id = ports
         .repositories()
         .create_repository(&caller, &organisation, &name)
         .await?;
-    Ok((StatusCode::CREATED, Json(Created { name: new.name })))
+    Ok((
+        StatusCode::CREATED,
+        Json(CreatedRepository {
+            name: new.name,
+            id: id.value(),
+        }),
+    ))
 }

@@ -4,6 +4,7 @@
 use std::fmt;
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 
 use app::use_case::landing_attempts::LandingAttempts;
 use clap::{Parser, ValueEnum};
@@ -32,6 +33,24 @@ pub enum Authorisation {
     Postgres,
     /// An AuthZEN 1.0 decision point; members are administered outside codehub (ADR 0030).
     Authzen,
+}
+
+/// What the AuthZEN adapter sends: the names of its decision point (ADR 0043).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
+pub enum AuthzenProfile {
+    /// codehub's own names for subjects, actions and resources.
+    Plain,
+    /// garam's names: GRNs for subjects and resources, `codehub:` actions.
+    Grn,
+}
+
+/// How the AuthZEN adapter authenticates to the token endpoint (ADR 0042).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
+pub enum AuthzenClientAuthentication {
+    /// A client id and secret, one token for every organisation.
+    ClientSecret,
+    /// A signed assertion (`private_key_jwt`), one client and token per organisation.
+    PrivateKeyJwt,
 }
 
 /// The server's settings. Each is a flag and has an environment variable of the same name,
@@ -132,10 +151,13 @@ pub struct Config {
     /// credentials; required with `--authorisation authzen`.
     #[arg(long, env = "CODEHUB_AUTHZEN_TOKEN_ENDPOINT")]
     pub authzen_token_endpoint: Option<String>,
-    /// The client id used at that token endpoint; required with `--authorisation authzen`.
+    /// The client id used at that token endpoint; required with `--authorisation authzen`. With
+    /// `--authzen-client-authentication private-key-jwt` it is a template holding
+    /// `{organisation}`, such as `grn:{organisation}/iam/service/codehub`.
     #[arg(long, env = "CODEHUB_AUTHZEN_CLIENT_ID")]
     pub authzen_client_id: Option<String>,
-    /// The client secret used at that token endpoint; required with `--authorisation authzen`.
+    /// The client secret used at that token endpoint; required with
+    /// `--authzen-client-authentication client-secret`.
     #[arg(long, env = "CODEHUB_AUTHZEN_CLIENT_SECRET", hide_env_values = true)]
     pub authzen_client_secret: Option<String>,
     /// Sends one AuthZEN Access Evaluations request for many resources where the decision point
@@ -143,6 +165,29 @@ pub struct Config {
     /// point decides each evaluation by its own resource properties (ADR 0041).
     #[arg(long, env = "CODEHUB_AUTHZEN_EVALUATIONS")]
     pub authzen_evaluations: bool,
+    /// The names the AuthZEN adapter sends: codehub's own (`plain`) or garam's (`grn`, which needs
+    /// `--authorisation authzen` and `--authzen-client-authentication private-key-jwt`).
+    #[arg(long, env = "CODEHUB_AUTHZEN_PROFILE", value_enum, default_value_t = AuthzenProfile::Plain)]
+    pub authzen_profile: AuthzenProfile,
+    /// How the adapter authenticates to the token endpoint: by client secret, or by a signed
+    /// assertion of one client per organisation (`private-key-jwt`).
+    #[arg(long, env = "CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION", value_enum, default_value_t = AuthzenClientAuthentication::ClientSecret)]
+    pub authzen_client_authentication: AuthzenClientAuthentication,
+    /// The path of the PEM PKCS#8 private key that signs the assertions; required with
+    /// `--authzen-client-authentication private-key-jwt`. The key is read from the file, never
+    /// from a setting's value.
+    #[arg(long, env = "CODEHUB_AUTHZEN_KEY_FILE")]
+    pub authzen_key_file: Option<PathBuf>,
+    /// The `kid` header of the assertions, such as the key's RFC 7638 thumbprint; optional.
+    #[arg(long, env = "CODEHUB_AUTHZEN_KEY_ID")]
+    pub authzen_key_id: Option<String>,
+    /// The issuer identifier of the token endpoint's authorization server, the assertions'
+    /// audience; required with `--authzen-client-authentication private-key-jwt`.
+    #[arg(long, env = "CODEHUB_AUTHZEN_ISSUER")]
+    pub authzen_issuer: Option<String>,
+    /// Sent as the token request's `audience` parameter where given.
+    #[arg(long, env = "CODEHUB_AUTHZEN_AUDIENCE")]
+    pub authzen_audience: Option<String>,
 }
 
 /// Prints every field but the secrets, which print as `<redacted>`. The impl destructures
@@ -180,6 +225,12 @@ impl fmt::Debug for Config {
             authzen_client_id,
             authzen_client_secret,
             authzen_evaluations,
+            authzen_profile,
+            authzen_client_authentication,
+            authzen_key_file,
+            authzen_key_id,
+            authzen_issuer,
+            authzen_audience,
         } = self;
         f.debug_struct("Config")
             .field("listen", listen)
@@ -217,6 +268,15 @@ impl fmt::Debug for Config {
                 &authzen_client_secret.as_ref().map(|_| REDACTED),
             )
             .field("authzen_evaluations", authzen_evaluations)
+            .field("authzen_profile", authzen_profile)
+            .field(
+                "authzen_client_authentication",
+                authzen_client_authentication,
+            )
+            .field("authzen_key_file", authzen_key_file)
+            .field("authzen_key_id", authzen_key_id)
+            .field("authzen_issuer", authzen_issuer)
+            .field("authzen_audience", authzen_audience)
             .finish()
     }
 }
@@ -335,6 +395,12 @@ mod tests {
             authzen_client_id: Some("authzen-client-visible".to_owned()),
             authzen_client_secret: Some("authzen-secret-value".to_owned()),
             authzen_evaluations: false,
+            authzen_profile: AuthzenProfile::Plain,
+            authzen_client_authentication: AuthzenClientAuthentication::ClientSecret,
+            authzen_key_file: Some(PathBuf::from("/keys/authzen-key-visible.pem")),
+            authzen_key_id: Some("authzen-kid-visible".to_owned()),
+            authzen_issuer: Some("http://garam.example".to_owned()),
+            authzen_audience: Some("authzen-audience-visible".to_owned()),
         }
     }
 

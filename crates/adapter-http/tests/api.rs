@@ -369,6 +369,33 @@ async fn rejects_a_malformed_name_path_address_or_body() {
 }
 
 #[tokio::test]
+async fn answers_the_identity_of_a_repository_it_creates_and_none_for_an_organisation() {
+    let api = Api::new();
+    let ada = api.token("ada");
+
+    let organisation = api.post("/v1/orgs", &ada, json!({"name": "acme"})).await;
+    let app = api
+        .post("/v1/orgs/acme/repos", &ada, json!({"name": "app"}))
+        .await;
+    let lib = api
+        .post("/v1/orgs/acme/repos", &ada, json!({"name": "lib"}))
+        .await;
+
+    assert_eq!(organisation.status, StatusCode::CREATED);
+    assert_eq!(organisation.body, json!({"name": "acme"}));
+    assert_eq!(app.status, StatusCode::CREATED);
+    assert_eq!(app.body["name"], "app");
+    let (app_id, lib_id) = (app.body["id"].as_u64(), lib.body["id"].as_u64());
+    assert!(
+        app_id.is_some() && lib_id.is_some(),
+        "{:?} {:?}",
+        app.body,
+        lib.body
+    );
+    assert_ne!(app_id, lib_id);
+}
+
+#[tokio::test]
 async fn adds_and_removes_members_named_by_issuer_and_subject() {
     let api = Api::new();
     let ada = api.token("ada");

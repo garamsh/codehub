@@ -10,11 +10,20 @@ pub struct NewName {
     pub name: String,
 }
 
-/// An organisation or repository the server created.
+/// An organisation the server created.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Created {
     /// The name.
     pub name: String,
+}
+
+/// A repository the server created.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreatedRepository {
+    /// The name.
+    pub name: String,
+    /// The repository's identity.
+    pub id: u64,
 }
 
 /// An issuer and a subject, which together name a principal.

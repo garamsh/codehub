@@ -9,8 +9,9 @@ use serde::de::DeserializeOwned;
 use crate::failure::{Failure, Operation};
 use crate::state::RepositoryRef;
 use crate::wire::{
-    Access, Checks, Created, File, Grant, History, Landed, Landing, Member, NewName, NewRunner,
-    Principal, Ref, Runner, Runners, StagedFile, TransferGrant, TransferMethod, Upload,
+    Access, Checks, Created, CreatedRepository, File, Grant, History, Landed, Landing, Member,
+    NewName, NewRunner, Principal, Ref, Runner, Runners, StagedFile, TransferGrant, TransferMethod,
+    Upload,
 };
 
 /// Percent-encodes `text` for use as a URL path segment or a form value.
@@ -138,7 +139,10 @@ impl<'a> Api<'a> {
     /// # Errors
     ///
     /// Fails where the request or the server's answer fails.
-    pub async fn create_repository(&self, repository: &RepositoryRef) -> Result<Created, Failure> {
+    pub async fn create_repository(
+        &self,
+        repository: &RepositoryRef,
+    ) -> Result<CreatedRepository, Failure> {
         let body = NewName {
             name: repository.repository.clone(),
         };
