@@ -1,0 +1,15 @@
+[package]
+name = "oauth-client"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aws-lc-rs = { workspace = true }
+jsonwebtoken = { workspace = true, features = ["aws_lc_rs", "use_pem"] }
+reqwest = { workspace = true, features = ["form", "json", "rustls"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
