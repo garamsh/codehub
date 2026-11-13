@@ -304,6 +304,118 @@ async fn does_not_start_without_the_authzen_settings() {
     );
 }
 
+/// The settings of the `grn` profile with `private_key_jwt`, the key being read from `key_file`.
+/// Only where the server is refused does the key need not be a key.
+#[cfg(test)]
+fn grn_settings(key_file: &str) -> Vec<(&'static str, String)> {
+    let mut settings: Vec<_> = external_settings()
+        .into_iter()
+        .filter(|(name, _)| !name.starts_with("CODEHUB_AUTHZEN_CLIENT_"))
+        .collect();
+    settings.extend([
+        ("CODEHUB_AUTHZEN_PROFILE", "grn".to_owned()),
+        (
+            "CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION",
+            "private-key-jwt".to_owned(),
+        ),
+        (
+            "CODEHUB_AUTHZEN_CLIENT_ID",
+            "grn:{organisation}/iam/service/codehub".to_owned(),
+        ),
+        ("CODEHUB_AUTHZEN_KEY_FILE", key_file.to_owned()),
+        ("CODEHUB_AUTHZEN_ISSUER", "https://garam.test".to_owned()),
+    ]);
+    settings
+}
+
+/// The line `codehub` refuses to start with, under `settings`.
+#[cfg(test)]
+fn refusal(database: &TestDatabase, settings: &[(&'static str, String)]) -> String {
+    match Server::try_start_with(Path::new(BINARY), database, &pairs(settings)) {
+        Err(line) => line,
+        Ok(_) => panic!("codehub started under {settings:?}"),
+    }
+}
+
+/// Replaces the value of `name` in `settings`, or removes it where `value` is `None`.
+#[cfg(test)]
+fn with_setting(
+    mut settings: Vec<(&'static str, String)>,
+    name: &'static str,
+    value: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    settings.retain(|(setting, _)| *setting != name);
+    if let Some(value) = value {
+        settings.push((name, value.to_owned()));
+    }
+    settings
+}
+
+#[tokio::test]
+async fn does_not_start_where_the_private_key_jwt_settings_are_wrong() {
+    let database = TestDatabase::new().await;
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let garbage = directory.join("authzen-not-a-key.pem");
+    std::fs::write(&garbage, "NOT-A-KEY-SECRET-CONTENT").unwrap();
+    let garbage = garbage.to_str().unwrap();
+    let missing = directory.join("authzen-no-such-key.pem");
+    let missing = missing.to_str().unwrap();
+    let valid = grn_settings(garbage);
+
+    let cases = [
+        (
+            "no key file",
+            with_setting(valid.clone(), "CODEHUB_AUTHZEN_KEY_FILE", None),
+            "--authzen-key-file (CODEHUB_AUTHZEN_KEY_FILE)",
+        ),
+        (
+            "no issuer",
+            with_setting(valid.clone(), "CODEHUB_AUTHZEN_ISSUER", None),
+            "--authzen-issuer (CODEHUB_AUTHZEN_ISSUER)",
+        ),
+        (
+            "no client id",
+            with_setting(valid.clone(), "CODEHUB_AUTHZEN_CLIENT_ID", None),
+            "--authzen-client-id (CODEHUB_AUTHZEN_CLIENT_ID)",
+        ),
+        (
+            "a key file that does not exist",
+            with_setting(valid.clone(), "CODEHUB_AUTHZEN_KEY_FILE", Some(missing)),
+            "named by CODEHUB_AUTHZEN_KEY_FILE failed",
+        ),
+        (
+            "a template without the organisation",
+            with_setting(
+                valid.clone(),
+                "CODEHUB_AUTHZEN_CLIENT_ID",
+                Some("grn:acme/iam/service/codehub"),
+            ),
+            "(CODEHUB_AUTHZEN_CLIENT_ID, CODEHUB_AUTHZEN_KEY_FILE) are invalid: the client id \
+             template has no {organisation}",
+        ),
+        (
+            "a key that is not PEM PKCS#8",
+            valid.clone(),
+            "(CODEHUB_AUTHZEN_CLIENT_ID, CODEHUB_AUTHZEN_KEY_FILE) are invalid",
+        ),
+        (
+            "the grn profile with a client secret",
+            with_setting(
+                valid,
+                "CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION",
+                Some("client-secret"),
+            ),
+            "CODEHUB_AUTHZEN_PROFILE=grn needs CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION=private-key-jwt",
+        ),
+    ];
+
+    for (case, settings, expected) in cases {
+        let line = refusal(&database, &settings);
+        assert!(line.contains(expected), "{case}: {line}");
+        assert!(!line.contains("NOT-A-KEY-SECRET-CONTENT"), "{case}: {line}");
+    }
+}
+
 #[test]
 fn lists_every_authorisation_setting_in_help() {
     let output = Command::new(BINARY).arg("--help").output().unwrap();
@@ -316,6 +428,18 @@ fn lists_every_authorisation_setting_in_help() {
         "--authzen-client-id",
         "--authzen-client-secret",
         "--authzen-evaluations",
+        "--authzen-profile",
+        "--authzen-client-authentication",
+        "--authzen-key-file",
+        "--authzen-key-id",
+        "--authzen-issuer",
+        "--authzen-audience",
+        "CODEHUB_AUTHZEN_PROFILE",
+        "CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION",
+        "CODEHUB_AUTHZEN_KEY_FILE",
+        "CODEHUB_AUTHZEN_KEY_ID",
+        "CODEHUB_AUTHZEN_ISSUER",
+        "CODEHUB_AUTHZEN_AUDIENCE",
         "CODEHUB_AUTHORISATION",
         "CODEHUB_AUTHZEN_URL",
         "CODEHUB_AUTHZEN_TOKEN_ENDPOINT",
