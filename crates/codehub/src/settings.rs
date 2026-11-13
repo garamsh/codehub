@@ -768,7 +768,8 @@ mod tests {
     #[test]
     fn names_the_setting_a_selected_mode_lacks() {
         assert_eq!(refusal(|_| {}), None);
-        let cases: [(&str, Change, &str); 9] = [
+        assert_eq!(refusal(grn), None);
+        let cases: [(&str, Change, &str); 13] = [
             (
                 "oidc issuer",
                 |config| {
@@ -789,6 +790,21 @@ mod tests {
                 "introspection client secret",
                 |config| config.introspection_client_secret = None,
                 "--introspection-client-secret (CODEHUB_INTROSPECTION_CLIENT_SECRET)",
+            ),
+            (
+                "introspection client id",
+                |config| config.introspection_client_id = None,
+                "--introspection-client-id (CODEHUB_INTROSPECTION_CLIENT_ID)",
+            ),
+            (
+                "introspection issuer",
+                |config| config.introspection_issuer = None,
+                "--introspection-issuer (CODEHUB_INTROSPECTION_ISSUER)",
+            ),
+            (
+                "introspection audience",
+                |config| config.introspection_audience = None,
+                "--introspection-audience (CODEHUB_INTROSPECTION_AUDIENCE)",
             ),
             (
                 "authzen url",
@@ -817,6 +833,14 @@ mod tests {
                     config.authzen_key_file = None;
                 },
                 "--authzen-key-file (CODEHUB_AUTHZEN_KEY_FILE)",
+            ),
+            (
+                "authzen issuer",
+                |config| {
+                    grn(config);
+                    config.authzen_issuer = None;
+                },
+                "--authzen-issuer (CODEHUB_AUTHZEN_ISSUER)",
             ),
             (
                 "garam url",
@@ -915,6 +939,7 @@ mod tests {
         ));
 
         let missing = std::env::temp_dir().join("codehub-no-such-key-file.pem");
+        assert!(!missing.exists(), "{} exists", missing.display());
         config.authzen_key_file = Some(missing.clone());
         let Some(Error::KeyFile(path, _)) = config.select().err() else {
             panic!("the missing key file was accepted");
