@@ -525,7 +525,10 @@ mod tests {
             Err(InvalidClient(_))
         ));
         // A key's bytes that are not PEM are refused too, and the same key as PEM is accepted.
-        assert!(matches!(client_with(der_without_pem), Err(InvalidClient(_))));
+        assert!(matches!(
+            client_with(der_without_pem),
+            Err(InvalidClient(_))
+        ));
         assert!(client_with(pem(ec.as_ref())).is_ok());
     }
 

@@ -3,9 +3,9 @@
 use std::collections::BTreeSet;
 
 use ch::wire::{
-    Access, Check, CheckState, Created, File, Grant, Header, History, Kind, Landed, Landing,
-    Member, NewName, NewRunner, Principal, Problem, Ref, Revert, Role, Runner, StagedFile,
-    TransferGrant, TransferMethod, Upload, Version,
+    Access, Check, CheckState, Created, CreatedRepository, File, Grant, Header, History, Kind,
+    Landed, Landing, Member, NewName, NewRunner, Principal, Problem, Ref, Revert, Role, Runner,
+    StagedFile, TransferGrant, TransferMethod, Upload, Version,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -68,12 +68,17 @@ fn has_the_fields_of_every_schema() {
         "NewName",
     );
     assert_fields(
-        &Created {
-            name: "a".into(),
-            id: Some(7),
-        },
+        &Created { name: "a".into() },
         &schemas["Created"],
         "Created",
+    );
+    assert_fields(
+        &CreatedRepository {
+            name: "a".into(),
+            id: 7,
+        },
+        &schemas["CreatedRepository"],
+        "CreatedRepository",
     );
     assert_fields(
         &Principal {

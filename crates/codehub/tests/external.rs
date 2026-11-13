@@ -259,6 +259,20 @@ async fn does_not_create_an_organisation_where_the_decision_point_denies_it() {
 }
 
 #[tokio::test]
+async fn answers_the_id_the_database_holds_for_a_repository_it_creates() {
+    let database = TestDatabase::new().await;
+    let server = start_external(&database);
+    let alice = client(&server, "alice").await;
+    let (method, path, body) = create_repository("acme");
+
+    let (status, answer) = alice.send(method, &path, body).await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    let held = count(&database, "select id from repositories where name = 'app'").await;
+    assert_eq!(answer["id"].as_i64(), Some(held), "{answer}");
+}
+
+#[tokio::test]
 async fn writes_no_admin_grant_when_an_organisation_is_created() {
     let external = TestDatabase::new().await;
     let server = start_external(&external);

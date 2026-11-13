@@ -20,9 +20,13 @@ pub struct NewName {
 #[derive(Serialize)]
 pub struct Created {
     name: String,
-    /// The repository's identity, which a decision point may name it by; an organisation has none.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct CreatedRepository {
+    name: String,
+    /// The repository's identity, which a decision point may name it by.
+    id: u64,
 }
 
 pub async fn create_organisation<P: Services>(
@@ -35,13 +39,7 @@ pub async fn create_organisation<P: Services>(
         .repositories()
         .create_organisation(&caller, &name)
         .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(Created {
-            name: new.name,
-            id: None,
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(Created { name: new.name })))
 }
 
 pub async fn create_repository<P: Services>(
@@ -49,7 +47,7 @@ pub async fn create_repository<P: Services>(
     Authenticated(caller): Authenticated,
     Params(organisation): Params<String>,
     Body(new): Body<NewName>,
-) -> Result<(StatusCode, Json<Created>), Problem> {
+) -> Result<(StatusCode, Json<CreatedRepository>), Problem> {
     let organisation = parse("organisation name", &organisation)?;
     let name = parse("repository name", &new.name)?;
     let id = ports
@@ -58,9 +56,9 @@ pub async fn create_repository<P: Services>(
         .await?;
     Ok((
         StatusCode::CREATED,
-        Json(Created {
+        Json(CreatedRepository {
             name: new.name,
-            id: Some(id.value()),
+            id: id.value(),
         }),
     ))
 }

@@ -170,7 +170,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Created"
+                  "$ref": "#/components/schemas/CreatedRepository"
                 }
               }
             }
@@ -2155,9 +2155,21 @@
         "properties": {
           "name": {
             "$ref": "#/components/schemas/Name"
+          }
+        }
+      },
+      "CreatedRepository": {
+        "type": "object",
+        "required": [
+          "name",
+          "id"
+        ],
+        "properties": {
+          "name": {
+            "$ref": "#/components/schemas/Name"
           },
           "id": {
-            "description": "The repository's identity, which a decision point may name it by. Answered for a repository, not for an organisation.",
+            "description": "The repository's identity, which a decision point may name it by.",
             "type": "integer",
             "minimum": 0
           }
