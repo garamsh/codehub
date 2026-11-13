@@ -39,16 +39,8 @@ jobs:
 
       - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
 
-      # The references are read from the compose file, the one place they are written. A pull by
-      # tag@digest resolves by the digest, so the image the compose file names is the one in the
-      # store. The count guards against a reference the pattern no longer matches.
       - name: Pull garam's images
-        run: |
-          refs=$(sed -n 's/^ *image: \(.*\/garam\/\(server\|policy\):[^ ]*@sha256:[0-9a-f]*\)$/\1/p' dev/garam/compose.yaml)
-          test "$(printf '%s\n' "$refs" | wc -l)" -eq 2
-          for ref in $refs; do
-            docker pull "$ref"
-          done
+        run: sh dev/garam/pull.sh
 
       - name: Run the garam end-to-end test
         run: make e2e-garam
