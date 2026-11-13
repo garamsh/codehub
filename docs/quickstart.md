@@ -318,6 +318,28 @@ A runner is a principal registered to claim the jobs of an organisation's checks
 
 A blocking check that fails or times out has its changeset reverted as a new changeset; `ch checks` prints the revert next to the check, and `ch checks --wait` exits 4.
 
+### Run the gaon driver against a real gaon
+
+`codehub-runner --executor gaon` runs each job in a run-once MicroVM on gaon (ADR 0046). Its stub tests answer from a stand-in, so `make e2e-gaon` runs the driver against the real server: it fetches `garamsh/gaon` at the commit pinned in `dev/gaon/env.sh`, builds `gaon-apiserver` in a Go container, starts it with etcd under RBAC and ServiceAccount tokens, binds a ServiceAccount to the ClusterRole in `dev/gaon/runner-role.json`, runs `crates/codehub-runner/tests/gaon_live.rs` under that ServiceAccount's token, and removes the containers, the process and the temporary directory at every exit. It needs Docker, network access to GitHub and the two public images pinned in the same file, and no gaon checkout or credentials. The first run builds the server into `target/codehub-gaon-e2e/`; later runs reuse it. The output below was produced on 2026-11-13 from the commit `5f07a633af28f24acb1f229d83fbafdd69b70181` plus this change, after the first run had built the server:
+
+```console
+$ make e2e-gaon
+sh dev/gaon/run.sh
+e2e-gaon: gaon-apiserver built from garamsh/gaon ad26e9b7ffc9ab2446cb8c3ac4489aefec7b0438, etcd quay.io/coreos/etcd@sha256:a9c7cc12156f4b26ca41f0b57ba5b76c45037ff6c1e47ea3d68cb7908d48a965
+
+running 4 tests
+test the_service_account_is_refused_objects_without_the_runner_label ... ok
+test start_deletes_the_leftovers_of_its_label_and_no_other_runner_s ... ok
+test a_timeout_deletes_the_microvm_and_the_secret_and_a_labelled_list_shows_them_gone ... ok
+test a_succeeded_microvm_ends_the_job_with_the_result_posted_to_the_listener ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.12s
+
+test: 4 tests ran (-p codehub-runner --test gaon_live -- --ignored)
+```
+
+gaon has no scheduler or node agent here, so the tests bind a MicroVM and write its phase as the administrator, and post the result a MicroVM would post. The order of the driver's two deletes is not visible through the API, and only the stub tests check it. The `make ci` run skips these tests, which are ignored.
+
 ### Stop and clean up
 
 Stop `codehub` with Ctrl-C, and the runner. To start over, drop the database with `docker compose exec postgres dropdb -U codehub federated` and create it again.

@@ -1,0 +1,7 @@
+{
+  "apiVersion": "rbac.gaon.garam.sh/v1alpha1",
+  "kind": "ClusterRoleBinding",
+  "metadata": { "name": "codehub-runner" },
+  "roleRef": { "kind": "ClusterRole", "name": "codehub-runner" },
+  "subjects": [{ "kind": "User", "name": "gaon:serviceaccount:codehub-runner" }]
+}

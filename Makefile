@@ -1,4 +1,4 @@
-.PHONY: lint format test e2e e2e-garam loadtest loadtest-smoke build images ci services services-down
+.PHONY: lint format test e2e e2e-garam e2e-gaon loadtest loadtest-smoke build images ci services services-down
 
 lint:
 	CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets --locked
@@ -26,6 +26,14 @@ e2e: services
 e2e-garam: services
 	cargo build --locked -p codehub -p ch
 	set -a && . dev/check-env.sh && set +a && sh dev/garam/run.sh
+
+# The live tests of the gaon driver (crates/codehub-runner/tests/gaon_live.rs) against a gaon-apiserver
+# built from the commit pinned in dev/gaon/env.sh and run with etcd under RBAC: it builds the server
+# in a container, starts the stack, runs the tests and removes the stack at every exit. It needs
+# Docker and the two public images pinned there, and network access to fetch gaon; it is not part
+# of `ci`.
+e2e-gaon:
+	sh dev/gaon/run.sh
 
 # The load harness against two codehub replicas and the check services: a smoke run of every
 # scenario in the debug build, which fails on an unexpected status or a replica that dies.
