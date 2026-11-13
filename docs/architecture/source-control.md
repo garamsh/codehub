@@ -28,11 +28,11 @@ How versions of a repository's content are stored, changed, landed and queried.
 - **Object keys are `<repository id>/<sha256 hex>`.** Uploads are single-part with `x-amz-checksum-sha256` signed, so the store verifies the bytes against the address; objects are not compressed, so the address covers the stored bytes. The server refuses a grant above a configured maximum no larger than S3's single-PUT limit, and presigned URLs expire after a configured time, 15 minutes by default (ADR 0023).
 - **There are no work branches.** Pending work is a server-side draft changeset outside the log (ADR 0012).
 - **A draft is the caller's workspace** (ADR 0048):
-  - its base is fixed at `main` when it is opened, and it carries a description that a landing without a message takes as its message;
+  - its base is fixed at `main` when it is opened, and is absent where `main` is unset, and it carries a description that a landing without a message takes as its message;
   - it closes when it lands, and one workspace serves one task, so following `main` within a task is not provided;
   - its changes are recorded path by path or as one snapshot of several paths applied together, and a restore removes a path's change;
   - the server answers what it changes against its base, as statuses and as a line diff.
-- **A changeset's files are listed with a download grant each**, under an optional path prefix; a caller holding no `read` grant for any one listed path is refused the listing (ADR 0048).
+- **A changeset's files are listed with a download grant each**, under an optional path prefix; read is asked for every listed path in one decision, and a caller holding no `read` grant for any one of them is refused the whole listing (ADR 0048).
 - **Moving a ref is a compare-and-swap on that ref alone**, comparing the ref's current changeset identifier, and is separate from creating the changeset (ADR 0012).
 - **Landing is performed on the server**, in this order:
   - rebase the changeset onto the current `main`;

@@ -19,6 +19,8 @@ What existed before:
   - undo one staged path.
 - An agent that wants to build or test needs the repository's files on a filesystem. An agent that lost its context could not find out from the server what its draft held.
 
+"Workspace" here names a draft. ADR 0004 and ADR 0012 used the word for what ADR 0020 renamed a repository; that meaning is retired, so the word is free.
+
 The models taken:
 
 - **Google's CitC:** the workspace is held centrally and the developer's side is a view of it.
@@ -35,7 +37,7 @@ Alternatives not taken:
 ## Decision
 
 - **A draft is a workspace.** It keeps its identity (repository, principal, name; ADR 0022) and its base. It gains a **description**, initially empty.
-  - Opening a workspace fixes its base at `main` as it stands then.
+  - Opening a workspace fixes its base at `main` as it stands then. In a repository where `main` is unset, the workspace has no base, and its view starts empty.
   - A workspace closes when it lands, as a draft is removed today.
   - One workspace serves one task. Following `main` within a task is not provided; the server's rebase at landing handles a moved `main` (ADR 0012).
 - **The API gains, all under `/v1/orgs/{org}/repos/{repo}`:**
@@ -49,20 +51,20 @@ Alternatives not taken:
     - a deletion;
     - a restore, which removes the path's change so the path is as the base holds it.
   - `DELETE drafts/{draft}/changes/{*path}` — restores one path.
-  - `GET drafts/{draft}/diff` — the workspace's changes against its base, computed by the server:
+  - `GET drafts/{draft}/diff`, with an optional `path` query parameter limiting it to one path — the workspace's changes against its base, computed by the server:
     - a line diff for each text path;
     - a marker for each binary path or each path whose kind changed.
   - `GET changesets/{id}/files` — every file in the changeset's tree, optionally under a path prefix. Each comes with its path, kind, content address and a download grant.
-    - A caller holding no `read` grant for any one listed path is refused the listing.
-    - Whether a listing should omit such paths instead stays the open question in `access.md`.
+    - Read is asked for every listed path in one decision, as a landing asks write for all its paths (ADR 0038). A caller holding no `read` grant for any one of them is refused the whole listing, so a listing never shows a path its caller may not read.
+    - This decides nothing about a directory listing that omits or shows such paths: that stays the open question in `access.md`. A caller whose grants are narrower than the repository opens a view under a prefix it may read.
   - `POST drafts/{draft}/land` — accepts an empty or absent message and then lands with the workspace's description.
 - **`ch` gains these verbs:**
-  - `open <dir> [--draft <name>]` — opens the workspace and writes the view into `<dir>`, a directory that is empty or absent. A view is the base's files with the workspace's changes applied, so reopening an existing workspace in a new directory restores the work.
+  - `open <dir> [--draft <name>] [--prefix <path>]` — opens the workspace and writes the view into `<dir>`, a directory that is empty or absent. With `--prefix`, the view holds only the files under that path, and a snapshot records only paths under it. A view is the base's files with the workspace's changes applied, so reopening an existing workspace in a new directory restores the work.
   - `status` — the workspace's changed paths, as `GET drafts/{draft}` answers them.
   - `diff [<path>]` — the server's diff.
   - `describe <message>` — sets the description.
   - `restore <path>` — restores the path on the server and rewrites it in the view from the base. An added path is removed.
-  - `land`, run in a view, lands the workspace and marks the view closed. A later command in that view is refused and names `ch open`.
+  - `land`, run in a view, lands the workspace and marks the view closed. There `--message` is optional, and the description is used when it is absent; outside a view `land` still requires it. A later command in that view is refused and names `ch open`.
   - **Snapshots:**
     - Every `ch` command run in a view first snapshots it: `status`, `diff`, `describe`, `restore` and `land`. A command not in this list does not.
     - The snapshot compares the view's files against what the view last recorded, uploads changed content by presigned URL, and sends one snapshot request.
