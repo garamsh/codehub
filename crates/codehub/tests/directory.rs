@@ -292,3 +292,23 @@ async fn does_not_start_delivering_to_garam_under_the_plain_profile() {
         "codehub: CODEHUB_DIRECTORY_CHANGES=garam needs CODEHUB_AUTHZEN_PROFILE=grn"
     );
 }
+
+#[tokio::test]
+async fn does_not_start_delivering_to_a_garam_url_that_is_not_one() {
+    let database = TestDatabase::new().await;
+    let garam = Garam::start(false).await;
+    let key_file = write_rsa_key("bad-url.pem");
+    let mut settings = garam_settings(&garam, &key_file);
+    settings.retain(|(name, _)| *name != "CODEHUB_DIRECTORY_GARAM_URL");
+    settings.push(("CODEHUB_DIRECTORY_GARAM_URL", "garam.test".to_owned()));
+
+    let started = Server::try_start_with(Path::new(BINARY), &database, &pairs(&settings));
+
+    let Err(line) = started else {
+        panic!("codehub started delivering to a garam URL that is not one");
+    };
+    assert!(
+        line.starts_with("codehub: configuring the directory changes failed: "),
+        "{line}"
+    );
+}

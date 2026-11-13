@@ -208,7 +208,7 @@ pub struct Config {
     pub directory_garam_url: Option<String>,
     /// How long creating a repository waits for its change to be delivered, in seconds. The
     /// creation is answered once it elapses whether or not the change was delivered.
-    #[arg(long, env = "CODEHUB_DIRECTORY_DELIVERY_WAIT", default_value_t = 2)]
+    #[arg(long, env = "CODEHUB_DIRECTORY_DELIVERY_WAIT", default_value_t = 2, value_parser = clap::value_parser!(u64).range(..=3600))]
     pub directory_delivery_wait: u64,
 }
 

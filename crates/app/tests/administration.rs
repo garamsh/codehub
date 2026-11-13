@@ -371,7 +371,7 @@ async fn counts_an_organisation_a_concurrent_creator_made_as_created_and_does_no
             authorisation: &harness.authorisation,
             membership: &harness.membership,
             changes: &harness.changes,
-            delivery: &(),
+            delivery: &harness.delivery,
         },
         Administration::External,
     );
@@ -524,7 +524,7 @@ async fn names_the_repository_in_each_resource_it_asks_the_decision_about() {
             authorisation: &recording,
             membership: &harness.membership,
             changes: &harness.changes,
-            delivery: &(),
+            delivery: &harness.delivery,
         },
         Administration::BuiltIn,
     )

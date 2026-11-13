@@ -306,6 +306,21 @@ async fn does_not_accept_a_change_garam_refuses_for_the_caller() {
 }
 
 #[tokio::test]
+async fn is_not_built_over_something_that_is_not_an_http_url() {
+    for url in [
+        "",
+        "garam.test",
+        "ftp://garam.test",
+        "http://",
+        "http://garam test",
+    ] {
+        let built = GaramDirectoryChanges::new(url, tokens("http://garam.test/token"));
+
+        assert!(built.is_err(), "{url:?} was taken as garam's URL");
+    }
+}
+
+#[tokio::test]
 async fn counts_written_and_dropped_as_accepted_and_a_refusal_as_not() {
     for (answer, expected) in [
         (json!({"written": 1, "dropped": 0, "refusals": []}), true),
@@ -315,6 +330,11 @@ async fn counts_written_and_dropped_as_accepted_and_a_refusal_as_not() {
             false,
         ),
         (json!({"written": 0, "dropped": 0, "refusals": []}), false),
+        // Counts that would wrap to 1 are not a delivery, and are not an overflow panic.
+        (
+            json!({"written": 4_294_967_295_u32, "dropped": 2, "refusals": []}),
+            false,
+        ),
         (
             json!({"written": 1, "dropped": 0, "refusals": [{"index": 0, "error": "no manifest"}]}),
             false,

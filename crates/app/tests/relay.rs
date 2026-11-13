@@ -327,6 +327,17 @@ async fn a_creation_delivers_within_the_wait_and_deletes_the_entry() {
 }
 
 #[tokio::test]
+async fn the_in_memory_composition_offers_each_creation_to_its_relay_and_keeps_what_is_refused() {
+    let harness = Harness::default();
+    let ada = harness.caller("ada").await;
+
+    let id = harness.repository(&ada, "acme").await.id;
+
+    assert_eq!(harness.delivery.receiver.attempts(), 1);
+    assert_eq!(pending(&harness, id, 0).await, vec![1]);
+}
+
+#[tokio::test]
 async fn a_creation_stops_waiting_at_the_wait_while_the_receiver_hangs_and_keeps_the_entry() {
     let harness = Harness::default();
     let ada = harness.caller("ada").await;

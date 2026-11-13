@@ -45,7 +45,7 @@ use app::port::driving::source_control::Landing;
 use app::port::driving::source_control::{SourceControl, SourceControlError};
 use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
-use app::use_case::relay::{Delivery, RelayEnvironment};
+use app::use_case::relay::{Delivery, DirectoryRelay, RelayEnvironment};
 use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
 use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
 
@@ -241,6 +241,78 @@ impl RelayEnvironment for RealTime {
 
     fn log(&self, line: &str) {
         eprintln!("{line}");
+    }
+}
+
+/// A receiver that refuses every repository change, and counts the attempts.
+#[derive(Default)]
+pub struct Holding {
+    attempts: std::sync::atomic::AtomicUsize,
+}
+
+impl Holding {
+    /// How many repository changes were offered to it.
+    pub fn attempts(&self) -> usize {
+        self.attempts.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl DirectoryChanges for Holding {
+    async fn repository_changed(&self, _change: &RepositoryChange) -> bool {
+        self.attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        false
+    }
+
+    async fn organisation_changed(
+        &self,
+        _change: &app::port::driven::directory_changes::OrganisationChange,
+    ) {
+    }
+}
+
+/// The environment of a relay in a test that reads the outbox afterwards: a clock at the start of
+/// time, so that what a failed delivery holds back is claimable at any time a test names, and
+/// sleeps that never end.
+pub struct Frozen;
+
+impl RelayEnvironment for Frozen {
+    fn now(&self) -> i64 {
+        i64::MIN
+    }
+
+    fn sleep(&self, _duration: std::time::Duration) -> impl Future<Output = ()> + Send {
+        std::future::pending()
+    }
+
+    fn log(&self, _line: &str) {}
+}
+
+/// The relay of an in-memory deployment: it takes each creation's entry from the outbox and offers
+/// it to a receiver that refuses it, so that the entry stays for the test to read.
+pub struct HeldRelay {
+    /// The receiver the relay delivers to.
+    pub receiver: std::sync::Arc<Holding>,
+    relay: DirectoryRelay<adapter_memory::MemoryDirectoryOutbox, Holding, Frozen>,
+}
+
+impl HeldRelay {
+    /// A relay over `outbox`.
+    pub fn new(outbox: adapter_memory::MemoryDirectoryOutbox) -> Self {
+        let receiver = std::sync::Arc::new(Holding::default());
+        let relay = DirectoryRelay::new(
+            std::sync::Arc::new(outbox),
+            std::sync::Arc::clone(&receiver),
+            std::sync::Arc::new(Frozen),
+            std::time::Duration::from_secs(2),
+        );
+        Self { receiver, relay }
+    }
+}
+
+impl Delivery for HeldRelay {
+    fn deliver(&self, repository: RepositoryId) -> impl Future<Output = ()> + Send {
+        self.relay.deliver(repository)
     }
 }
 

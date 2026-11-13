@@ -24,8 +24,10 @@ pub const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 pub const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// How long [`DirectoryRelay::run`] waits where nothing is pending.
 pub const IDLE_WAIT: Duration = Duration::from_secs(1);
-/// How long the relay's claim on a repository's entries lasts.
-pub const LEASE: Duration = Duration::from_secs(30);
+/// How long the relay's claim on a repository's entries lasts. It is longer than one delivery can
+/// take in the garam adapter: at worst two token requests and two posts, each bounded at 10 s, is
+/// 40 s, and the claim is 60 s so that no other holder claims the entries meanwhile.
+pub const LEASE: Duration = Duration::from_secs(60);
 
 /// What the relay takes from outside the application: the time, a way to wait, and where its
 /// log lines go.

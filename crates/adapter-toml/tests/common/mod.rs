@@ -11,8 +11,8 @@ use app::domain::check::CheckDefinition;
 use app::domain::repository::RepositoryId;
 use app::port::driven::check_definitions::CheckFileError;
 use app::port::driven::directory_changes::{ChangeKind, RepositoryChange};
-use test_support::contract::Deployment;
 use test_support::contract::runner_deployment::RunnerDeployment;
+use test_support::contract::{Deployment, HeldRelay};
 
 /// The in-memory adapters of one deployment, holding any number of repositories.
 pub struct Harness {
@@ -36,6 +36,8 @@ pub struct Harness {
     pub changes: MemoryDirectoryChanges,
     /// The directory outbox, over the entries the repository directory writes.
     pub outbox: MemoryDirectoryOutbox,
+    /// The relay that offers each creation's entry to a receiver refusing it.
+    pub delivery: HeldRelay,
     /// The runner registry.
     pub registry: MemoryRunnerRegistry,
     /// The job queue.
@@ -54,6 +56,7 @@ impl Default for Harness {
             derived: MemoryDerivedData::default(),
             drafts: MemoryDraftStore::default(),
             outbox: directory.outbox(),
+            delivery: HeldRelay::new(directory.outbox()),
             directory,
             identity: MemoryIdentityVerification::default(),
             authorisation: membership.authorisation_decision(),
@@ -75,7 +78,7 @@ impl Deployment for Harness {
     type Authorisation = MemoryAuthorisationDecision;
     type Changes = MemoryDirectoryChanges;
     type Outbox = MemoryDirectoryOutbox;
-    type Delivery = ();
+    type Delivery = HeldRelay;
 
     async fn start() -> Self {
         Self::default()
@@ -121,8 +124,8 @@ impl Deployment for Harness {
         &self.outbox
     }
 
-    fn delivery(&self) -> &() {
-        &()
+    fn delivery(&self) -> &HeldRelay {
+        &self.delivery
     }
 
     async fn write_change(&self, repository: RepositoryId, kind: ChangeKind) -> RepositoryChange {
