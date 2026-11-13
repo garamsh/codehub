@@ -1,8 +1,8 @@
 name: codehub-garam-e2e
 
 # garam as codehub's OIDC issuer and AuthZEN decision point, from garam's published images, for
-# `make e2e-garam` (dev/garam/run.sh). It is not part of compose.yaml: the pipeline cannot pull
-# these images. The run script names the variables below, writes the key material in
+# `make e2e-garam` (dev/garam/run.sh). It is not part of compose.yaml: only the garam-e2e workflow
+# may pull these images. The run script names the variables below, writes the key material in
 # CODEHUB_GARAM_E2E_DIR and removes the project and its volumes at every exit.
 #
 # Images are pinned by digest (tag kept for the reader). Mover: the PM, when garam releases; the
