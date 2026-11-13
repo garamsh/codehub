@@ -14,7 +14,7 @@ permissions: read-all
 
 env:
   # Role of aurora#750: trusts refs/tags/v* of this repository, audience sts.amazonaws.com.
-  AWS_ROLE: arn:aws:iam::486152169996:role/github-actions-codehub
+  AWS_ROLE: arn:aws:iam::486152169996:role/github-actions-codehub-push
   AWS_REGION: ap-northeast-2
 
 jobs:
