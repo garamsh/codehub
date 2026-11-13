@@ -15,9 +15,8 @@ use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driving::checks::{Checks, ChecksError};
 use crate::use_case::access::{readable_repository, require};
 use crate::use_case::checked_source_control::CheckedAdapters;
-use crate::use_case::jobs::expire;
 use crate::use_case::landing_attempts::LandingAttempts;
-use crate::use_case::revert::Reverts;
+use crate::use_case::post_land_checks::PostLandChecks;
 
 /// The driven ports the checks are built over.
 pub struct ChecksAdapters<'a, Q, L, R, A, O, D, C> {
@@ -44,7 +43,7 @@ pub struct ChecksService<'a, Q, L, R, A, O, D, C> {
     log: &'a L,
     directory: &'a R,
     authorisation: &'a A,
-    reverts: Reverts<'a, O, D, L, R, Q, C>,
+    checks: PostLandChecks<'a, O, D, L, R, Q, C>,
 }
 
 impl<'a, Q, L, R, A, O, D, C> ChecksService<'a, Q, L, R, A, O, D, C> {
@@ -67,7 +66,7 @@ impl<'a, Q, L, R, A, O, D, C> ChecksService<'a, Q, L, R, A, O, D, C> {
             log,
             directory,
             authorisation,
-            reverts: Reverts::new(
+            checks: PostLandChecks::new(
                 CheckedAdapters {
                     objects,
                     derived,
@@ -106,7 +105,7 @@ where
             repository,
         )
         .await?;
-        expire(&self.reverts, now).await?;
+        self.checks.expire(now).await?;
         Ok(self.queue.of_changeset(repository, changeset).await?)
     }
 

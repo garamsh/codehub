@@ -2,9 +2,7 @@
 
 use crate::domain::address::Address;
 use crate::domain::changeset::Change;
-use crate::domain::check::CheckDefinition;
 use crate::domain::file_version::FileVersionNode;
-use crate::domain::job::{Job, NewJob};
 use crate::domain::name::DraftName;
 use crate::domain::path::Path;
 use crate::domain::principal::Caller;
@@ -19,9 +17,7 @@ use crate::port::driving::source_control::{
     FileContent, LandError, Landing, SourceControl, SourceControlError,
 };
 use crate::use_case::landing_attempts::LandingAttempts;
-use crate::use_case::last_green::advance;
-use crate::use_case::read_file::file_at;
-use crate::use_case::revert::Reverts;
+use crate::use_case::post_land_checks::PostLandChecks;
 
 /// The driven ports the landing of checked source control uses beyond those of the source
 /// control it wraps.
@@ -45,7 +41,7 @@ pub struct CheckedAdapters<'a, O, D, L, R, Q, C> {
 /// moves to it at once.
 pub struct CheckedSourceControl<'a, S, O, D, L, R, Q, C> {
     inner: S,
-    reverts: Reverts<'a, O, D, L, R, Q, C>,
+    checks: PostLandChecks<'a, O, D, L, R, Q, C>,
 }
 
 impl<'a, S, O, D, L, R, Q, C> CheckedSourceControl<'a, S, O, D, L, R, Q, C> {
@@ -59,84 +55,9 @@ impl<'a, S, O, D, L, R, Q, C> CheckedSourceControl<'a, S, O, D, L, R, Q, C> {
     ) -> Self {
         Self {
             inner,
-            reverts: Reverts::new(adapters, attempts),
+            checks: PostLandChecks::new(adapters, attempts),
         }
     }
-}
-
-/// Queues the checks `landed` defines, or moves `last-green` to it where none blocks. Returns the
-/// failed job recorded where the definitions could not be read, which the caller is to revert for;
-/// `None` otherwise. The error is a description of what failed.
-pub(crate) async fn queue_checks<O, D, L, R, Q, C>(
-    adapters: &CheckedAdapters<'_, O, D, L, R, Q, C>,
-    repository: RepositoryId,
-    landed: Address,
-) -> Result<Option<Job>, String>
-where
-    O: ObjectStore + Sync,
-    D: DerivedData + Sync,
-    L: ChangesetLog + Sync,
-    R: RepositoryDirectory + Sync,
-    Q: JobQueue + Sync,
-    C: CheckDefinitions + Sync,
-{
-    let (organisation, _) = adapters
-        .directory
-        .names_of(repository)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("no repository {repository}"))?;
-    let job = |check: CheckDefinition| NewJob {
-        organisation: organisation.clone(),
-        repository,
-        changeset: landed,
-        check,
-    };
-
-    let file = adapters.definitions.file();
-    let root = adapters
-        .derived
-        .root(repository, landed)
-        .await
-        .map_err(|error| error.to_string())?;
-    let found = file_at(adapters.derived, repository, Some(root), file)
-        .await
-        .map_err(|error| error.to_string())?;
-    let definitions = match found {
-        None => Vec::new(),
-        Some(found) => {
-            let bytes = adapters
-                .objects
-                .get(repository, found.content)
-                .await
-                .map_err(|error| error.to_string())?;
-            match adapters.definitions.parse(&bytes) {
-                Ok(definitions) => definitions,
-                Err(error) => {
-                    let unreadable = job(CheckDefinition::unreadable(file));
-                    let failed = adapters
-                        .queue
-                        .record_failed(unreadable, error.to_string().into_bytes())
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    return Ok(Some(failed));
-                }
-            }
-        }
-    };
-
-    let blocking = definitions.iter().any(|check| check.blocking);
-    adapters
-        .queue
-        .queue(definitions.into_iter().map(job).collect())
-        .await
-        .map_err(|error| error.to_string())?;
-    if !blocking {
-        advance(adapters.log, repository, landed)
-            .await
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(None)
 }
 
 impl<S, O, D, L, R, Q, C> SourceControl for CheckedSourceControl<'_, S, O, D, L, R, Q, C>
@@ -183,16 +104,13 @@ where
     ) -> Result<Address, SourceControlError> {
         let timestamp = landing.timestamp;
         let landed = self.inner.land(caller, repository, draft, landing).await?;
-        let not_queued = |cause: String| LandError::ChecksNotQueued { landed, cause };
-        let unreadable = queue_checks(&self.reverts.adapters, repository, landed)
+        self.checks
+            .after_landing(repository, landed, timestamp)
             .await
-            .map_err(not_queued)?;
-        if let Some(failed) = unreadable {
-            self.reverts
-                .revert_on_blocking_failure(&failed, timestamp)
-                .await
-                .map_err(|error| not_queued(error.to_string()))?;
-        }
+            .map_err(|error| LandError::ChecksNotQueued {
+                landed,
+                cause: error.to_string(),
+            })?;
         Ok(landed)
     }
 
