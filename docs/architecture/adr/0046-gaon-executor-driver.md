@@ -14,7 +14,7 @@ gaon is the orchestrator aurora's cluster runs. What it serves was read at gaon 
 - `runStrategy: Once` runs the entrypoint once. The MicroVM then goes to `Succeeded` on a clean exit or to `Failed` otherwise, and is not started again (`resource-api.md`, phase table; `node-agent.md`, the exit table). It stays until deleted (gaon#116, the gaon PM's triage comment of 2026-11-12, item 5).
 - The exit code is not written to `status`: `lastExit` waits on garamsh/mvmd#331 and gaon#73.
 - A finished MicroVM's output is neither decided nor served. That is gaon#116 item 2, which waits on garamsh/mvmd#438.
-- Without a client certificate, the API server authenticates only a bearer service-account token of its own issuer. Such a token is bound to one MicroVM's name and uid, and reaches that MicroVM's guest as a file at `/var/run/secrets/gaon.garam.sh/serviceaccount/token` that the Node Agent renews (gaon ADR 0029). RBAC authorises its holder through cluster-scoped roles only, with label selectors (`apiserver.md`, `resource-api.md` §Bearer-token access).
+- Without a client certificate, the API server authenticates only a bearer service-account token of its own issuer. Such a token is bound to one MicroVM's name and uid, and reaches that MicroVM's guest as a file at `/var/run/secrets/gaon.garam.sh/serviceaccount/token` that the Node Agent renews (gaon ADR 0029). RBAC authorises its holder through cluster-scoped roles only, with label selectors (`apiserver.md`, `resource-api.md` §Bearer-token access). A rule may name `secrets` in the group `compute.gaon.garam.sh`: the Secret routes are guarded as that resource (`apiserver/httpserver.go` at gaon `79c6b9b`, lines 81–84), and a rule's resources are not restricted (`lib/api/cluster_role.go`, lines 90–99). `resource-api.md` still names only `microvms`, and no gaon test yet applies a selector rule to Secrets; garamsh/gaon#244 adds that test and corrects the sentence.
 - Under a label-selector rule (`resource-api.md`, the label-selector rule):
   - a create is judged on the labels in the request body;
   - a get or delete is judged on the stored object's labels, and an object that does not exist counts as unlabelled, so deleting one already gone answers `Forbidden`;
@@ -83,7 +83,7 @@ Alternatives not taken:
 - Running a job on aurora's cluster also needs:
   - Nodes whose egress prefixes reach the object store and the runner;
   - the runner in a MicroVM with a ServiceAccount and its listener's port;
-  - a ClusterRole and ClusterRoleBinding letting that ServiceAccount create, get, list and delete MicroVMs and Secrets carrying its label.
+  - a ClusterRole and ClusterRoleBinding letting that ServiceAccount create, get, list and delete MicroVMs and Secrets carrying its label (resources `microvms` and `secrets`, group `compute.gaon.garam.sh`). The selector rule on Secrets is shown once garamsh/gaon#244 merges.
 
   All three are aurora's deployment.
 - Anyone on the cluster network between a job and its runner can read the result secret and forge a result. TLS on the listener would close that, and needs a certificate the runner does not have.
