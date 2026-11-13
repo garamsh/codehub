@@ -1,0 +1,11 @@
+{
+	auto_https off
+	admin off
+}
+
+https://localhost:{$CODEHUB_GARAM_E2E_GATEWAY_PORT} {
+	tls /keys/tls.crt /keys/tls.key
+	handle_path /api/* {
+		reverse_proxy api:8080
+	}
+}
