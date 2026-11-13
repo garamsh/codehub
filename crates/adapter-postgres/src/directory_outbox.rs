@@ -33,7 +33,9 @@ fn kind(text: &str) -> Result<ChangeKind, DirectoryOutboxError> {
     match text {
         "created" => Ok(ChangeKind::Created),
         "deleted" => Ok(ChangeKind::Deleted),
-        other => Err(backend(format!("a stored change kind {other:?} is unknown"))),
+        other => Err(backend(format!(
+            "a stored change kind {other:?} is unknown"
+        ))),
     }
 }
 

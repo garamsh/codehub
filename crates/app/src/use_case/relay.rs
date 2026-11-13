@@ -220,7 +220,9 @@ mod tests {
 
     #[test]
     fn doubles_from_the_first_backoff_to_the_cap() {
-        let held: Vec<u64> = (1..=9).map(|failures| backoff(failures).as_secs()).collect();
+        let held: Vec<u64> = (1..=9)
+            .map(|failures| backoff(failures).as_secs())
+            .collect();
 
         assert_eq!(held, [1, 2, 4, 8, 16, 32, 60, 60, 60]);
         assert_eq!(backoff(u32::MAX), MAX_BACKOFF);
