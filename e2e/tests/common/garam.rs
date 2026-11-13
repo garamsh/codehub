@@ -320,9 +320,10 @@ impl Garam {
         let mut frame = vec![0];
         frame.extend(u32::try_from(message.len()).unwrap().to_be_bytes());
         frame.extend(message);
-        let scratch = self.dir.join("frame");
+        let call = rand_hex(6);
+        let scratch = self.dir.join(format!("frame-{call}"));
         std::fs::write(&scratch, frame).unwrap();
-        let trailers = self.dir.join("trailers");
+        let trailers = self.dir.join(format!("trailers-{call}"));
         let url = format!(
             "{}/garam.policy.v1.PolicyService/{method}",
             env("CODEHUB_GARAM_E2E_POLICY_URL")

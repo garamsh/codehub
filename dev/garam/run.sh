@@ -33,7 +33,7 @@ sh "$here/keys.sh" "$dir"
 # The policy service trusts the keys the running issuer publishes, so the api and the gateway
 # start first and the policy service after the keys are fetched.
 compose up --detach --wait gateway machine
-curl --fail --silent --show-error --cacert "$dir/ca.crt" \
+curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-delay 1 --cacert "$dir/ca.crt" \
     "$CODEHUB_GARAM_E2E_ISSUER/oauth/jwks" >"$dir/issuer-jwks.json"
 compose up --detach --wait policy
 compose run --rm -T --no-deps api policy-feed start
