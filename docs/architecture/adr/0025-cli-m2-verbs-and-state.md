@@ -1,6 +1,6 @@
 # ADR 0025: The M2 CLI has a fixed set of verbs, keeps three items of local state and speaks plain HTTP
 
-> Status: accepted
+> Status: accepted; the verb list as the CLI's whole surface and the three items of local state are superseded by ADR 0048 for views
 > Date: 2026-11-11
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
