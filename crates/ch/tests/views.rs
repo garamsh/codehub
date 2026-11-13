@@ -364,3 +364,103 @@ async fn opens_a_repository_without_a_base_and_keeps_the_executable_kind() {
         .mode();
     assert_eq!(mode & 0o111, 0o111);
 }
+
+#[tokio::test]
+async fn drops_a_recorded_path_a_rule_comes_to_ignore_from_the_workspace() {
+    let server = serve().await;
+    let ada = server.user("ada");
+    repository(&ada).await;
+    base(&ada, &[("a.txt", "one\n")]).await;
+
+    let view = Scratch::new();
+    open(&ada, &view).await;
+    std::fs::create_dir_all(view.join("out")).unwrap();
+    std::fs::write(view.join("out/x"), "built\n").unwrap();
+    assert_eq!(ok_at(&ada, view.path(), &["status"]).await, "added out/x\n");
+
+    std::fs::create_dir_all(view.join(".codehub")).unwrap();
+    std::fs::write(view.join(".codehub/ignore"), "out/\n").unwrap();
+    std::fs::remove_dir_all(view.join("out")).unwrap();
+    let status = ok_at(&ada, view.path(), &["status"]).await;
+    assert_eq!(status, "added .codehub/ignore\n");
+
+    ok_at(&ada, view.path(), &["land", "-m", "ignore out"]).await;
+    let gone = ada.ch(&["read", "out/x"]).await;
+    assert_eq!(gone.code, Some(5), "{}", gone.stderr);
+    // The control: what the rules do not ignore landed.
+    assert_eq!(ada.ok(&["read", ".codehub/ignore"]).await, "out/\n");
+}
+
+#[tokio::test]
+async fn refuses_to_open_a_view_inside_a_view_and_scans_around_one() {
+    let server = serve().await;
+    let ada = server.user("ada");
+    repository(&ada).await;
+    base(&ada, &[("a.txt", "one\n")]).await;
+
+    let view = Scratch::new();
+    open(&ada, &view).await;
+    let inner = view.join("sub");
+    let run = ada.ch(&["open", inner.to_str().unwrap()]).await;
+    assert_eq!(run.code, Some(2), "{}", run.stderr);
+    assert!(
+        run.stderr.contains(view.path().to_str().unwrap()),
+        "{}",
+        run.stderr
+    );
+    assert!(!inner.exists());
+
+    // A directory that holds a view of its own is not part of this one.
+    std::fs::create_dir_all(view.join("nested/.ch")).unwrap();
+    std::fs::write(view.join("nested/.ch/view.json"), "{}").unwrap();
+    std::fs::write(view.join("nested/x.txt"), "other\n").unwrap();
+    std::fs::write(view.join("new.txt"), "fresh\n").unwrap();
+    assert_eq!(
+        ok_at(&ada, view.path(), &["status"]).await,
+        "added new.txt\n"
+    );
+}
+
+#[tokio::test]
+async fn keeps_an_edit_a_failed_restore_could_not_write_over() {
+    let server = serve().await;
+    let ada = server.user("ada");
+    repository(&ada).await;
+    base(&ada, &[("a.txt", "one\n")]).await;
+
+    let view = Scratch::new();
+    open(&ada, &view).await;
+    std::fs::write(view.join("a.txt"), "two\n").unwrap();
+    std::fs::set_permissions(view.join("a.txt"), std::fs::Permissions::from_mode(0o444)).unwrap();
+    let run = at(&ada, view.path(), &["restore", "a.txt"]).await;
+    assert_ne!(run.code, Some(0), "{}", run.stderr);
+    assert_eq!(read(&view, "a.txt"), "two\n");
+
+    // The edit is still the view's, so the next snapshot sends it again.
+    assert_eq!(
+        ok_at(&ada, view.path(), &["status"]).await,
+        "modified a.txt\n"
+    );
+    ok_at(&ada, view.path(), &["land", "-m", "kept"]).await;
+    assert_eq!(ada.ok(&["read", "a.txt"]).await, "two\n");
+}
+
+#[tokio::test]
+async fn snapshots_on_land_and_on_diff_without_another_verb_first() {
+    let server = serve().await;
+    let ada = server.user("ada");
+    repository(&ada).await;
+    base(&ada, &[("a.txt", "one\n")]).await;
+
+    let view = Scratch::new();
+    open(&ada, &view).await;
+    std::fs::write(view.join("a.txt"), "two\n").unwrap();
+    let diff = ok_at(&ada, view.path(), &["diff"]).await;
+    assert!(diff.contains("+two"), "{diff}");
+
+    std::fs::write(view.join("a.txt"), "three\n").unwrap();
+    std::fs::write(view.join("new.txt"), "fresh\n").unwrap();
+    ok_at(&ada, view.path(), &["land", "-m", "straight"]).await;
+    assert_eq!(ada.ok(&["read", "a.txt"]).await, "three\n");
+    assert_eq!(ada.ok(&["read", "new.txt"]).await, "fresh\n");
+}

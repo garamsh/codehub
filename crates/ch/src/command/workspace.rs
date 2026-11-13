@@ -24,6 +24,13 @@ async fn download(context: &Context, grant: &TransferGrant) -> Result<Vec<u8>, F
 /// Opens the workspace and writes its view into `arguments.directory`.
 pub(super) async fn open(context: &Context, arguments: &Open) -> Result<(), Failure> {
     let root = std::path::absolute(&arguments.directory)?;
+    if let Some(outer) = View::find(&root)? {
+        return Err(Failure::Usage(format!(
+            "{} is inside the view at {}; open a view outside it",
+            root.display(),
+            outer.root.display()
+        )));
+    }
     match std::fs::read_dir(&root) {
         Ok(mut entries) => {
             if entries.next().is_some() {
@@ -95,7 +102,7 @@ pub(super) async fn open(context: &Context, arguments: &Open) -> Result<(), Fail
 async fn snapshot(context: &Context, api: &Api<'_>, view: &mut View) -> Result<(), Failure> {
     let rules = Rules::read(&view.root)?;
     let current = view.scan(&rules)?;
-    let plan = view.plan(&rules, current);
+    let plan = view.plan(current);
     if plan.changes.is_empty() {
         return Ok(());
     }
@@ -254,23 +261,24 @@ pub(super) async fn restore(context: &Context, path: &str) -> Result<(), Failure
         (Some(_), None) | (None, _) => None,
     };
     api.restore(&view.repository, &view.draft, path).await?;
+    // The state is saved before the view's file changes, so a failed write leaves the edit for
+    // the next snapshot to send.
     match (held, bytes) {
         (Some(entry), Some(bytes)) => {
-            write_file(&view.root, path, entry.kind, &bytes)?;
-            view.recorded.insert(path.to_owned(), entry);
+            view.recorded.insert(path.to_owned(), entry.clone());
+            view.save()?;
+            write_file(&view.root, path, entry.kind, &bytes)
         }
         (Some(_), None) | (None, _) => {
-            match std::fs::remove_file(&target) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(Failure::Other(format!("{}: {error}", target.display())));
-                }
-            }
             view.recorded.remove(path);
+            view.save()?;
+            match std::fs::remove_file(&target) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(Failure::Other(format!("{}: {error}", target.display()))),
+            }
         }
     }
-    view.save()
 }
 
 /// Lands the workspace of `view`, with `message` or else its description, and closes the view.

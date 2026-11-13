@@ -278,6 +278,10 @@ impl View {
             let full = entry.path();
             let file_type = entry.file_type().map_err(|error| failure(&full, &error))?;
             if file_type.is_dir() {
+                // Another view's directory is not part of this one.
+                if full.join(STATE_DIRECTORY).exists() {
+                    continue;
+                }
                 let near =
                     below.starts_with(&self.prefix) || Path::new(&self.prefix).starts_with(&below);
                 if near && (!rules.matches(&below, true) || self.base_holds_under(&below)) {
@@ -314,9 +318,9 @@ impl View {
     ///
     /// A path back at the base's content is sent as a restore, a path gone that the base lacks
     /// likewise, and one gone that the base holds as a deletion. A recorded path that a rule now
-    /// ignores and the base lacks is left as it is.
+    /// ignores is no longer scanned, so it is gone and the base lacks it: a restore.
     #[must_use]
-    pub fn plan(&self, rules: &Rules, current: BTreeMap<String, Entry>) -> Plan {
+    pub fn plan(&self, current: BTreeMap<String, Entry>) -> Plan {
         let mut changes = Vec::new();
         for (path, entry) in &current {
             if self.recorded.get(path) == Some(entry) {
@@ -332,18 +336,16 @@ impl View {
                 }
             });
         }
-        let mut recorded = current;
-        for (path, entry) in &self.recorded {
+        let recorded = current;
+        for path in self.recorded.keys() {
             if recorded.contains_key(path) {
                 continue;
             }
-            if !self.tracks(rules, path) {
-                recorded.insert(path.clone(), entry.clone());
-            } else if self.base_files.contains_key(path) {
-                changes.push(SnapshotChange::Delete { path: path.clone() });
+            changes.push(if self.base_files.contains_key(path) {
+                SnapshotChange::Delete { path: path.clone() }
             } else {
-                changes.push(SnapshotChange::Restore { path: path.clone() });
-            }
+                SnapshotChange::Restore { path: path.clone() }
+            });
         }
         Plan { changes, recorded }
     }
@@ -397,7 +399,7 @@ mod tests {
     #[test]
     fn sends_a_file_back_at_its_base_content_as_a_restore() {
         let view = view(&[("a", "base")], &[("a", "edited")]);
-        let plan = view.plan(&rules(&[]), current(&[("a", "base")]));
+        let plan = view.plan(current(&[("a", "base")]));
         assert_eq!(plan.changes, [SnapshotChange::Restore { path: "a".into() }]);
         assert_eq!(plan.recorded, current(&[("a", "base")]));
     }
@@ -405,7 +407,7 @@ mod tests {
     #[test]
     fn sends_a_removed_file_as_a_deletion_where_the_base_holds_it_and_as_a_restore_where_not() {
         let view = view(&[("a", "base")], &[("a", "base"), ("b", "new")]);
-        let plan = view.plan(&rules(&[]), current(&[]));
+        let plan = view.plan(current(&[]));
         assert_eq!(
             plan.changes,
             [
@@ -417,11 +419,16 @@ mod tests {
     }
 
     #[test]
-    fn leaves_a_recorded_path_a_rule_now_ignores_as_it_is() {
+    fn restores_a_recorded_path_a_rule_now_ignores_and_the_base_lacks() {
         let view = view(&[], &[("out/x", "one")]);
-        let plan = view.plan(&rules(&["out/"]), current(&[]));
-        assert!(plan.changes.is_empty());
-        assert_eq!(plan.recorded, current(&[("out/x", "one")]));
+        let plan = view.plan(current(&[]));
+        assert_eq!(
+            plan.changes,
+            [SnapshotChange::Restore {
+                path: "out/x".into()
+            }]
+        );
+        assert!(plan.recorded.is_empty());
     }
 
     #[test]
