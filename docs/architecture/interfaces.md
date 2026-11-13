@@ -14,7 +14,8 @@ The ways clients reach the system, which are the `ch` CLI and the HTTP API behin
 - **Runners call the same HTTP JSON API** under `/v1/runner/`, as principals (ADR 0034, `runner.md`).
 - **Object bytes move by presigned URL** (ADR 0015). The API issues a short-lived presigned URL and the client uploads or downloads the bytes directly to or from the S3-compatible object store, as runners already fetch images (`execution.md`, ADR 0008).
 - **The CLI keeps three items of local state**: the server URL, the token and the selected `<org>/<repo>`, in `$XDG_CONFIG_HOME/ch/` with mode 0600. Its output is human text by default and JSON with `--json`. It holds no PostgreSQL or S3 driver and moves object bytes with plain HTTP to presigned URLs (ADR 0025).
-- **The API is versioned in the path and described by OpenAPI 3.1** (ADR 0024). Its prefix is `/v1`, resources are under `/v1/orgs/{org}/repos/{repo}/…`, errors are RFC 9457 problem details, and callers present bearer tokens.
+- **The API is versioned in the path and described by OpenAPI 3.1** (ADR 0024). Its prefix is `/v1`, resources are under `/v1/orgs/{org}/repos/{repo}/…`, errors are RFC 9457 problem details, and callers present bearer tokens, except on the two probes below.
+- **Two probes sit outside `/v1` and need no token** (ADR 0045): `GET /healthz`, 200 while the process serves, and `GET /readyz`, 200 where PostgreSQL and the object store each answer within 2 seconds and otherwise 503 as a problem detail naming the dependency. Both are in the OpenAPI document.
 - **Access failures are told apart by status** (ADR 0024): 401 without a valid token; 404 when the caller may not read the repository, so its existence is not disclosed; 403 when it may read but not perform the action; 409 for a landing conflict or a lost compare-and-swap, naming the paths.
 - **Creating a repository answers its id beside its name** (ADR 0043). The id is the repository's never-reused identity, and the AuthZEN `grn` profile names the repository by it.
 - **In external authorisation mode every member endpoint answers 403** (ADR 0030, ADR 0024): no caller may administer members through codehub, and the problem detail says members are administered outside codehub, so a client tells it from a denied grant. A request without a valid token is still 401.
@@ -29,6 +30,7 @@ The ways clients reach the system, which are the `ch` CLI and the HTTP API behin
 
 - Why two first-class interfaces over server-side work: ADR 0010; why neither is an MCP server: ADR 0026.
 - The token sources and exchange of `ch`: ADR 0031.
+- Why the probes sit outside `/v1` and need no token: ADR 0045.
 - Why interfaces are adapters over shared ports: ADR 0001 and `structure.md`.
 - Why HTTP with JSON and presigned URLs for object bytes, and what would show it wrong: ADR 0015. It was decided before authentication on the API and the runner-to-server transport were settled, although this document's earlier open question tied the choice to them; ADR 0015 names a second transport added on the same endpoint for either of them as a sign the decision was wrong.
 - The M2 verbs, local state and output format, and the alternatives not taken: ADR 0025. The API's version, description and status codes: ADR 0024. Why DELETE carries no body: ADR 0032.

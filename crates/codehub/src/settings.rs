@@ -43,7 +43,7 @@ pub struct Config {
     #[arg(long, env = "CODEHUB_LISTEN", default_value = "127.0.0.1:8080")]
     pub listen: SocketAddr,
     /// The URL of the PostgreSQL database holding the metadata.
-    #[arg(long, env = "CODEHUB_POSTGRES_URL")]
+    #[arg(long, env = "CODEHUB_POSTGRES_URL", hide_env_values = true)]
     pub postgres_url: String,
     /// The most connections this server process holds open to PostgreSQL. The sum over all server
     /// processes must stay below PostgreSQL's `max_connections`, less the connections other

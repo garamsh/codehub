@@ -25,17 +25,18 @@ A tag `vX.Y.Z` of this repository publishes both images, tagged `X.Y.Z` and neve
 - Both carry `org.opencontainers.image.version` and `org.opencontainers.image.revision` labels.
 - No address, URL or secret is set at build time. Every setting comes from the variables below at run.
 - Arguments given to the container are the options below, after the entrypoint.
+- A push that fails between the two images leaves only the server published. The repositories are tag-immutable, so a re-run cannot repair it and the repair is the next version.
 
 ## Server settings
 
-Every setting is an option and a variable of the same name, the option's name upper-cased with the prefix `CODEHUB_`. A variable and the option both given: the option wins. A secret is never printed by the server's configuration output.
+Every setting is an option and a variable of the same name, the option's name upper-cased with the prefix `CODEHUB_`. A variable and the option both given: the option wins. A secret is marked `yes` below, and its value is hidden in the help output and in the server's configuration output.
 
 The server listens on `127.0.0.1:8080` unless `CODEHUB_LISTEN` says otherwise, so in a container set it to an address that is reachable, such as `0.0.0.0:8080`. It stops on SIGTERM or SIGINT after finishing the requests in flight.
 
 | Option | Variable | Secret | Purpose |
 |---|---|---|---|
 | `--listen` | `CODEHUB_LISTEN` | no | The address to listen on. |
-| `--postgres-url` | `CODEHUB_POSTGRES_URL` | yes, where the URL holds a password | The PostgreSQL database holding the metadata. |
+| `--postgres-url` | `CODEHUB_POSTGRES_URL` | yes | The PostgreSQL database holding the metadata. |
 | `--postgres-pool-size` | `CODEHUB_POSTGRES_POOL_SIZE` | no | Connections each server process holds; the sum over processes stays below PostgreSQL's `max_connections` (ADR 0037). |
 | `--landing-attempts` | `CODEHUB_LANDING_ATTEMPTS` | no | How often a landing is tried while `main` moves under it (ADR 0036). |
 | `--runner-claim-hold` | `CODEHUB_RUNNER_CLAIM_HOLD` | no | Seconds a runner's claim waits for a job. |
@@ -82,6 +83,7 @@ The runner is configured by options, and by the variables where the table gives 
 
 - **PostgreSQL** reachable at `CODEHUB_POSTGRES_URL`. The server migrates the schema forward at start (ADR 0022), so the user needs the right to create and alter tables in its database.
 - **An S3-compatible object store** at `CODEHUB_S3_ENDPOINT`, with the bucket `CODEHUB_S3_BUCKET` already made: the server does not create it. Clients and runners move object bytes to and from the store by presigned URL, so the endpoint must be reachable by them as well as by the server (ADR 0015).
+  The identity needs `s3:ListBucket` on the bucket as well as object access: without it, S3 answers a missing key with 403, and `/readyz` stays 503.
 - **An identity issuer** the server verifies tokens against, as `CODEHUB_IDENTITY` selects (`docs/architecture/access.md`), and, in the external mode, an AuthZEN decision point.
 
 ## Health
@@ -91,7 +93,7 @@ Both probes are unauthenticated and sit outside `/v1`.
 | Probe | Path | Answers |
 |---|---|---|
 | Liveness | `GET /healthz` | 200 while the process serves requests; depends on nothing. |
-| Readiness | `GET /readyz` | 200 where PostgreSQL and the object store each answer within 2 seconds; otherwise 503, with a problem detail naming the one that did not. |
+| Readiness | `GET /readyz` | 200 where PostgreSQL and the object store each answer within 2 seconds; otherwise 503, with a problem detail naming the one that did not. A missing bucket is not detected: the probe asks for an object, and a 404 for it is an answer whether the object or the bucket is missing. |
 
 The runner serves no port, so it has no probe.
 

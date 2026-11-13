@@ -27,7 +27,7 @@ fn names(text: &str) -> BTreeSet<String> {
 
 /// Asserts that the section `heading` of `docs/deployment.md` holds one table row for each option
 /// of `command`, that no other `--option` or `CODEHUB_*` variable appears in the section, and that
-/// every option whose value is hidden in `--help` is marked a secret.
+/// an option is marked `yes` as a secret exactly where its value is hidden in the command's help output.
 ///
 /// A row is `| option | variable | secret | purpose |`, with `-` where an option has no variable.
 ///
@@ -72,12 +72,11 @@ pub fn assert_contract(command: &Command, heading: &str) {
             .as_ref()
             .map_or_else(|| "-".to_owned(), |name| format!("`{name}`"));
         assert_eq!(row[1], expected, "the variable of `{long}`");
-        if arg.is_hide_env_values_set() {
-            assert!(
-                row[2].starts_with("yes"),
-                "`{long}` hides its value, so it is a secret"
-            );
-        }
+        assert_eq!(
+            row[2] == "yes",
+            arg.is_hide_env_values_set(),
+            "`{long}` is a secret exactly where it hides its value"
+        );
         listed.insert(long);
         listed.extend(variable);
     }
