@@ -68,7 +68,10 @@ fn has_the_fields_of_every_schema() {
         "NewName",
     );
     assert_fields(
-        &Created { name: "a".into() },
+        &Created {
+            name: "a".into(),
+            id: Some(7),
+        },
         &schemas["Created"],
         "Created",
     );

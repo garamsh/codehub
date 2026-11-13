@@ -2155,6 +2155,11 @@
         "properties": {
           "name": {
             "$ref": "#/components/schemas/Name"
+          },
+          "id": {
+            "description": "The repository's identity, which a decision point may name it by. Answered for a repository, not for an organisation.",
+            "type": "integer",
+            "minimum": 0
           }
         }
       },

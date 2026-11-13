@@ -15,6 +15,9 @@ pub struct NewName {
 pub struct Created {
     /// The name.
     pub name: String,
+    /// The repository's identity; absent for an organisation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
 }
 
 /// An issuer and a subject, which together name a principal.
