@@ -351,6 +351,7 @@ where
 
         let staged = Draft {
             base: Some(job.changeset),
+            description: String::new(),
             changes: undo,
         };
         let landing = Landing { message, timestamp };

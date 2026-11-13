@@ -11,6 +11,7 @@ mod problem;
 mod repositories;
 mod runners;
 mod source_control;
+mod workspace;
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -254,7 +255,15 @@ routes! {
     "/v1/orgs/{org}/repos/{repo}/uploads" => post(source_control::request_upload::<P>);
     "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/files/{*path}" =>
         put(source_control::stage_file::<P>), delete(source_control::stage_deletion::<P>);
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}" =>
+        put(workspace::open::<P>), get(workspace::read::<P>);
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/description" => put(workspace::describe::<P>);
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/snapshot" => post(workspace::snapshot::<P>);
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/changes/{*path}" =>
+        delete(workspace::restore::<P>);
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/diff" => get(workspace::diff::<P>);
     "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/land" => post(source_control::land::<P>);
+    "/v1/orgs/{org}/repos/{repo}/changesets/{id}/files" => get(workspace::list_files::<P>);
     "/v1/orgs/{org}/repos/{repo}/files/{*path}" => get(source_control::read_file::<P>);
     "/v1/orgs/{org}/repos/{repo}/history/{*path}" => get(source_control::history::<P>);
 }

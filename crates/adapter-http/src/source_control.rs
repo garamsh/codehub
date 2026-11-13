@@ -91,7 +91,8 @@ pub struct StageBody {
 
 #[derive(Deserialize)]
 pub struct LandBody {
-    message: String,
+    /// Absent or empty: the landing takes the workspace's description.
+    message: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -208,7 +209,7 @@ pub async fn land<P: Services>(
 ) -> Result<Json<LandedBody>, Problem> {
     let repository = find(&*ports, &caller, &organisation, &repository).await?;
     let landing = Landing {
-        message: landing.message,
+        message: landing.message.unwrap_or_default(),
         timestamp: now(),
     };
     let changeset = ports

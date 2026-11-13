@@ -5,6 +5,7 @@ pub mod changeset;
 pub mod check;
 pub mod credential;
 pub mod derivation;
+pub mod diff;
 pub mod draft;
 pub mod encoding;
 pub mod file;

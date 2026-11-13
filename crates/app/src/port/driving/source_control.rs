@@ -1,5 +1,6 @@
 //! Source control: objects uploaded, drafts staged and landed on `main`, and files and history
-//! read back, each within one repository.
+//! read back, each within one repository. A draft is also the caller's workspace (ADR 0048): opened,
+//! described, snapshotted, restored and diffed.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -7,12 +8,14 @@ use std::fmt;
 use crate::domain::address::Address;
 use crate::domain::changeset::Change;
 use crate::domain::derivation::DerivationError;
+use crate::domain::diff::ContentDiff;
+use crate::domain::draft::{ChangeStatus, Edit};
 use crate::domain::encoding::EncodeError;
 use crate::domain::file::FileKind;
 use crate::domain::file_version::{FileVersionError, FileVersionNode};
 use crate::domain::merge::FileConflict;
 use crate::domain::name::DraftName;
-use crate::domain::path::Path;
+use crate::domain::path::{Path, Prefix};
 use crate::domain::principal::Caller;
 use crate::domain::repository::RepositoryId;
 use crate::domain::tree::DeriveError;
@@ -57,8 +60,116 @@ pub trait SourceControl {
         change: Change,
     ) -> impl Future<Output = Result<(), SourceControlError>> + Send;
 
+    /// The caller's workspace `draft`, created with its base at `main` as it stands now, or with
+    /// no base where `main` is unset, when the caller has none of that name; a workspace the caller
+    /// has keeps its own base.
+    ///
+    /// # Errors
+    ///
+    /// [`SourceControlError::Access`] where `caller` may not write to `repository` or may not read
+    /// a path the workspace changes, and [`SourceControlError::Workspace`], naming why it could not
+    /// be read.
+    fn open_workspace(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        draft: &DraftName,
+    ) -> impl Future<Output = Result<Workspace, SourceControlError>> + Send;
+
+    /// The caller's workspace `draft`: its base, its description and each path it changes.
+    ///
+    /// # Errors
+    ///
+    /// [`SourceControlError::Access`] where `caller` may not read a path the workspace changes, and
+    /// [`SourceControlError::Workspace`], naming why it could not be read; a missing workspace is
+    /// [`DraftStoreError::NotFound`].
+    fn workspace(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        draft: &DraftName,
+    ) -> impl Future<Output = Result<Workspace, SourceControlError>> + Send;
+
+    /// Sets the description of the caller's workspace `draft`.
+    ///
+    /// # Errors
+    ///
+    /// [`SourceControlError::Access`] where `caller` may not write to `repository`, and
+    /// [`SourceControlError::Workspace`] with [`DraftStoreError::NotFound`] where the caller has no
+    /// such workspace.
+    fn describe(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        draft: &DraftName,
+        description: String,
+    ) -> impl Future<Output = Result<(), SourceControlError>> + Send;
+
+    /// Applies every edit to the caller's workspace `draft`, or none of them. A file's content
+    /// must already be uploaded.
+    ///
+    /// # Errors
+    ///
+    /// [`SourceControlError::Access`] naming every path `caller` may not write, and
+    /// [`SourceControlError::Workspace`], naming why the snapshot was not applied; a file whose
+    /// content was not uploaded is [`WorkspaceError::ObjectMissing`].
+    fn snapshot(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        draft: &DraftName,
+        edits: BTreeMap<Path, Edit>,
+    ) -> impl Future<Output = Result<(), SourceControlError>> + Send;
+
+    /// Returns `path` of the caller's workspace `draft` to the base's file, or to none where the
+    /// base holds none. A path the workspace does not change is left as it is.
+    ///
+    /// # Errors
+    ///
+    /// [`SourceControlError::Access`] where `caller` may not write `path`, and
+    /// [`SourceControlError::Workspace`] with [`DraftStoreError::NotFound`] where the caller has no
+    /// such workspace.
+    fn restore(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        draft: &DraftName,
+        path: &Path,
+    ) -> impl Future<Output = Result<(), SourceControlError>> + Send;
+
+    /// The difference of each path the caller's workspace `draft` changes, or of `path` alone where
+    /// it is given, from the base to the workspace.
+    ///
+    /// # Errors
+    ///
+    /// [`SourceControlError::Access`] where `caller` may not read a path the workspace changes, and
+    /// [`SourceControlError::Workspace`], naming why it could not be computed.
+    fn diff(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        draft: &DraftName,
+        path: Option<&Path>,
+    ) -> impl Future<Output = Result<Vec<PathDiff>, SourceControlError>> + Send;
+
+    /// Every file under `prefix` in the changeset `changeset`, in path order.
+    ///
+    /// # Errors
+    ///
+    /// [`SourceControlError::Access`] where `caller` may not read one of the files, which refuses
+    /// the whole listing, and [`SourceControlError::ListFiles`], naming why it could not be made;
+    /// an unknown changeset is [`DerivedDataError::NotFound`].
+    fn list_files(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        changeset: Address,
+        prefix: &Prefix,
+    ) -> impl Future<Output = Result<Vec<ListedFile>, SourceControlError>> + Send;
+
     /// Lands the caller's draft `draft` on `main`, removes it, and returns the landed changeset's
-    /// identifier. The caller is the changeset's author.
+    /// identifier. The caller is the changeset's author; a landing with an empty message takes the
+    /// draft's description as its message.
     ///
     /// # Errors
     ///
@@ -118,6 +229,10 @@ pub enum SourceControlError {
     ReadFile(ReadFileError),
     /// The history could not be read.
     History(HistoryError),
+    /// The workspace could not be read or changed.
+    Workspace(WorkspaceError),
+    /// The files could not be listed.
+    ListFiles(ListFilesError),
 }
 
 impl fmt::Display for SourceControlError {
@@ -129,6 +244,8 @@ impl fmt::Display for SourceControlError {
             Self::Land(error) => write!(f, "landing failed: {error}"),
             Self::ReadFile(error) => write!(f, "reading failed: {error}"),
             Self::History(error) => write!(f, "history failed: {error}"),
+            Self::Workspace(error) => write!(f, "workspace failed: {error}"),
+            Self::ListFiles(error) => write!(f, "listing failed: {error}"),
         }
     }
 }
@@ -142,6 +259,8 @@ impl std::error::Error for SourceControlError {
             Self::Land(error) => Some(error),
             Self::ReadFile(error) => Some(error),
             Self::History(error) => Some(error),
+            Self::Workspace(error) => Some(error),
+            Self::ListFiles(error) => Some(error),
         }
     }
 }
@@ -179,6 +298,18 @@ impl From<ReadFileError> for SourceControlError {
 impl From<HistoryError> for SourceControlError {
     fn from(error: HistoryError) -> Self {
         Self::History(error)
+    }
+}
+
+impl From<WorkspaceError> for SourceControlError {
+    fn from(error: WorkspaceError) -> Self {
+        Self::Workspace(error)
+    }
+}
+
+impl From<ListFilesError> for SourceControlError {
+    fn from(error: ListFilesError) -> Self {
+        Self::ListFiles(error)
     }
 }
 
@@ -467,5 +598,141 @@ impl std::error::Error for UploadError {}
 impl From<ObjectStoreError> for UploadError {
     fn from(error: ObjectStoreError) -> Self {
         Self::Objects(error)
+    }
+}
+
+/// A workspace as the caller sees it: a draft with its base, its description and its changes
+/// against the base.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Workspace {
+    /// The changeset the workspace was opened on; `None` where `main` was unset.
+    pub base: Option<Address>,
+    /// What the work is for; empty until set.
+    pub description: String,
+    /// The paths the workspace changes, in path order. A path whose change leaves the base's file
+    /// as it is is not listed.
+    pub changes: Vec<ChangedPath>,
+}
+
+/// One path a workspace changes.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ChangedPath {
+    /// The path.
+    pub path: Path,
+    /// What the workspace does to the path against the base.
+    pub status: ChangeStatus,
+    /// The file's mode: the workspace's for an added or modified path, the base's for a deleted
+    /// one.
+    pub kind: FileKind,
+    /// A grant to download the workspace's content; none for a deleted path.
+    pub download: Option<Grant>,
+}
+
+/// The difference of one changed path from the base to the workspace.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PathDiff {
+    /// The path.
+    pub path: Path,
+    /// What the workspace does to the path against the base.
+    pub status: ChangeStatus,
+    /// How the content differs.
+    pub diff: ContentDiff,
+}
+
+/// A file of a changeset's tree.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ListedFile {
+    /// The file's path.
+    pub path: Path,
+    /// The file's mode.
+    pub kind: FileKind,
+    /// The content's address.
+    pub content: Address,
+    /// A grant to download the content.
+    pub download: Grant,
+}
+
+/// Why a workspace could not be read or changed.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum WorkspaceError {
+    /// The object store holds no object with this address; it was never uploaded.
+    ObjectMissing(Address),
+    /// The object store failed.
+    Objects(ObjectStoreError),
+    /// The changeset log failed.
+    Log(ChangesetLogError),
+    /// Derived data failed.
+    Derived(DerivedDataError),
+    /// The draft store failed, or holds no such workspace.
+    Drafts(DraftStoreError),
+}
+
+impl fmt::Display for WorkspaceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ObjectMissing(address) => write!(f, "object {address} was not uploaded"),
+            Self::Objects(error) => write!(f, "{error}"),
+            Self::Log(error) => write!(f, "{error}"),
+            Self::Derived(error) => write!(f, "{error}"),
+            Self::Drafts(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for WorkspaceError {}
+
+impl From<ObjectStoreError> for WorkspaceError {
+    fn from(error: ObjectStoreError) -> Self {
+        Self::Objects(error)
+    }
+}
+
+impl From<ChangesetLogError> for WorkspaceError {
+    fn from(error: ChangesetLogError) -> Self {
+        Self::Log(error)
+    }
+}
+
+impl From<DerivedDataError> for WorkspaceError {
+    fn from(error: DerivedDataError) -> Self {
+        Self::Derived(error)
+    }
+}
+
+impl From<DraftStoreError> for WorkspaceError {
+    fn from(error: DraftStoreError) -> Self {
+        Self::Drafts(error)
+    }
+}
+
+/// Why a changeset's files could not be listed.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ListFilesError {
+    /// The object store failed.
+    Objects(ObjectStoreError),
+    /// Derived data failed, or holds no tree for the changeset.
+    Derived(DerivedDataError),
+}
+
+impl fmt::Display for ListFilesError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Objects(error) => write!(f, "{error}"),
+            Self::Derived(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for ListFilesError {}
+
+impl From<ObjectStoreError> for ListFilesError {
+    fn from(error: ObjectStoreError) -> Self {
+        Self::Objects(error)
+    }
+}
+
+impl From<DerivedDataError> for ListFilesError {
+    fn from(error: DerivedDataError) -> Self {
+        Self::Derived(error)
     }
 }

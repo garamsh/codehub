@@ -17,6 +17,7 @@ pub mod reverts;
 pub mod runner_deployment;
 pub mod runners;
 pub mod scoping;
+pub mod workspace;
 
 use std::future::Future;
 
