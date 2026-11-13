@@ -2,6 +2,7 @@
 # Brings up the garam stack (dev/garam/compose.yaml) with fresh throwaway keys, runs the end-to-end
 # test against it (e2e/tests/garam.rs) and removes the stack, its volumes and the keys at every
 # exit, whatever the test's result. Run from the repository root by `make e2e-garam`.
+# Arguments pass to `cargo test` (`-- --ignored` runs the ignored tests).
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -42,4 +43,4 @@ CODEHUB_GARAM_E2E_CA=$dir/ca.crt
 export CODEHUB_GARAM_E2E_CA
 
 cd "$root"
-TEST_SELECTOR="-p e2e --test garam" sh scripts/test-count.sh
+TEST_SELECTOR="-p e2e --test garam" sh scripts/test-count.sh "$@"

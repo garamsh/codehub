@@ -5,6 +5,9 @@
 //! Every helper panics when something is not as expected, as a failed assertion does. Every wait
 //! is bounded.
 
+#[cfg(test)]
+pub mod garam;
+
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -327,19 +330,27 @@ impl TokenUser {
     ///
     /// Panics if Keycloak refuses the token or the file cannot be written.
     pub async fn new(server: &Server, client: &str, user: &str) -> Self {
+        Self::with_token(server, user, &keycloak_token(client, user).await)
+    }
+
+    /// A user of `server` named `name` whose token file holds `token`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the file cannot be written.
+    pub fn with_token(server: &Server, name: &str, token: &str) -> Self {
         let ch = ChUser::new(
             &binary("ch"),
             Path::new(env!("CARGO_TARGET_TMPDIR")),
-            &format!("e2e-{user}"),
+            &format!("e2e-{name}"),
         );
         let token_file = ch.home().join("token");
-        let this = Self {
+        std::fs::write(&token_file, token).unwrap();
+        Self {
             ch,
             server: server.base.clone(),
             token_file,
-        };
-        std::fs::write(&this.token_file, keycloak_token(client, user).await).unwrap();
-        this
+        }
     }
 
     /// The token the file holds.
