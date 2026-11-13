@@ -28,7 +28,7 @@
 
 ## Crate layout
 
-The workspace holds four kinds of package, all under `crates/`. Its
+The workspace holds five kinds of package, all under `crates/`. Its
 hexagonal unit takes these names:
 
 - `crates/app` — the application crate. Its domain ring is
@@ -54,6 +54,12 @@ hexagonal unit takes these names:
   adapters and passes them to the application, and `src/main.rs` only
   calls it. A binary-only package cannot be reached from `tests/`, so a
   test that wires the shipped graph calls that function.
+- `crates/<library>` — a library holding technology code that more
+  than one adapter needs and no port names, such as an OAuth client
+  (`oauth-client`). It names neither `app` nor any adapter. The
+  composition site builds each instance and hands it to every adapter
+  that needs it, so adapters share it without one calling another.
+  Code that only one adapter needs stays in that adapter.
 - `crates/test-support` — a library named only under another package's
   `[dev-dependencies]`, `publish = false`, holding the helpers that the
   tests of more than one package share. A helper only one package's
@@ -62,13 +68,14 @@ hexagonal unit takes these names:
   under `[dependencies]`, and, as a library, it does not get the test
   exemptions of `clippy.toml`.
 - Direction is the dependency list. `app`'s `Cargo.toml` names no
-  adapter; an adapter's names `app` and no other adapter; a binary
-  package's names `app` and the adapters it wires, each from the change
-  whose composition site first references it, so a binary package
-  whose composition site references nothing from `app` does not name
-  it. Cargo rejects a cycle between packages (`cyclic package
-  dependency`), so an `app` that listed an adapter which lists `app`
-  does not resolve.
+  adapter; an adapter's names `app`, the libraries it uses, and no
+  other adapter; a library's names neither; a binary package's names
+  `app`, the adapters it wires and the libraries it builds instances
+  of, each from the change whose composition site first references it,
+  so a binary package whose composition site references nothing from
+  `app` does not name it. Cargo rejects a cycle between packages
+  (`cyclic package dependency`), so an `app` that listed an adapter
+  which lists `app` does not resolve.
 
 ## Async ports and the runtime
 
