@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::future::{Future, poll_fn};
 use std::pin::pin;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::task::Poll;
 use std::time::Duration;
 
@@ -66,21 +66,21 @@ pub enum Pass {
 }
 
 /// Delivers the entries of the directory outbox.
-pub struct DirectoryRelay<'a, O, C, E> {
-    outbox: &'a O,
-    changes: &'a C,
-    environment: &'a E,
+pub struct DirectoryRelay<O, C, E> {
+    outbox: Arc<O>,
+    changes: Arc<C>,
+    environment: Arc<E>,
     creation_wait: Duration,
     /// Failed deliveries in a row, for each repository that has any.
     failures: Mutex<BTreeMap<RepositoryId, u32>>,
 }
 
-impl<'a, O, C, E> DirectoryRelay<'a, O, C, E> {
+impl<O, C, E> DirectoryRelay<O, C, E> {
     /// A relay over `outbox` and `changes`. [`Delivery::deliver`] waits at most `creation_wait`.
     pub const fn new(
-        outbox: &'a O,
-        changes: &'a C,
-        environment: &'a E,
+        outbox: Arc<O>,
+        changes: Arc<C>,
+        environment: Arc<E>,
         creation_wait: Duration,
     ) -> Self {
         Self {
@@ -106,11 +106,11 @@ fn seconds(duration: Duration) -> i64 {
     i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
 }
 
-impl<O, C, E> DirectoryRelay<'_, O, C, E>
+impl<O, C, E> DirectoryRelay<O, C, E>
 where
-    O: DirectoryOutbox + Sync,
-    C: DirectoryChanges + Sync,
-    E: RelayEnvironment + Sync,
+    O: DirectoryOutbox + Send + Sync,
+    C: DirectoryChanges + Send + Sync,
+    E: RelayEnvironment + Send + Sync,
 {
     /// Delivers pending entries until the future is dropped.
     pub async fn run(&self) {
@@ -182,11 +182,11 @@ where
     }
 }
 
-impl<O, C, E> Delivery for DirectoryRelay<'_, O, C, E>
+impl<O, C, E> Delivery for DirectoryRelay<O, C, E>
 where
-    O: DirectoryOutbox + Sync,
-    C: DirectoryChanges + Sync,
-    E: RelayEnvironment + Sync,
+    O: DirectoryOutbox + Send + Sync,
+    C: DirectoryChanges + Send + Sync,
+    E: RelayEnvironment + Send + Sync,
 {
     /// One pass over `repository`'s entries, left where `creation_wait` ends. The claim lasts as
     /// long as the wait, so a pass left unfinished does not hold the relay off for long.

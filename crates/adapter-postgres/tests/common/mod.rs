@@ -4,12 +4,16 @@
 use adapter_memory::{MemoryIdentityVerification, MemoryObjectStore};
 use adapter_postgres::{
     Database, PostgresAuthorisationDecision, PostgresChangesetLog, PostgresDerivedData,
-    PostgresDraftStore, PostgresJobQueue, PostgresMembership, PostgresRepositoryDirectory,
-    PostgresRunnerRegistry,
+    PostgresDirectoryOutbox, PostgresDraftStore, PostgresJobQueue, PostgresMembership,
+    PostgresRepositoryDirectory, PostgresRunnerRegistry,
 };
 use adapter_toml::TomlCheckDefinitions;
 use app::domain::check::CheckDefinition;
+use app::domain::name::{OrganisationName, RepositoryName};
+use app::domain::repository::RepositoryId;
 use app::port::driven::check_definitions::CheckFileError;
+use app::port::driven::directory_changes::{ChangeKind, RepositoryChange};
+use sqlx::{Connection, PgConnection};
 use test_support::TestDatabase;
 use test_support::contract::Deployment;
 use test_support::contract::runner_deployment::RunnerDeployment;
@@ -27,6 +31,8 @@ pub struct Harness {
     pub drafts: PostgresDraftStore,
     /// The repository directory.
     pub directory: PostgresRepositoryDirectory,
+    /// The directory outbox.
+    pub outbox: PostgresDirectoryOutbox,
     /// Identity verification, in memory.
     pub identity: MemoryIdentityVerification,
     /// Organisation membership and grants.
@@ -65,6 +71,7 @@ impl Harness {
             derived: PostgresDerivedData::new(&database),
             drafts: PostgresDraftStore::new(&database),
             directory: PostgresRepositoryDirectory::new(&database),
+            outbox: PostgresDirectoryOutbox::new(&database),
             identity: MemoryIdentityVerification::default(),
             membership: PostgresMembership::new(&database),
             authorisation: PostgresAuthorisationDecision::new(&database),
@@ -89,6 +96,8 @@ impl Deployment for Harness {
     type Membership = PostgresMembership;
     type Authorisation = PostgresAuthorisationDecision;
     type Changes = ();
+    type Outbox = PostgresDirectoryOutbox;
+    type Delivery = ();
 
     async fn start() -> Self {
         Self::new().await
@@ -128,6 +137,42 @@ impl Deployment for Harness {
 
     fn changes(&self) -> &() {
         &()
+    }
+
+    fn outbox(&self) -> &PostgresDirectoryOutbox {
+        &self.outbox
+    }
+
+    fn delivery(&self) -> &() {
+        &()
+    }
+
+    async fn write_change(&self, repository: RepositoryId, kind: ChangeKind) -> RepositoryChange {
+        let mut connection = PgConnection::connect(&self.url()).await.unwrap();
+        let id = i64::try_from(repository.value()).unwrap();
+        let text = match kind {
+            ChangeKind::Created => "created",
+            ChangeKind::Deleted => "deleted",
+        };
+        let (organisation, name, sequence): (String, String, i64) = sqlx::query_as(
+            "with bumped as (update repositories set change_sequence = change_sequence + 1 \
+                 where id = $1 returning organisation, name, change_sequence) \
+             insert into directory_outbox (repository, organisation, name, kind, sequence) \
+             select $1, organisation, name, $2, change_sequence from bumped \
+             returning organisation, name, sequence",
+        )
+        .bind(id)
+        .bind(text)
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        RepositoryChange {
+            organisation: organisation.parse::<OrganisationName>().unwrap(),
+            name: name.parse::<RepositoryName>().unwrap(),
+            repository,
+            kind,
+            sequence: u64::try_from(sequence).unwrap(),
+        }
     }
 }
 

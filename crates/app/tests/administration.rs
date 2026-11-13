@@ -6,7 +6,7 @@ pub mod common;
 
 use std::sync::Mutex;
 
-use adapter_memory::MemoryRepositoryDirectory;
+use adapter_memory::{MemoryRepositoryDirectory, ReceivedChange};
 use app::domain::name::{OrganisationName, RepositoryName};
 use app::domain::path::{Path, Prefix};
 use app::domain::principal::{Caller, Principal};
@@ -14,7 +14,8 @@ use app::domain::repository::RepositoryId;
 use app::port::driven::authorisation_decision::{
     Action, AuthorisationDecision, AuthorisationError, Decision, Resource,
 };
-use app::port::driven::directory_changes::DirectoryChange;
+use app::port::driven::directory_changes::{ChangeKind, OrganisationChange, RepositoryChange};
+use app::port::driven::directory_outbox::DirectoryOutbox;
 use app::port::driven::membership::{Access, Role};
 use app::port::driven::repository_directory::{DirectoryError, RepositoryDirectory};
 use app::port::driving::access::AccessError;
@@ -39,16 +40,27 @@ fn app_repository() -> RepositoryName {
 }
 
 #[cfg(test)]
-fn organisation_created(name: &str) -> DirectoryChange {
-    DirectoryChange::OrganisationCreated(organisation(name))
+fn organisation_created(name: &str) -> ReceivedChange {
+    ReceivedChange::Organisation(OrganisationChange::Created(organisation(name)))
 }
 
+/// The entry that reports the creation of `app` in `organisation` as repository `id`.
 #[cfg(test)]
-fn app_created(organisation: &str) -> DirectoryChange {
-    DirectoryChange::RepositoryCreated {
+fn app_created(organisation: &str, id: RepositoryId) -> RepositoryChange {
+    RepositoryChange {
         organisation: self::organisation(organisation),
-        repository: app_repository(),
+        name: app_repository(),
+        repository: id,
+        kind: ChangeKind::Created,
+        sequence: 1,
     }
+}
+
+/// The entries the outbox holds for the one repository it has any for; the harness delivers
+/// nothing, so a creation's entry stays.
+#[cfg(test)]
+async fn pending(harness: &Harness) -> Vec<RepositoryChange> {
+    harness.outbox.claim(None, 0, 0).await.unwrap()
 }
 
 /// Whether `caller` may create repositories in `organisation`, as the harness decides it.
@@ -295,8 +307,9 @@ async fn creates_a_missing_organisation_on_first_use_where_the_decision_allows_i
     );
     assert_eq!(
         harness.changes.reported(),
-        vec![organisation_created("acme"), app_created("acme")]
+        vec![organisation_created("acme")]
     );
+    assert_eq!(pending(&harness).await, vec![app_created("acme", id)]);
 }
 
 #[tokio::test]
@@ -328,18 +341,20 @@ async fn does_not_create_a_missing_organisation_where_the_decision_denies_it() {
         Err(DirectoryError::OrganisationNotFound(organisation("acme")))
     );
     assert_eq!(harness.changes.reported(), vec![]);
+    assert_eq!(pending(&harness).await, vec![]);
     // Allowing the creation is all that differs, so the refusal was the decision's.
     harness
         .authorisation
         .answer(Action::CreateOrganisation, Decision::Allow);
-    repositories
+    let id = repositories
         .create_repository(&ada, &organisation("acme"), &app_repository())
         .await
         .unwrap();
     assert_eq!(
         harness.changes.reported(),
-        vec![organisation_created("acme"), app_created("acme")]
+        vec![organisation_created("acme")]
     );
+    assert_eq!(pending(&harness).await, vec![app_created("acme", id)]);
 }
 
 #[tokio::test]
@@ -356,6 +371,7 @@ async fn counts_an_organisation_a_concurrent_creator_made_as_created_and_does_no
             authorisation: &harness.authorisation,
             membership: &harness.membership,
             changes: &harness.changes,
+            delivery: &(),
         },
         Administration::External,
     );
@@ -371,7 +387,8 @@ async fn counts_an_organisation_a_concurrent_creator_made_as_created_and_does_no
             .await,
         Ok(id)
     );
-    assert_eq!(harness.changes.reported(), vec![app_created("acme")]);
+    assert_eq!(harness.changes.reported(), vec![]);
+    assert_eq!(pending(&harness).await, vec![]);
 }
 
 #[tokio::test]
@@ -407,9 +424,11 @@ async fn reports_nothing_for_a_creation_that_fails() {
     let harness = Harness::default();
     let ada = harness.caller("ada").await;
     let bob = harness.caller("bob").await;
-    harness.repository(&ada, "acme").await;
-    let both = vec![organisation_created("acme"), app_created("acme")];
-    assert_eq!(harness.changes.reported(), both);
+    let id = harness.repository(&ada, "acme").await.id;
+    let reported = vec![organisation_created("acme")];
+    let entries = vec![app_created("acme", id)];
+    assert_eq!(harness.changes.reported(), reported);
+    assert_eq!(pending(&harness).await, entries);
     let repositories = harness.repositories();
 
     assert_eq!(
@@ -437,7 +456,8 @@ async fn reports_nothing_for_a_creation_that_fails() {
         )))
     );
 
-    assert_eq!(harness.changes.reported(), both);
+    assert_eq!(harness.changes.reported(), reported);
+    assert_eq!(pending(&harness).await, entries);
 }
 
 #[tokio::test]
@@ -445,12 +465,13 @@ async fn reports_a_repository_created_in_built_in_mode_and_makes_its_creator_adm
     let harness = Harness::default();
     let ada = harness.caller("ada").await;
 
-    harness.repository(&ada, "acme").await;
+    let id = harness.repository(&ada, "acme").await.id;
 
     assert_eq!(
         harness.changes.reported(),
-        vec![organisation_created("acme"), app_created("acme")]
+        vec![organisation_created("acme")]
     );
+    assert_eq!(pending(&harness).await, vec![app_created("acme", id)]);
     assert_eq!(
         may_create_repositories(&harness, &ada, "acme").await,
         Decision::Allow
@@ -503,6 +524,7 @@ async fn names_the_repository_in_each_resource_it_asks_the_decision_about() {
             authorisation: &recording,
             membership: &harness.membership,
             changes: &harness.changes,
+            delivery: &(),
         },
         Administration::BuiltIn,
     )

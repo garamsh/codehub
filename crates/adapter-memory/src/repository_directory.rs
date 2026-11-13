@@ -21,6 +21,8 @@ pub(crate) struct Directory {
     repositories: u64,
     /// The entries not yet deleted, in the order written.
     pub(crate) outbox: Vec<Entry>,
+    /// The sequence of the last change written for each repository.
+    sequences: BTreeMap<RepositoryId, u64>,
 }
 
 /// A repository directory in memory; it numbers repositories from 1 in creation order, and writes
@@ -35,6 +37,47 @@ impl MemoryRepositoryDirectory {
     #[must_use]
     pub fn outbox(&self) -> MemoryDirectoryOutbox {
         MemoryDirectoryOutbox::new(Arc::clone(&self.directory))
+    }
+
+    /// Writes the entry of a further change to `repository`, with a sequence one above its last,
+    /// as the directory does for a deletion once repositories can be deleted. `None` where there
+    /// is no such repository.
+    #[must_use]
+    pub fn record_change(
+        &self,
+        repository: RepositoryId,
+        kind: ChangeKind,
+    ) -> Option<RepositoryChange> {
+        let mut directory = lock(&self.directory);
+        let (organisation, name) =
+            directory
+                .organisations
+                .iter()
+                .find_map(|(organisation, repositories)| {
+                    repositories
+                        .iter()
+                        .find(|(_, id)| **id == repository)
+                        .map(|(name, _)| (organisation.clone(), name.clone()))
+                })?;
+        let sequence = directory
+            .sequences
+            .get(&repository)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
+        directory.sequences.insert(repository, sequence);
+        let change = RepositoryChange {
+            organisation,
+            name,
+            repository,
+            kind,
+            sequence,
+        };
+        directory.outbox.push(Entry {
+            change: change.clone(),
+            lease_expires_at: i64::MIN,
+        });
+        Some(change)
     }
 }
 
@@ -69,6 +112,7 @@ impl RepositoryDirectory for MemoryRepositoryDirectory {
         }
         repositories.insert(repository.clone(), id);
         directory.repositories = directory.repositories.saturating_add(1);
+        directory.sequences.insert(id, 1);
         directory.outbox.push(Entry {
             change: RepositoryChange {
                 organisation: organisation.clone(),
