@@ -73,3 +73,4 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0044-directory-changes-through-an-outbox.md` — ADR 0044, repository changes are delivered at least once from an outbox written in the repository's transaction; supersedes ADR 0030's at-most-once delivery for them
 - `adr/0045-health-probes-outside-v1.md` — ADR 0045, the server answers unauthenticated liveness and readiness probes outside `/v1`; sets aside two statements of ADR 0024 for those routes
 - `adr/0046-gaon-executor-driver.md` — ADR 0046, a gaon executor driver runs each job in a run-once MicroVM, and the job reports its result back to the runner
+- `adr/0047-runner-check-executor.md` — ADR 0047, `codehub-runner check-executor` runs one job with a given command through the configured executor, without a server
