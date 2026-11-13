@@ -8,6 +8,7 @@ fn deployment_md_names_every_server_setting_and_no_other() {
     test_support::assert_contract(&codehub::Config::command(), "Server settings");
 }
 
+#[cfg(test)]
 /// The version `scripts/release-version.sh` prints for `tag`, or its refusal.
 fn release_version(tag: &str) -> Result<String, String> {
     let script = concat!(

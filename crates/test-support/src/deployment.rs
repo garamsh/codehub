@@ -18,7 +18,7 @@ fn names(text: &str) -> BTreeSet<String> {
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
             .collect();
         // A bare prefix, or a run of dashes such as a table's rule, names no setting.
-        if name.trim_start_matches('-') != "" && name != "CODEHUB_" {
+        if !name.trim_start_matches('-').is_empty() && name != "CODEHUB_" {
             found.insert(name);
         }
     }
