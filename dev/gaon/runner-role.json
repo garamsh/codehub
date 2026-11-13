@@ -1,0 +1,13 @@
+{
+  "apiVersion": "rbac.gaon.garam.sh/v1alpha1",
+  "kind": "ClusterRole",
+  "metadata": { "name": "codehub-runner" },
+  "rules": [
+    {
+      "apiGroups": ["compute.gaon.garam.sh"],
+      "resources": ["microvms", "secrets"],
+      "verbs": ["create", "get", "list", "delete"],
+      "labelSelector": "runner.codehub.garam.sh/name"
+    }
+  ]
+}
