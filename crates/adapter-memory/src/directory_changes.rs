@@ -1,25 +1,42 @@
 use std::sync::Mutex;
 
-use app::port::driven::directory_changes::{DirectoryChange, DirectoryChanges};
+use app::port::driven::directory_changes::{
+    DirectoryChanges, OrganisationChange, RepositoryChange,
+};
 
 use crate::lock;
 
-/// Directory changes recorded in memory, in the order they were reported.
+/// A change the receiver was given.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ReceivedChange {
+    /// An organisation change.
+    Organisation(OrganisationChange),
+    /// A repository change, as delivered; one delivered again is received again.
+    Repository(RepositoryChange),
+}
+
+/// Directory changes recorded in memory, in the order they were received. It accepts every
+/// repository change.
 #[derive(Default)]
 pub struct MemoryDirectoryChanges {
-    changes: Mutex<Vec<DirectoryChange>>,
+    changes: Mutex<Vec<ReceivedChange>>,
 }
 
 impl MemoryDirectoryChanges {
-    /// Every change reported so far, in order.
+    /// Every change received so far, in order.
     #[must_use]
-    pub fn reported(&self) -> Vec<DirectoryChange> {
+    pub fn reported(&self) -> Vec<ReceivedChange> {
         lock(&self.changes).clone()
     }
 }
 
 impl DirectoryChanges for MemoryDirectoryChanges {
-    async fn report(&self, change: &DirectoryChange) {
-        lock(&self.changes).push(change.clone());
+    async fn repository_changed(&self, change: &RepositoryChange) -> bool {
+        lock(&self.changes).push(ReceivedChange::Repository(change.clone()));
+        true
+    }
+
+    async fn organisation_changed(&self, change: &OrganisationChange) {
+        lock(&self.changes).push(ReceivedChange::Organisation(change.clone()));
     }
 }
