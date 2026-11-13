@@ -13,7 +13,7 @@ How a runner joins the system, receives jobs and runs them: registration, pollin
   - a heartbeat while the job runs, answered with continue or stop (cancelled or timed out);
   - a result report that ends the job.
 - **Routing.** A job carries its organisation, repository and labels. It goes only to a runner registered for that organisation or that repository, whose labels include every label of the job. A principal with no registration is refused.
-- **The runner is the binary `codehub-runner`**, a package beside `ch` (library and binary), holding the runner core, its two ports and their adapters. It authenticates with a token read again from a file before each request, or by the OAuth client-credentials grant with the secret read from a named environment variable, never logged and not passed into the job command's environment (the host driver does not keep it from a command run as the same user). Its options are `--server`, `--work-dir` and `--once`. The server's `CODEHUB_RUNNER_CLAIM_HOLD`, `CODEHUB_RUNNER_HEARTBEAT_INTERVAL` and `CODEHUB_RUNNER_LEASE` settings configure the claim hold, the heartbeat interval it asks of runners, and the lease; `codehub` refuses to start where the lease does not exceed the heartbeat interval.
+- **The runner is the binary `codehub-runner`**, a package beside `ch` (library and binary), holding the runner core, its two ports and their adapters. It authenticates with a token read again from a file before each request, or by the OAuth client-credentials grant with the secret read from a named environment variable, never logged and not passed into the job command's environment (the host driver does not keep it from a command run as the same user). Its options are `--server`, `--work-dir`, `--once` and `--executor` (`host` or `gaon`, `execution.md`; ADR 0046), with the gaon driver's settings, and `codehub-runner run-job` is the single-job mode the gaon driver runs inside a MicroVM. The server's `CODEHUB_RUNNER_CLAIM_HOLD`, `CODEHUB_RUNNER_HEARTBEAT_INTERVAL` and `CODEHUB_RUNNER_LEASE` settings configure the claim hold, the heartbeat interval it asks of runners, and the lease; `codehub` refuses to start where the lease does not exceed the heartbeat interval.
 
 ### Job lifecycle
 
@@ -38,7 +38,7 @@ Declared in the application's terms (`docs/architecture/structure.md`).
 ## Rationale
 
 - The GitHub Actions model, and what would show it wrong: ADR 0009.
-- Runner as principal, HTTP long-poll, label routing and the host driver: ADR 0034. It supersedes ADR 0009's registration token and runner credentials, ADR 0006's mutual TLS for runners, and the runner identity verification port.
+- Runner as principal, HTTP long-poll, label routing and the host driver: ADR 0034. The gaon driver, and the result listener that is the runner's only inbound connection: ADR 0046. It supersedes ADR 0009's registration token and runner credentials, ADR 0006's mutual TLS for runners, and the runner identity verification port.
 - Facts of the GitHub model this design relies on (GitHub documentation):
   - the runner needs only outbound HTTPS on port 443;
   - a job runs on a self-hosted runner that has all the labels it names;

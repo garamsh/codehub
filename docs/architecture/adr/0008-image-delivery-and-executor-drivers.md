@@ -1,6 +1,6 @@
 # ADR 0008: Images are delivered through object storage and the environment is known only to executor drivers
 
-> Status: accepted
+> Status: accepted; microvm as the runner's default driver superseded by ADR-0046
 > Date: 2026-11-11
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
