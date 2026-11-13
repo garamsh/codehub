@@ -10,6 +10,7 @@ jsonwebtoken = { workspace = true, features = ["aws_lc_rs", "use_pem"] }
 reqwest = { workspace = true, features = ["form", "json", "rustls"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 
 [lints]
 workspace = true

@@ -215,7 +215,7 @@ impl AuthzenAuthorisationDecision {
         if let Answer::Decided(answer) = self.post(endpoint, token.as_str(), body).await? {
             return Ok(Some(answer));
         }
-        let token = match self.tokens.renewed(organisation).await {
+        let token = match self.tokens.renewed(organisation, &token).await {
             Ok(token) => token,
             Err(error) => return self.refusal(error),
         };

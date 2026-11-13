@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
@@ -156,6 +156,9 @@ pub struct TokenClient {
     audience: Option<String>,
     credentials: Credentials,
     held: Mutex<HashMap<String, Held>>,
+    /// One lock per held-token key, so that concurrent misses for one organisation make one
+    /// request; the lock over the map is never held across a request.
+    flights: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 /// The claims of a client authentication assertion.
@@ -235,6 +238,7 @@ impl TokenClient {
             audience,
             credentials,
             held: Mutex::new(HashMap::new()),
+            flights: Mutex::new(HashMap::new()),
         })
     }
 
@@ -246,7 +250,7 @@ impl TokenClient {
     }
 
     /// The token for `organisation`: the held one while it is fresh, and a newly obtained one
-    /// otherwise.
+    /// otherwise. Concurrent calls that find none fresh share one request.
     ///
     /// # Errors
     ///
@@ -254,27 +258,52 @@ impl TokenClient {
     /// organisation, and [`TokenError::Failed`] for any other failure.
     pub async fn token(&self, organisation: &str) -> Result<Token, TokenError> {
         let key = self.key(organisation);
-        let held = self
-            .held
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&key)
-            .filter(|held| held.is_fresh(Instant::now()))
-            .map(|held| held.token.clone());
-        match held {
-            Some(token) => Ok(token),
-            None => self.renewed(organisation).await,
+        if let Some(token) = self.fresh(&key, None) {
+            return Ok(token);
         }
+        let flight = self.flight(&key);
+        let _turn = flight.lock().await;
+        if let Some(token) = self.fresh(&key, None) {
+            return Ok(token);
+        }
+        self.fetch(organisation, key).await
     }
 
     /// A newly obtained token for `organisation`, which replaces the held one; for a caller whose
-    /// token the resource server refused.
+    /// token `rejected` the resource server refused. Where another caller has already replaced
+    /// `rejected`, that token is returned and no request is made.
     ///
     /// # Errors
     ///
     /// As [`TokenClient::token`].
-    pub async fn renewed(&self, organisation: &str) -> Result<Token, TokenError> {
+    pub async fn renewed(&self, organisation: &str, rejected: &Token) -> Result<Token, TokenError> {
         let key = self.key(organisation);
+        let flight = self.flight(&key);
+        let _turn = flight.lock().await;
+        if let Some(token) = self.fresh(&key, Some(rejected)) {
+            return Ok(token);
+        }
+        self.fetch(organisation, key).await
+    }
+
+    /// The token held under `key` while it is fresh and is not `except`.
+    fn fresh(&self, key: &str, except: Option<&Token>) -> Option<Token> {
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(key)
+            .filter(|held| held.is_fresh(Instant::now()))
+            .map(|held| held.token.clone())
+            .filter(|token| Some(token) != except)
+    }
+
+    fn flight(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut flights = self.flights.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(flights.entry(key.to_owned()).or_default())
+    }
+
+    /// Obtains a token and holds it under `key`.
+    async fn fetch(&self, organisation: &str, key: String) -> Result<Token, TokenError> {
         let (token, expires_in) = self.obtain(organisation).await?;
         let now = Instant::now();
         let held = Held {

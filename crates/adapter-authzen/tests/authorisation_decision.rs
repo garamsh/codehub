@@ -1603,6 +1603,55 @@ async fn obtains_another_token_by_a_fresh_assertion_and_asks_again_after_a_401()
     assert_eq!(fixture.idp.rejections(), Vec::<String>::new());
 }
 
+/// Decides `count` reads at once in `organisation`, which all start before any token is held.
+#[cfg(test)]
+async fn decide_at_once(fixture: Fixture, organisation: &str, count: usize) -> Fixture {
+    let Fixture { idp, stub, adapter } = fixture;
+    let adapter = Arc::new(adapter);
+    let mut decisions = tokio::task::JoinSet::new();
+    for _ in 0..count {
+        let adapter = Arc::clone(&adapter);
+        let resource = repository(organisation, "app");
+        decisions.spawn(async move { adapter.decide(&user(), Action::Read, &resource).await });
+    }
+    while let Some(decided) = decisions.join_next().await {
+        assert_eq!(decided.unwrap(), Ok(Decision::Deny));
+    }
+    let adapter = Arc::into_inner(adapter).unwrap();
+    Fixture { idp, stub, adapter }
+}
+
+#[tokio::test]
+async fn makes_one_token_request_for_concurrent_decisions_in_one_organisation() {
+    let fixture = decide_at_once(fixture(&ec_key(), Options::default()).await, "acme", 8).await;
+
+    assert_eq!(fixture.idp.issued("acme"), 1);
+    assert_eq!(token_requests_for(&fixture.stub, "acme"), 1);
+    assert_eq!(fixture.stub.requests_to("/access/v1/evaluation").len(), 8);
+    assert_eq!(fixture.idp.rejections(), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn makes_one_token_request_after_a_rejection_for_concurrent_decisions() {
+    let fixture = decide_at_once(
+        fixture(
+            &ec_key(),
+            Options {
+                revoke_first: true,
+                ..Options::default()
+            },
+        )
+        .await,
+        "acme",
+        8,
+    )
+    .await;
+
+    // One token, refused by the decision point, and one in its place.
+    assert_eq!(fixture.idp.issued("acme"), 2);
+    assert_eq!(fixture.idp.rejections(), Vec::<String>::new());
+}
+
 /// Resources of three organisations, allowed where the path ends in `a`.
 #[cfg(test)]
 fn three_organisations() -> Vec<Resource> {
