@@ -70,3 +70,7 @@ Alternatives not taken:
 - A third decision point needs a third profile, which would show that the profile should be data rather than code.
 - A garam organisation needs two codehub deployments.
 - garam's contract changes in a way that requires codehub to parse a GRN.
+
+## Errata
+
+- 2026-11-13: The Decision says the `Created` representation "gains `id`". PR #144 (`9475aca456ec644428245375e84a89c75ca42671`) falsified that: a repository's creation answers a separate representation, `CreatedRepository`, which holds `name` and a required `id`. An organisation's creation still answers `Created`, with `name` only, so no client reads an optional `id`. The decision stands: creating a repository answers its id beside its name (`docs/architecture/interfaces.md`).
