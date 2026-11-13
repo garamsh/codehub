@@ -62,3 +62,8 @@ async fn a_workspace_is_opened_by_a_writer_and_read_by_a_reader_of_its_paths() {
     workspace::a_workspace_is_opened_by_a_writer_and_read_by_a_reader_of_its_paths::<Harness>()
         .await;
 }
+
+#[tokio::test]
+async fn a_kind_change_is_marked_whatever_the_content_does() {
+    workspace::a_kind_change_is_marked_whatever_the_content_does::<Harness>().await;
+}

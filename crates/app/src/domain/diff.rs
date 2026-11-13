@@ -1,31 +1,46 @@
 //! The difference between a path's content in the base and in a draft (ADR 0048): a unified line
-//! diff where both sides are text (ADR 0017), a marker otherwise.
+//! diff where both sides are text (ADR 0017), a marker otherwise, and the change of file kind
+//! beside either.
 
-use std::ops::Range;
-
-use imara_diff::sources::byte_lines;
-use imara_diff::{Algorithm, Diff, InternedInput};
+use imara_diff::{Algorithm, BasicLineDiffPrinter, Diff, InternedInput, UnifiedDiffConfig};
 
 use super::file::FileKind;
 use super::merge::is_text;
 use super::path::Path;
 
-/// Lines of unchanged context around each hunk.
-const CONTEXT: usize = 3;
-
 /// How a path's content differs between two sides.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ContentDiff {
-    /// Both sides are text: the unified diff.
+    /// Both sides are text: the unified diff, headed by the two sides' names.
     Lines(String),
     /// A side is not text, and the content differs.
     Binary,
-    /// Both sides hold the same content and differ only in kind.
+    /// Both sides hold the same content.
     KindOnly,
 }
 
 /// A side of a diff: the file's kind and its content.
 pub type Side<'a> = Option<(FileKind, &'a [u8])>;
+
+/// A path present on both sides whose file kind differs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct KindChange {
+    /// The kind in the base.
+    pub before: FileKind,
+    /// The kind in the draft.
+    pub after: FileKind,
+}
+
+/// The kind change from `before` to `after`, if both sides exist and their kinds differ.
+#[must_use]
+pub fn kind_change(before: Side<'_>, after: Side<'_>) -> Option<KindChange> {
+    match (before, after) {
+        (Some((before, _)), Some((after, _))) if before != after => {
+            Some(KindChange { before, after })
+        }
+        _ => None,
+    }
+}
 
 /// The difference of `path` from `before` to `after`; an absent side counts as empty text.
 #[must_use]
@@ -35,49 +50,30 @@ pub fn diff(path: &Path, before: Side<'_>, after: Side<'_>) -> ContentDiff {
     if before.is_some() && after.is_some() && before_content == after_content {
         return ContentDiff::KindOnly;
     }
+    let (Ok(before_text), Ok(after_text)) = (
+        std::str::from_utf8(before_content),
+        std::str::from_utf8(after_content),
+    ) else {
+        return ContentDiff::Binary;
+    };
     if !is_text(before_content) || !is_text(after_content) {
         return ContentDiff::Binary;
     }
-    ContentDiff::Lines(unified(
-        path,
-        before.is_some(),
-        after.is_some(),
-        before_content,
-        after_content,
+    let input = InternedInput::new(before_text, after_text);
+    let mut diff = Diff::compute(Algorithm::Histogram, &input);
+    diff.postprocess_lines(&input);
+    let hunks = diff
+        .unified_diff(
+            &BasicLineDiffPrinter(&input.interner),
+            UnifiedDiffConfig::default(),
+            &input,
+        )
+        .to_string();
+    ContentDiff::Lines(format!(
+        "--- {}\n+++ {}\n{hunks}",
+        side_name("a", path, before.is_some()),
+        side_name("b", path, after.is_some())
     ))
-}
-
-/// One changed run: the lines it replaces and the lines that replace them.
-struct Hunk {
-    before: Range<usize>,
-    after: Range<usize>,
-}
-
-fn unified(path: &Path, has_before: bool, has_after: bool, before: &[u8], after: &[u8]) -> String {
-    let before_lines: Vec<&[u8]> = byte_lines(before).collect();
-    let after_lines: Vec<&[u8]> = byte_lines(after).collect();
-    let input = InternedInput::new(before, after);
-    let hunks: Vec<Hunk> = Diff::compute(Algorithm::Histogram, &input)
-        .hunks()
-        .map(|hunk| Hunk {
-            before: widen(&hunk.before),
-            after: widen(&hunk.after),
-        })
-        .collect();
-
-    let mut out = String::new();
-    if hunks.is_empty() {
-        return out;
-    }
-    out.push_str(&format!(
-        "--- {}\n+++ {}\n",
-        side_name("a", path, has_before),
-        side_name("b", path, has_after)
-    ));
-    for group in group_hunks(&hunks) {
-        write_group(&mut out, group, &before_lines, &after_lines);
-    }
-    out
 }
 
 fn side_name(prefix: &str, path: &Path, present: bool) -> String {
@@ -85,68 +81,6 @@ fn side_name(prefix: &str, path: &Path, present: bool) -> String {
         format!("{prefix}/{path}")
     } else {
         "/dev/null".to_owned()
-    }
-}
-
-fn widen(range: &Range<u32>) -> Range<usize> {
-    range.start as usize..range.end as usize
-}
-
-/// Splits the hunks into runs whose context would touch or overlap, so each run is one `@@` hunk.
-fn group_hunks(hunks: &[Hunk]) -> Vec<&[Hunk]> {
-    let mut groups = Vec::new();
-    let mut start = 0;
-    for (index, pair) in hunks.windows(2).enumerate() {
-        let [earlier, later] = pair else { continue };
-        if later.before.start.saturating_sub(earlier.before.end) > 2 * CONTEXT {
-            groups.push(hunks.get(start..=index).unwrap_or_default());
-            start = index + 1;
-        }
-    }
-    groups.push(hunks.get(start..).unwrap_or_default());
-    groups
-}
-
-fn write_group(out: &mut String, group: &[Hunk], before: &[&[u8]], after: &[&[u8]]) {
-    let (Some(first), Some(last)) = (group.first(), group.last()) else {
-        return;
-    };
-    let lead = first.before.start.min(CONTEXT);
-    let before_start = first.before.start - lead;
-    let before_end = (last.before.end + CONTEXT).min(before.len());
-    let after_start = first.after.start - lead;
-    let after_end = last.after.end + (before_end - last.before.end);
-    out.push_str(&format!(
-        "@@ -{} +{} @@\n",
-        range_header(before_start, before_end - before_start),
-        range_header(after_start, after_end - after_start)
-    ));
-    let mut position = before_start;
-    for hunk in group {
-        push_lines(out, ' ', before, position..hunk.before.start);
-        push_lines(out, '-', before, hunk.before.clone());
-        push_lines(out, '+', after, hunk.after.clone());
-        position = hunk.before.end;
-    }
-    push_lines(out, ' ', before, position..before_end);
-}
-
-/// The `start,length` of a hunk side, counting lines from one; an empty side names the line before.
-fn range_header(start: usize, length: usize) -> String {
-    match length {
-        0 => format!("{start},0"),
-        1 => format!("{}", start + 1),
-        _ => format!("{},{length}", start + 1),
-    }
-}
-
-fn push_lines(out: &mut String, marker: char, lines: &[&[u8]], range: Range<usize>) {
-    for line in lines.iter().skip(range.start).take(range.len()) {
-        out.push(marker);
-        out.push_str(&String::from_utf8_lossy(line));
-        if !line.ends_with(b"\n") {
-            out.push_str("\n\\ No newline at end of file\n");
-        }
     }
 }
 
@@ -185,22 +119,22 @@ mod tests {
         let text = lines(None, Some("x\ny\n"));
         assert_eq!(
             text,
-            "--- /dev/null\n+++ b/a.txt\n@@ -0,0 +1,2 @@\n+x\n+y\n"
+            "--- /dev/null\n+++ b/a.txt\n@@ -1,0 +1,2 @@\n+x\n+y\n"
         );
     }
 
     #[test]
     fn a_deleted_file_diffs_to_dev_null() {
         let text = lines(Some("x\n"), None);
-        assert_eq!(text, "--- a/a.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n");
+        assert_eq!(text, "--- a/a.txt\n+++ /dev/null\n@@ -1,1 +1,0 @@\n-x\n");
     }
 
     #[test]
-    fn a_missing_final_newline_is_marked() {
+    fn a_line_without_a_final_newline_is_diffed_like_any_other() {
         let text = lines(Some("a\nb"), Some("a\nc"));
         assert_eq!(
             text,
-            "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+c\n\\ No newline at end of file\n"
+            "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n a\n-b\n+c\n"
         );
     }
 
@@ -248,5 +182,27 @@ mod tests {
             Some((FileKind::Executable, b"same\n")),
         );
         assert_eq!(result, ContentDiff::KindOnly);
+    }
+
+    #[test]
+    fn an_added_or_deleted_empty_file_still_has_its_header() {
+        assert_eq!(lines(None, Some("")), "--- /dev/null\n+++ b/a.txt\n");
+        assert_eq!(lines(Some(""), None), "--- a/a.txt\n+++ /dev/null\n");
+    }
+
+    #[test]
+    fn a_kind_change_is_reported_whatever_the_content_does() {
+        let regular = Some((FileKind::Regular, &b"one\n"[..]));
+        let executable = Some((FileKind::Executable, &b"one\n"[..]));
+        let edited = Some((FileKind::Executable, &b"two\n"[..]));
+        let change = Some(KindChange {
+            before: FileKind::Regular,
+            after: FileKind::Executable,
+        });
+        assert_eq!(kind_change(regular, executable), change);
+        assert_eq!(kind_change(regular, edited), change);
+        assert_eq!(kind_change(regular, regular), None);
+        assert_eq!(kind_change(None, executable), None);
+        assert_eq!(kind_change(regular, None), None);
     }
 }

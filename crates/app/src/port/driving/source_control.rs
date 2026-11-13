@@ -8,7 +8,7 @@ use std::fmt;
 use crate::domain::address::Address;
 use crate::domain::changeset::Change;
 use crate::domain::derivation::DerivationError;
-use crate::domain::diff::ContentDiff;
+use crate::domain::diff::{ContentDiff, KindChange};
 use crate::domain::draft::{ChangeStatus, Edit};
 use crate::domain::encoding::EncodeError;
 use crate::domain::file::FileKind;
@@ -637,6 +637,9 @@ pub struct PathDiff {
     pub status: ChangeStatus,
     /// How the content differs.
     pub diff: ContentDiff,
+    /// The change of file kind, where the path is on both sides and its kind differs, whatever
+    /// the content does.
+    pub kind_change: Option<KindChange>,
 }
 
 /// A file of a changeset's tree.

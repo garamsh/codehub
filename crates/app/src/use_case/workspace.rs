@@ -106,6 +106,7 @@ pub(crate) async fn diffs<O: ObjectStore>(
             path: one.path.clone(),
             status: one.status,
             diff: diff::diff(one.path, side(&before), side(&after)),
+            kind_change: diff::kind_change(side(&before), side(&after)),
         });
     }
     Ok(diffs)

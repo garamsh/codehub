@@ -113,10 +113,18 @@ pub enum ContentDiffBody {
 }
 
 #[derive(Serialize)]
+pub struct KindChangeBody {
+    before: KindBody,
+    after: KindBody,
+}
+
+#[derive(Serialize)]
 pub struct PathDiffBody {
     path: String,
     status: StatusBody,
     diff: ContentDiffBody,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind_change: Option<KindChangeBody>,
 }
 
 #[derive(Serialize)]
@@ -134,6 +142,10 @@ impl From<PathDiff> for PathDiffBody {
                 ContentDiff::Binary => ContentDiffBody::Binary,
                 ContentDiff::KindOnly => ContentDiffBody::Kind,
             },
+            kind_change: diff.kind_change.map(|change| KindChangeBody {
+                before: change.before.into(),
+                after: change.after.into(),
+            }),
         }
     }
 }

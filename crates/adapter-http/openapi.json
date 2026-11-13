@@ -3746,6 +3746,22 @@
                 "description": "Only the file mode changed."
               }
             ]
+          },
+          "kind_change": {
+            "type": "object",
+            "required": [
+              "before",
+              "after"
+            ],
+            "properties": {
+              "before": {
+                "$ref": "#/components/schemas/Kind"
+              },
+              "after": {
+                "$ref": "#/components/schemas/Kind"
+              }
+            },
+            "description": "Present where the path is on both sides and its file kind differs, whatever the content does."
           }
         }
       },

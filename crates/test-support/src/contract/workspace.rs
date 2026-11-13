@@ -7,7 +7,7 @@ use crate::contract::access::Admin;
 use crate::contract::{Deployment, Repo, draft};
 use app::domain::address::Address;
 use app::domain::changeset::Change;
-use app::domain::diff::ContentDiff;
+use app::domain::diff::{ContentDiff, KindChange};
 use app::domain::draft::{ChangeStatus, DraftId, Edit};
 use app::domain::file::{File, FileKind};
 use app::domain::path::{Path, Prefix};
@@ -435,7 +435,7 @@ pub async fn the_diff_shows_a_changed_line_and_marks_a_binary_path<H: Deployment
         by_path("new"),
         Some((
             ChangeStatus::Added,
-            ContentDiff::Lines("--- /dev/null\n+++ b/new\n@@ -0,0 +1 @@\n+x\n".to_owned())
+            ContentDiff::Lines("--- /dev/null\n+++ b/new\n@@ -1,0 +1,1 @@\n+x\n".to_owned())
         ))
     );
 
@@ -709,4 +709,74 @@ pub async fn a_workspace_is_opened_by_a_writer_and_read_by_a_reader_of_its_paths
             paths: BTreeSet::from([path("src/a")]),
         }))
     );
+}
+
+/// A kind change is marked whatever the content does, and an added or deleted empty file has a
+/// diff of its own.
+pub async fn a_kind_change_is_marked_whatever_the_content_does<H: Deployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    land_files(
+        &repo,
+        &ada,
+        "base",
+        &[
+            ("both", "x\n"),
+            ("kind", "k\n"),
+            ("plain", "p\n"),
+            ("gone", ""),
+        ],
+    )
+    .await;
+    open(&repo, &ada, "w").await;
+    let both = upload(&repo, b"y\n", FileKind::Executable).await;
+    let kind = upload(&repo, b"k\n", FileKind::Executable).await;
+    snapshot(
+        &repo,
+        &ada,
+        "w",
+        vec![
+            ("both", Edit::Record(Change::File(both))),
+            ("kind", Edit::Record(Change::File(kind))),
+            ("plain", regular(&repo, "q\n").await),
+            ("empty", regular(&repo, "").await),
+            ("gone", Edit::Record(Change::Deletion)),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let diffs = harness
+        .source_control()
+        .diff(&ada, repo.id, &draft("w"), None)
+        .await
+        .unwrap();
+    let find = |text: &str| diffs.iter().find(|diff| diff.path == path(text)).unwrap();
+    let change = Some(KindChange {
+        before: FileKind::Regular,
+        after: FileKind::Executable,
+    });
+
+    // The content changed too: the line diff and the kind change are both there.
+    let both = find("both");
+    assert!(matches!(&both.diff, ContentDiff::Lines(text) if text.contains("-x\n+y\n")));
+    assert_eq!(both.kind_change, change);
+    // Only the kind changed.
+    assert_eq!(find("kind").diff, ContentDiff::KindOnly);
+    assert_eq!(find("kind").kind_change, change);
+    // Control: a content change alone reports no kind change.
+    assert!(matches!(find("plain").diff, ContentDiff::Lines(_)));
+    assert_eq!(find("plain").kind_change, None);
+
+    // An empty file added or deleted still has its header.
+    assert_eq!(
+        find("empty").diff,
+        ContentDiff::Lines("--- /dev/null\n+++ b/empty\n".to_owned())
+    );
+    assert_eq!(
+        find("gone").diff,
+        ContentDiff::Lines("--- a/gone\n+++ /dev/null\n".to_owned())
+    );
+    assert_eq!(find("empty").kind_change, None);
 }
