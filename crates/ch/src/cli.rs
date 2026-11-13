@@ -162,8 +162,27 @@ pub enum Command {
     },
     /// Stage a file, or its deletion, in a draft.
     Put(Put),
-    /// Land a draft.
+    /// Land a draft, or the workspace of the view the working directory is in.
     Land(Land),
+    /// Open a workspace as a view in an empty or absent directory.
+    Open(Open),
+    /// List the paths the view's workspace changes.
+    Status,
+    /// Show the view's changes against its base, as the server computes them.
+    Diff {
+        /// Limit the diff to this path of the repository.
+        path: Option<String>,
+    },
+    /// Set the description of the view's workspace, which a landing without a message takes.
+    Describe {
+        /// The description.
+        message: String,
+    },
+    /// Return a path to the base's content, in the workspace and in the view.
+    Restore {
+        /// The path of the repository.
+        path: String,
+    },
     /// List the versions of a file, newest first.
     Log {
         /// The file's path.
@@ -285,12 +304,25 @@ pub struct Put {
 /// Arguments of `land`.
 #[derive(Debug, Args)]
 pub struct Land {
-    /// The landing message.
+    /// The landing message; required outside a view, and in one it defaults to the description.
     #[arg(short, long)]
-    pub message: String,
-    /// The draft to land.
+    pub message: Option<String>,
+    /// The draft to land; in a view the view's draft is landed.
     #[arg(long, default_value = "default")]
     pub draft: String,
+}
+
+/// Arguments of `open`.
+#[derive(Debug, Args)]
+pub struct Open {
+    /// The directory to write the view into; it is empty or does not exist.
+    pub directory: PathBuf,
+    /// The workspace to open.
+    #[arg(long, default_value = "default")]
+    pub draft: String,
+    /// Limit the view, and its snapshots, to the files under this path of the repository.
+    #[arg(long, default_value = "")]
+    pub prefix: String,
 }
 
 /// A verb on organisations.
@@ -373,8 +405,8 @@ mod tests {
             panic!("not land");
         };
         assert_eq!(
-            (land.message.as_str(), land.draft.as_str()),
-            ("text", "default")
+            (land.message.as_deref(), land.draft.as_str()),
+            (Some("text"), "default")
         );
     }
 

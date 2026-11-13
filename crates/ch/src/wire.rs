@@ -121,13 +121,24 @@ pub struct TransferGrant {
 }
 
 /// The kind of a file.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// An ordinary file.
     Regular,
     /// A file with the executable bit.
     Executable,
+}
+
+impl Kind {
+    /// The kind as the API and `ch` write it.
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        match self {
+            Self::Regular => "regular",
+            Self::Executable => "executable",
+        }
+    }
 }
 
 /// A file staged in a draft.
@@ -341,4 +352,156 @@ pub struct Ref {
     pub name: String,
     /// The changeset's address.
     pub changeset: String,
+}
+
+/// What a workspace does to a path against its base.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Status {
+    /// The base lacks the path.
+    Added,
+    /// The base holds the path with other content or kind.
+    Modified,
+    /// The base holds the path and the workspace removes it.
+    Deleted,
+}
+
+impl Status {
+    /// The status as the API and `ch` write it.
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        match self {
+            Self::Added => "added",
+            Self::Modified => "modified",
+            Self::Deleted => "deleted",
+        }
+    }
+}
+
+/// A path a workspace changes.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChangedPath {
+    /// The path.
+    pub path: String,
+    /// What the workspace does to it.
+    pub status: Status,
+    /// The file mode; a deleted path's is the base's.
+    pub kind: Kind,
+    /// Where an added or modified path's bytes can be downloaded; absent for a deleted one.
+    pub download: Option<TransferGrant>,
+}
+
+/// A workspace: a draft with its base and description.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Workspace {
+    /// The changeset it is based on; absent where `main` was unset.
+    pub base: Option<String>,
+    /// The description.
+    pub description: String,
+    /// The changed paths, in path order.
+    pub changes: Vec<ChangedPath>,
+}
+
+/// A workspace's description.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Description {
+    /// The description.
+    pub description: String,
+}
+
+/// One path's change in a snapshot.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "lowercase")]
+pub enum SnapshotChange {
+    /// Record a file.
+    File {
+        /// The path.
+        path: String,
+        /// The kind of the file.
+        kind: Kind,
+        /// The address of its bytes.
+        content: String,
+    },
+    /// Record a deletion.
+    Delete {
+        /// The path.
+        path: String,
+    },
+    /// Return the path to its base.
+    Restore {
+        /// The path.
+        path: String,
+    },
+}
+
+/// Changes recorded together, or not at all.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// The changes, at most one to a path.
+    pub changes: Vec<SnapshotChange>,
+}
+
+/// How a path's content differs.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum DiffContent {
+    /// A line diff.
+    Lines {
+        /// The unified diff, as the server prints it.
+        unified: String,
+    },
+    /// A side is not text.
+    Binary,
+    /// Only the file kind changed.
+    Kind,
+}
+
+/// A file kind that changed.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KindChange {
+    /// The base's kind.
+    pub before: Kind,
+    /// The workspace's kind.
+    pub after: Kind,
+}
+
+/// The difference of one path.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PathDiff {
+    /// The path.
+    pub path: String,
+    /// What the workspace does to it.
+    pub status: Status,
+    /// How its content differs.
+    pub diff: DiffContent,
+    /// Present where the file kind differs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind_change: Option<KindChange>,
+}
+
+/// The differences of a workspace against its base.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Diff {
+    /// One entry for each changed path.
+    pub diffs: Vec<PathDiff>,
+}
+
+/// A file of a changeset's tree.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListedFile {
+    /// The path.
+    pub path: String,
+    /// The kind of the file.
+    pub kind: Kind,
+    /// The address of its bytes.
+    pub content: String,
+    /// Where its bytes can be downloaded.
+    pub download: TransferGrant,
+}
+
+/// The files of a changeset's tree.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Files {
+    /// The files, in path order.
+    pub files: Vec<ListedFile>,
 }

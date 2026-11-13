@@ -7,6 +7,8 @@ use crate::wire::Problem;
 
 /// The exit code for a failure no other code names.
 pub const EXIT_OTHER: u8 = 1;
+/// The exit code for a command used wrongly.
+pub const EXIT_USAGE: u8 = 2;
 /// The exit code for no login, or a token the server refused.
 pub const EXIT_NOT_LOGGED_IN: u8 = 3;
 /// The exit code for a landing the server rejected.
@@ -19,6 +21,8 @@ pub const EXIT_DENIED: u8 = 5;
 /// What a failed command reports; each variant carries the text to print.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Failure {
+    /// The command was used wrongly, as a view verb outside a view.
+    Usage(String),
     /// There is no login, or the server answered 401.
     NotLoggedIn(String),
     /// A landing was answered 409 or 403.
@@ -61,6 +65,7 @@ impl Failure {
     #[must_use]
     pub const fn exit_code(&self) -> u8 {
         match self {
+            Self::Usage(_) => EXIT_USAGE,
             Self::NotLoggedIn(_) => EXIT_NOT_LOGGED_IN,
             Self::LandingRejected(_) => EXIT_LANDING_REJECTED,
             Self::ChecksNotPassed(_) => EXIT_CHECKS_NOT_PASSED,
@@ -73,7 +78,8 @@ impl Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotLoggedIn(message)
+            Self::Usage(message)
+            | Self::NotLoggedIn(message)
             | Self::LandingRejected(message)
             | Self::ChecksNotPassed(message)
             | Self::Denied(message)
