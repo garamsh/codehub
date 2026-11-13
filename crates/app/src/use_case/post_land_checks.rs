@@ -2,6 +2,7 @@
 //! settling an ended job and reverting the changeset of a blocking failure.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use crate::domain::address::Address;
 use crate::domain::changeset::{Change, Changeset};
@@ -11,18 +12,107 @@ use crate::domain::job::{Job, JobState, NewJob};
 use crate::domain::repository::RepositoryId;
 use crate::domain::revert::{self, AUTHOR, Revert};
 use crate::port::driven::changeset_log::ChangesetLog;
+use crate::port::driven::changeset_log::ChangesetLogError;
 use crate::port::driven::check_definitions::CheckDefinitions;
 use crate::port::driven::derived_data::DerivedData;
 use crate::port::driven::job_queue::JobQueue;
+use crate::port::driven::job_queue::JobQueueError;
 use crate::port::driven::object_store::ObjectStore;
 use crate::port::driven::repository_directory::RepositoryDirectory;
-use crate::port::driving::revert::{AfterLandingError, QueueChecksError, RevertError, SettleError};
+use crate::port::driving::jobs::JobsError;
+use crate::port::driving::revert::{QueueChecksError, RevertError};
 use crate::port::driving::source_control::{LandError, Landing};
 use crate::use_case::checked_source_control::CheckedAdapters;
 use crate::use_case::land::land;
 use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::last_green::{advance, blocking_checks_passed};
 use crate::use_case::read_file::file_at;
+
+/// Why the post-land checks of a landing failed after it landed.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum AfterLandingError {
+    /// The checks were not queued.
+    Queue(QueueChecksError),
+    /// The definitions could not be read and the changeset was not reverted.
+    Revert(RevertError),
+}
+
+impl fmt::Display for AfterLandingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Queue(error) => write!(f, "{error}"),
+            Self::Revert(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for AfterLandingError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Queue(error) => Some(error),
+            Self::Revert(error) => Some(error),
+        }
+    }
+}
+
+/// Why an ended job was not settled.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SettleError {
+    /// The job queue failed.
+    Queue(JobQueueError),
+    /// The changeset log failed.
+    Log(ChangesetLogError),
+    /// A blocking check ended in failure and its changeset was not reverted.
+    Revert(RevertError),
+}
+
+impl fmt::Display for SettleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Queue(error) => write!(f, "{error}"),
+            Self::Log(error) => write!(f, "{error}"),
+            Self::Revert(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for SettleError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Queue(error) => Some(error),
+            Self::Log(error) => Some(error),
+            Self::Revert(error) => Some(error),
+        }
+    }
+}
+
+impl From<JobQueueError> for SettleError {
+    fn from(error: JobQueueError) -> Self {
+        Self::Queue(error)
+    }
+}
+
+impl From<ChangesetLogError> for SettleError {
+    fn from(error: ChangesetLogError) -> Self {
+        Self::Log(error)
+    }
+}
+
+impl From<RevertError> for SettleError {
+    fn from(error: RevertError) -> Self {
+        Self::Revert(error)
+    }
+}
+
+impl From<SettleError> for JobsError {
+    fn from(error: SettleError) -> Self {
+        match error {
+            SettleError::Queue(error) => Self::Queue(error),
+            SettleError::Log(error) => Self::Log(error),
+            SettleError::Revert(error) => Self::Revert(error),
+        }
+    }
+}
 
 /// The post-land checks over the driven ports a landing and the queuing of its checks use, with
 /// the number of times a revert that lost the compare-and-swap on `main` is tried.

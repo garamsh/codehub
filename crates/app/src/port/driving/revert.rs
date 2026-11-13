@@ -1,6 +1,5 @@
-//! The failures of the post-land checks (ADR 0035), shared by the driving ports that act on a
-//! landing or on a blocking check ending in failure: the checks could not be queued, the changeset
-//! could not be reverted, or an ended job could not be settled.
+//! The failures shared by the driving ports that act on a landing or on a blocking check ending
+//! in failure: the checks could not be queued, or the changeset could not be reverted.
 
 use std::fmt;
 
@@ -10,7 +9,6 @@ use crate::port::driven::derived_data::DerivedDataError;
 use crate::port::driven::job_queue::JobQueueError;
 use crate::port::driven::object_store::ObjectStoreError;
 use crate::port::driven::repository_directory::DirectoryError;
-use crate::port::driving::jobs::JobsError;
 use crate::port::driving::source_control::LandError;
 
 /// Why the checks of a landed changeset were not queued.
@@ -86,92 +84,6 @@ impl From<ChangesetLogError> for QueueChecksError {
     }
 }
 
-/// Why the post-land checks of a landing failed after it landed.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum AfterLandingError {
-    /// The checks were not queued.
-    Queue(QueueChecksError),
-    /// The definitions could not be read and the changeset was not reverted.
-    Revert(RevertError),
-}
-
-impl fmt::Display for AfterLandingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Queue(error) => write!(f, "{error}"),
-            Self::Revert(error) => write!(f, "{error}"),
-        }
-    }
-}
-
-impl std::error::Error for AfterLandingError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Queue(error) => Some(error),
-            Self::Revert(error) => Some(error),
-        }
-    }
-}
-
-/// Why an ended job was not settled.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum SettleError {
-    /// The job queue failed.
-    Queue(JobQueueError),
-    /// The changeset log failed.
-    Log(ChangesetLogError),
-    /// A blocking check ended in failure and its changeset was not reverted.
-    Revert(RevertError),
-}
-
-impl fmt::Display for SettleError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Queue(error) => write!(f, "{error}"),
-            Self::Log(error) => write!(f, "{error}"),
-            Self::Revert(error) => write!(f, "{error}"),
-        }
-    }
-}
-
-impl std::error::Error for SettleError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Queue(error) => Some(error),
-            Self::Log(error) => Some(error),
-            Self::Revert(error) => Some(error),
-        }
-    }
-}
-
-impl From<JobQueueError> for SettleError {
-    fn from(error: JobQueueError) -> Self {
-        Self::Queue(error)
-    }
-}
-
-impl From<ChangesetLogError> for SettleError {
-    fn from(error: ChangesetLogError) -> Self {
-        Self::Log(error)
-    }
-}
-
-impl From<RevertError> for SettleError {
-    fn from(error: RevertError) -> Self {
-        Self::Revert(error)
-    }
-}
-
-impl From<SettleError> for JobsError {
-    fn from(error: SettleError) -> Self {
-        match error {
-            SettleError::Queue(error) => Self::Queue(error),
-            SettleError::Log(error) => Self::Log(error),
-            SettleError::Revert(error) => Self::Revert(error),
-        }
-    }
-}
-
 /// Why the revert of a changeset whose blocking check ended in failure failed. The check's result
 /// is recorded all the same.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -220,7 +132,7 @@ impl std::error::Error for RevertError {
             Self::Log(error) => Some(error),
             Self::Derived(error) => Some(error),
             Self::Land(error) => Some(error),
-            Self::ChecksNotQueued(_) => None,
+            Self::ChecksNotQueued(error) => Some(error),
             Self::Unrecorded { error, .. } => Some(error.as_ref()),
         }
     }

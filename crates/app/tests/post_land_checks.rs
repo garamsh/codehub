@@ -16,14 +16,14 @@ use app::port::driven::check_definitions::CheckDefinitions;
 use app::port::driven::job_queue::{JobQueue, JobQueueError};
 use app::port::driven::runner_registry::RunnerRegistry;
 use app::port::driving::jobs::Jobs;
-use app::port::driving::revert::{AfterLandingError, QueueChecksError, RevertError, SettleError};
+use app::port::driving::revert::{QueueChecksError, RevertError};
 use app::port::driving::source_control::{LandError, Landing, SourceControl, SourceControlError};
 use app::use_case::checked_source_control::{CheckedAdapters, CheckedSourceControl};
 use app::use_case::landing_attempts::LandingAttempts;
-use app::use_case::post_land_checks::PostLandChecks;
+use app::use_case::post_land_checks::{AfterLandingError, PostLandChecks, SettleError};
 use common::Harness;
 use test_support::contract::runner_deployment::{
-    RunnerDeployment, check, definitions, land, organisation, runner, text,
+    LEASE, RunnerDeployment, check, definitions, land, organisation, runner, text,
 };
 use test_support::contract::{Deployment, draft};
 
@@ -98,6 +98,7 @@ impl JobQueue for RefusingQueue<'_> {
     }
 }
 
+#[cfg(test)]
 fn adapters<'a, Q>(
     harness: &'a Harness,
     queue: &'a Q,
@@ -120,6 +121,7 @@ fn adapters<'a, Q>(
     }
 }
 
+#[cfg(test)]
 fn result(outcome: Outcome) -> JobResult {
     JobResult {
         outcome,
@@ -130,7 +132,7 @@ fn result(outcome: Outcome) -> JobResult {
 
 /// A repository with `a` changed by a landing that defines one blocking check, the job of which a
 /// runner has claimed at time 0, and what is needed to end it.
-struct Claimed<'a> {
+struct HeldJob<'a> {
     repo: test_support::contract::Repo<'a, Harness>,
     bad: Address,
     job: Job,
@@ -138,7 +140,7 @@ struct Claimed<'a> {
 }
 
 #[cfg(test)]
-async fn claimed(harness: &Harness) -> Claimed<'_> {
+async fn claimed(harness: &Harness) -> HeldJob<'_> {
     let ada = harness.caller("ada").await;
     let repo = harness.repository(&ada, "acme").await;
     let bot = runner(harness, &ada, &organisation("acme"), "bot", &[]).await;
@@ -159,7 +161,7 @@ async fn claimed(harness: &Harness) -> Claimed<'_> {
         .iter()
         .map(|registration| registration.id)
         .collect();
-    Claimed {
+    HeldJob {
         repo,
         bad,
         job,
@@ -317,7 +319,7 @@ async fn settling_the_last_passing_blocking_job_moves_last_green() {
 }
 
 #[tokio::test]
-async fn expiring_a_blocking_job_past_its_lease_reverts_its_changeset() {
+async fn expiring_a_blocking_job_past_its_timeout_reverts_its_changeset() {
     let harness = Harness::start().await;
     let held = claimed(&harness).await;
     let checks = PostLandChecks::new(
@@ -325,10 +327,12 @@ async fn expiring_a_blocking_job_past_its_lease_reverts_its_changeset() {
         LandingAttempts::default(),
     );
 
-    checks.expire(10).await.unwrap();
+    let timeout = i64::try_from(held.job.check.timeout.seconds()).unwrap();
+
+    checks.expire(LEASE - 1).await.unwrap();
     assert_eq!(held.repo.main().await, Some(held.bad));
 
-    checks.expire(1_000).await.unwrap();
+    checks.expire(timeout).await.unwrap();
     let reverted = held.repo.main().await.unwrap();
     assert_ne!(reverted, held.bad);
     assert_eq!(held.repo.read("a").await.as_deref(), Some("1\n"));
