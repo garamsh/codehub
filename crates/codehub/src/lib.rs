@@ -33,16 +33,9 @@ use app::port::driven::directory_changes::{
 };
 use app::port::driven::identity_verification::{IdentityError, IdentityVerification};
 use app::port::driven::object_store::ObjectStoreError;
-use app::use_case::authentication::AuthenticationService;
-use app::use_case::checked_source_control::{CheckedAdapters, CheckedSourceControl};
-use app::use_case::checks::{ChecksAdapters, ChecksService};
-use app::use_case::jobs::{JobsAdapters, JobsService};
+use app::use_case::assembly::Assembly;
 use app::use_case::landing_attempts::LandingAttempts;
-use app::use_case::members::{MembersAdapters, MembersService};
 use app::use_case::relay::{DirectoryRelay, RelayEnvironment};
-use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
-use app::use_case::runners::{RunnersAdapters, RunnersService};
-use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
 use oauth_client::{InvalidClient, TokenClient};
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
@@ -376,93 +369,38 @@ pub async fn run(config: Config) -> Result<(), Error> {
         changes,
         relay,
     }));
-    let attempts = LandingAttempts::new(config.landing_attempts);
+    let assembly = Assembly {
+        objects: &adapters.objects,
+        log: &adapters.log,
+        derived: &adapters.derived,
+        drafts: &adapters.drafts,
+        directory: &adapters.directory,
+        authorisation: &adapters.authorisation,
+        membership: &adapters.membership,
+        queue: &adapters.queue,
+        registry: &adapters.registry,
+        definitions: &adapters.definitions,
+        changes: &*adapters.changes,
+        delivery: &*adapters.relay,
+        identity: &adapters.identity,
+
+        administration,
+        max_upload_size: config.max_object_size,
+        attempts: LandingAttempts::new(config.landing_attempts),
+        lease: i64::from(config.runner_lease.get()),
+    };
     let router = adapter_http::router(
-        AuthenticationService::new(&adapters.identity),
-        RepositoriesService::new(
-            RepositoriesAdapters {
-                directory: &adapters.directory,
-                authorisation: &adapters.authorisation,
-                membership: &adapters.membership,
-                changes: &*adapters.changes,
-                delivery: &*adapters.relay,
-            },
-            administration,
-        ),
-        MembersService::new(
-            MembersAdapters {
-                directory: &adapters.directory,
-                authorisation: &adapters.authorisation,
-                membership: &adapters.membership,
-            },
-            administration,
-        ),
-        CheckedSourceControl::new(
-            SourceControlService::new(
-                SourceControlAdapters {
-                    objects: &adapters.objects,
-                    log: &adapters.log,
-                    derived: &adapters.derived,
-                    drafts: &adapters.drafts,
-                    directory: &adapters.directory,
-                    authorisation: &adapters.authorisation,
-                },
-                config.max_object_size,
-            )
-            .with_landing_attempts(attempts),
-            CheckedAdapters {
-                objects: &adapters.objects,
-                derived: &adapters.derived,
-                log: &adapters.log,
-                directory: &adapters.directory,
-                queue: &adapters.queue,
-                definitions: &adapters.definitions,
-            },
-            attempts,
-        ),
+        assembly.authentication(),
+        assembly.repositories(),
+        assembly.members(),
+        assembly.source_control(),
     )
     .merge(adapter_http::runner_router(
-        AuthenticationService::new(&adapters.identity),
-        RepositoriesService::new(
-            RepositoriesAdapters {
-                directory: &adapters.directory,
-                authorisation: &adapters.authorisation,
-                membership: &adapters.membership,
-                changes: &*adapters.changes,
-                delivery: &*adapters.relay,
-            },
-            administration,
-        ),
-        RunnersService::new(RunnersAdapters {
-            registry: &adapters.registry,
-            directory: &adapters.directory,
-            authorisation: &adapters.authorisation,
-        }),
-        JobsService::new(
-            JobsAdapters {
-                registry: &adapters.registry,
-                queue: &adapters.queue,
-                objects: &adapters.objects,
-                derived: &adapters.derived,
-                log: &adapters.log,
-                directory: &adapters.directory,
-                definitions: &adapters.definitions,
-            },
-            i64::from(config.runner_lease.get()),
-            attempts,
-        ),
-        ChecksService::new(
-            ChecksAdapters {
-                queue: &adapters.queue,
-                log: &adapters.log,
-                directory: &adapters.directory,
-                authorisation: &adapters.authorisation,
-                objects: &adapters.objects,
-                derived: &adapters.derived,
-                definitions: &adapters.definitions,
-            },
-            attempts,
-        ),
+        assembly.authentication(),
+        assembly.repositories(),
+        assembly.runners(),
+        assembly.jobs(),
+        assembly.checks(),
         RunnerSettings {
             hold: Duration::from_secs(config.runner_claim_hold),
             retry_interval: CLAIM_RETRY_INTERVAL,

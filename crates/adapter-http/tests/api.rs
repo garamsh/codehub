@@ -11,8 +11,9 @@ use app::domain::name::{OrganisationName, RepositoryName};
 use app::domain::repository::RepositoryId;
 use app::port::driven::repository_directory::DirectoryError;
 use app::port::driving::repositories::{Repositories, RepositoriesError};
+use app::use_case::administration::Administration;
 use axum::http::{Method, StatusCode};
-use common::{Api, HOLD, Reply, router_with, send};
+use common::{Api, HOLD, Reply, router, router_with, send};
 use serde_json::{Value, json};
 
 const PROBLEM: &str = "application/problem+json";
@@ -63,22 +64,7 @@ async fn refuses_a_request_without_a_valid_token() {
 
 #[cfg(test)]
 fn router_for(api: &Api) -> axum::Router {
-    use app::use_case::administration::Administration;
-    use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
-    let stores = api.stores;
-    router_with(
-        stores,
-        RepositoriesService::new(
-            RepositoriesAdapters {
-                directory: &stores.directory,
-                authorisation: &stores.authorisation,
-                membership: &stores.membership,
-                changes: &(),
-                delivery: &(),
-            },
-            Administration::BuiltIn,
-        ),
-    )
+    router(api.stores, Administration::BuiltIn)
 }
 
 #[tokio::test]
@@ -470,44 +456,7 @@ async fn rejects_a_removal_with_a_missing_or_malformed_query_parameter() {
 /// A router in the external administration mode, over the stores of `api`.
 #[cfg(test)]
 fn external_router(api: &Api) -> axum::Router {
-    use app::use_case::administration::Administration;
-    use app::use_case::authentication::AuthenticationService;
-    use app::use_case::members::{MembersAdapters, MembersService};
-    use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
-    use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
-    let stores = api.stores;
-    adapter_http::router(
-        AuthenticationService::new(&stores.identity),
-        RepositoriesService::new(
-            RepositoriesAdapters {
-                directory: &stores.directory,
-                authorisation: &stores.authorisation,
-                membership: &stores.membership,
-                changes: &(),
-                delivery: &(),
-            },
-            Administration::External,
-        ),
-        MembersService::new(
-            MembersAdapters {
-                directory: &stores.directory,
-                authorisation: &stores.authorisation,
-                membership: &stores.membership,
-            },
-            Administration::External,
-        ),
-        SourceControlService::new(
-            SourceControlAdapters {
-                objects: &stores.objects,
-                log: &stores.log,
-                derived: &stores.derived,
-                drafts: &stores.drafts,
-                directory: &stores.directory,
-                authorisation: &stores.authorisation,
-            },
-            common::MAX_UPLOAD_SIZE,
-        ),
-    )
+    router(api.stores, Administration::External)
 }
 
 #[tokio::test]
@@ -622,7 +571,7 @@ fn failure() -> RepositoriesError {
 async fn answers_a_backend_failure_with_500_and_no_internals() {
     let api = Api::new();
     let ada = api.token("ada");
-    let router = router_with(api.stores, Failing);
+    let router = router_with(api.stores, Administration::BuiltIn, Failing);
 
     let reply = send(
         router,
@@ -820,17 +769,37 @@ async fn register_runner(api: &Api, ada: &str, name: &str, labels: &[&str]) -> S
     api.token(name)
 }
 
-/// Lands a file as ada and returns the changeset, with one queued check `lint` wanting `linux`.
+/// Lands a file as ada and returns the changeset, whose tree defines one blocking check `lint`
+/// wanting `linux`, so that landing queued it.
 #[cfg(test)]
 async fn landed_with_a_check(api: &Api, ada: &str) -> String {
+    landed_with_checks(api, ada, &[("lint", &["linux"])]).await
+}
+
+/// Lands a file as ada and returns the changeset, whose tree defines `checks`, so that landing
+/// queued them in order.
+#[cfg(test)]
+async fn landed_with_checks(api: &Api, ada: &str, checks: &[(&str, &[&str])]) -> String {
     api.repository(ada, "acme").await;
     api.stage(ada, "acme", "d", "src/a.txt", "one\n").await;
-    let landed = api.land(ada, "acme", "d").await;
+    land_checks(api, ada, "d", checks).await
+}
+
+/// Stages a check file defining `checks` in the draft `draft` of ada, lands the draft and returns
+/// the changeset.
+#[cfg(test)]
+async fn land_checks(api: &Api, ada: &str, draft: &str, checks: &[(&str, &[&str])]) -> String {
+    api.stage(
+        ada,
+        "acme",
+        draft,
+        ".codehub/checks.toml",
+        &api.checks_file(checks),
+    )
+    .await;
+    let landed = api.land(ada, "acme", draft).await;
     assert_eq!(landed.status, StatusCode::OK, "{}", landed.body);
-    let changeset = landed.body["changeset"].as_str().unwrap().to_owned();
-    api.queue_check("acme", &changeset, "lint", &["linux"])
-        .await;
-    changeset
+    landed.body["changeset"].as_str().unwrap().to_owned()
 }
 
 #[cfg(test)]
@@ -902,14 +871,25 @@ async fn claims_a_job_with_a_grant_for_each_file() {
     assert_eq!(claimed.body["check"]["timeout"], 60);
     assert_eq!(claimed.body["heartbeat_interval"], 10);
     let files = claimed.body["files"].as_array().unwrap();
-    assert_eq!(files.len(), 1);
-    assert_eq!(files[0]["path"], "src/a.txt");
+    let paths: BTreeSet<&str> = files
+        .iter()
+        .map(|file| file["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, BTreeSet::from([".codehub/checks.toml", "src/a.txt"]));
+    let file = |path: &str| files.iter().find(|file| file["path"] == path).unwrap();
+    let source = file("src/a.txt");
     assert_eq!(
-        files[0]["address"],
+        source["address"],
         "sha256:2c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c525434806"
     );
-    assert_eq!(files[0]["executable"], false);
-    assert_eq!(api.download("acme", &files[0]["download"]).await, "one\n");
+    assert_eq!(source["executable"], false);
+    assert_eq!(api.download("acme", &source["download"]).await, "one\n");
+    let definitions = file(".codehub/checks.toml");
+    assert_eq!(definitions["executable"], false);
+    assert_eq!(
+        api.download("acme", &definitions["download"]).await,
+        api.checks_file(&[("lint", &["linux"])])
+    );
 }
 
 #[tokio::test]
@@ -929,14 +909,13 @@ async fn answers_no_content_when_the_hold_ends_without_a_job() {
 async fn hands_a_job_queued_during_the_hold_to_the_waiting_claim() {
     let api = Api::new();
     let ada = api.token("ada");
-    let changeset = landed_with_a_check(&api, &ada).await;
+    landed_with_a_check(&api, &ada).await;
     let runner = register_runner(&api, &ada, "r1", &["windows"]).await;
 
     let waiting = claim(&api, &runner);
     let queue = async {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        api.queue_check("acme", &changeset, "late", &["windows"])
-            .await;
+        land_checks(&api, &ada, "e", &[("late", &["windows"])]).await;
     };
     let (claimed, ()) = tokio::join!(waiting, queue);
     assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
@@ -1138,7 +1117,16 @@ async fn serves_main_once_a_changeset_has_landed() {
 async fn reports_each_outcome_as_its_own_state() {
     let api = Api::new();
     let ada = api.token("ada");
-    let changeset = landed_with_a_check(&api, &ada).await;
+    let changeset = landed_with_checks(
+        &api,
+        &ada,
+        &[
+            ("lint", &["linux"]),
+            ("two", &["linux"]),
+            ("three", &["linux"]),
+        ],
+    )
+    .await;
     let uri = format!("{CHECKS}/{changeset}/checks");
     let runner = register_runner(&api, &ada, "r1", &["linux"]).await;
 
@@ -1148,9 +1136,6 @@ async fn reports_each_outcome_as_its_own_state() {
         ("two", "timed_out", Value::Null),
         ("three", "failed", json!(7)),
     ] {
-        if name != "lint" {
-            api.queue_check("acme", &changeset, name, &["linux"]).await;
-        }
         // The earlier jobs are finished, so the claim hands out this one.
         let claimed = claim(&api, &runner).await;
         assert_eq!(claimed.body["check"]["name"], name, "{}", claimed.body);

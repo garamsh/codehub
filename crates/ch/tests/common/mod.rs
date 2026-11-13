@@ -18,23 +18,15 @@ use adapter_memory::{
 use adapter_oidc::OidcIdentityVerification;
 use adapter_s3::S3ObjectStore;
 use app::domain::check::{CheckDefinition, Command, Timeout};
-use app::domain::job::NewJob;
 use app::domain::name::{OrganisationName, RepositoryName};
 use app::domain::principal::Principal;
 use app::domain::revert::Revert;
 use app::port::driven::identity_verification::IdentityVerification;
 use app::port::driven::job_queue::JobQueue;
 use app::port::driven::repository_directory::RepositoryDirectory;
-use app::port::driving::repositories::Repositories;
 use app::use_case::administration::Administration;
-use app::use_case::authentication::AuthenticationService;
-use app::use_case::checks::{ChecksAdapters, ChecksService};
-use app::use_case::jobs::{JobsAdapters, JobsService};
+use app::use_case::assembly::Assembly;
 use app::use_case::landing_attempts::LandingAttempts;
-use app::use_case::members::{MembersAdapters, MembersService};
-use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
-use app::use_case::runners::{RunnersAdapters, RunnersService};
-use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
 use serde_json::json;
 
 pub use test_support::{ChUser, Run, env, unique};
@@ -153,97 +145,53 @@ async fn bind<I: IdentityVerification + Send + Sync + 'static>(
     stores: &'static Stores,
     identity: &'static I,
 ) -> Server {
+    let assembly = Assembly {
+        objects: &stores.objects,
+        log: &stores.log,
+        derived: &stores.derived,
+        drafts: &stores.drafts,
+        directory: &stores.directory,
+        authorisation: &stores.authorisation,
+        membership: &stores.membership,
+        queue: &stores.queue,
+        registry: &stores.registry,
+        definitions: &stores.definitions,
+        changes: &(),
+        delivery: &(),
+        identity,
+
+        administration: Administration::BuiltIn,
+        max_upload_size: MAX_UPLOAD_SIZE,
+        attempts: LandingAttempts::default(),
+        lease: LEASE,
+    };
     let router = adapter_http::router(
-        AuthenticationService::new(identity),
-        repositories(stores),
-        MembersService::new(
-            MembersAdapters {
-                directory: &stores.directory,
-                authorisation: &stores.authorisation,
-                membership: &stores.membership,
-            },
-            Administration::BuiltIn,
-        ),
-        SourceControlService::new(
-            SourceControlAdapters {
-                objects: &stores.objects,
-                log: &stores.log,
-                derived: &stores.derived,
-                drafts: &stores.drafts,
-                directory: &stores.directory,
-                authorisation: &stores.authorisation,
-            },
-            MAX_UPLOAD_SIZE,
-        ),
+        assembly.authentication(),
+        assembly.repositories(),
+        assembly.members(),
+        assembly.source_control(),
     )
-    .merge(runner_router(stores, identity));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    Server { url, stores }
-}
-
-fn repositories(stores: &'static Stores) -> impl Repositories + Send + Sync + 'static {
-    RepositoriesService::new(
-        RepositoriesAdapters {
-            directory: &stores.directory,
-            authorisation: &stores.authorisation,
-            membership: &stores.membership,
-            changes: &(),
-            delivery: &(),
-        },
-        Administration::BuiltIn,
-    )
-}
-
-fn pause(duration: Duration) -> Pause {
-    Box::pin(tokio::time::sleep(duration))
-}
-
-fn runner_router<I: IdentityVerification + Send + Sync + 'static>(
-    stores: &'static Stores,
-    identity: &'static I,
-) -> axum::Router {
-    adapter_http::runner_router(
-        AuthenticationService::new(identity),
-        repositories(stores),
-        RunnersService::new(RunnersAdapters {
-            registry: &stores.registry,
-            directory: &stores.directory,
-            authorisation: &stores.authorisation,
-        }),
-        JobsService::new(
-            JobsAdapters {
-                registry: &stores.registry,
-                queue: &stores.queue,
-                objects: &stores.objects,
-                derived: &stores.derived,
-                log: &stores.log,
-                directory: &stores.directory,
-                definitions: &stores.definitions,
-            },
-            LEASE,
-            LandingAttempts::default(),
-        ),
-        ChecksService::new(
-            ChecksAdapters {
-                queue: &stores.queue,
-                log: &stores.log,
-                directory: &stores.directory,
-                authorisation: &stores.authorisation,
-                objects: &stores.objects,
-                derived: &stores.derived,
-                definitions: &stores.definitions,
-            },
-            LandingAttempts::default(),
-        ),
+    .merge(adapter_http::runner_router(
+        assembly.authentication(),
+        assembly.repositories(),
+        assembly.runners(),
+        assembly.jobs(),
+        assembly.checks(),
         RunnerSettings {
             hold: HOLD,
             retry_interval: Duration::from_millis(50),
             heartbeat_interval: Duration::from_secs(10),
             pause,
         },
-    )
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    Server { url, stores }
+}
+
+fn pause(duration: Duration) -> Pause {
+    Box::pin(tokio::time::sleep(duration))
 }
 
 impl Server {
@@ -333,33 +281,31 @@ pub fn file(bytes: &[u8]) -> String {
 }
 
 impl Server {
-    /// Queues the check `name` against `changeset` of `org`/`app`, with no labels, as a blocking
-    /// check where `blocking`.
+    /// The text of a check file that defines `checks`, each a name and whether it blocks, with no
+    /// labels, and that the server's definitions read as those checks. A landing whose tree holds
+    /// it at `.codehub/checks.toml` queues them.
     ///
     /// # Panics
     ///
-    /// Panics when the queue refuses it.
-    pub async fn queue_check(&self, org: &str, changeset: &str, name: &str, blocking: bool) {
-        let organisation: OrganisationName = org.parse().unwrap();
-        let repository: RepositoryName = "app".parse().unwrap();
-        let job = NewJob {
-            repository: self
-                .stores
-                .directory
-                .find_repository(&organisation, &repository)
-                .await
-                .unwrap(),
-            organisation,
-            changeset: changeset.parse().unwrap(),
-            check: CheckDefinition {
+    /// Panics when a name is not a valid check name.
+    #[must_use]
+    pub fn checks_file(&self, checks: &[(&str, bool)]) -> String {
+        let text: String = checks
+            .iter()
+            .map(|(name, blocking)| format!("{name} {blocking}\n"))
+            .collect();
+        let definitions = checks
+            .iter()
+            .map(|(name, blocking)| CheckDefinition {
                 name: name.parse().unwrap(),
                 command: Command::new("true").unwrap(),
                 labels: std::collections::BTreeSet::new(),
-                blocking,
+                blocking: *blocking,
                 timeout: Timeout::new(60).unwrap(),
-            },
-        };
-        self.stores.queue.queue(vec![job]).await.unwrap();
+            })
+            .collect();
+        self.stores.definitions.teach(&text, Ok(definitions));
+        text
     }
 
     /// Records the revert of the first job of `changeset` as failed with `reason`, in place of
