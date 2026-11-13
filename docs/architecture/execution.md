@@ -32,7 +32,7 @@ Declared in the application's terms (`docs/architecture/structure.md`); the adap
 
 - **Image store** — stores and retrieves derived images and issues time-limited access to them. Adapter: S3-compatible object storage, with presigned URLs.
 - **Image builder** — derives an image from repository objects for a cache version. Adapter: not decided, see open questions.
-- **Executor driver** — runs one job in a disposable environment with the given images attached. Adapters: host and gaon (the microvm driver of ADR 0008, with gaon placing the MicroVM); kubernetes is not decided. Lives on the runner side of the hexagon; the runner core calls it without knowing which it is.
+- **Executor driver** — runs one job in a disposable environment with the given images attached. Adapters: host and gaon (the microvm driver of ADR 0008, with gaon placing the MicroVM); kubernetes is not decided. Lives on the runner side of the hexagon; the runner core, and `codehub-runner check-executor` (ADR 0047), call it without knowing which it is.
 - **Repository objects** — the source of truth images are derived from. Described in `source-control.md` and `tenancy.md`, not here.
 
 ## Rationale
