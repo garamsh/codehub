@@ -19,10 +19,12 @@ use app::port::driving::repositories::RepositoriesError;
 use app::port::driving::runners::RunnersError;
 use app::port::driving::source_control::HistoryError;
 use app::port::driving::source_control::LandError;
+use app::port::driving::source_control::ListFilesError;
 use app::port::driving::source_control::ReadFileError;
 use app::port::driving::source_control::SourceControlError;
 use app::port::driving::source_control::StageError;
 use app::port::driving::source_control::UploadError;
+use app::port::driving::source_control::WorkspaceError;
 use axum::Json;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -341,6 +343,29 @@ impl From<HistoryError> for Problem {
     }
 }
 
+impl From<WorkspaceError> for Problem {
+    fn from(error: WorkspaceError) -> Self {
+        match error {
+            WorkspaceError::ObjectMissing(address) => Self::bad_request(format!(
+                "the content {address} is not uploaded to this repository"
+            )),
+            WorkspaceError::Objects(error) => error.into(),
+            WorkspaceError::Log(error) => error.into(),
+            WorkspaceError::Derived(error) => error.into(),
+            WorkspaceError::Drafts(error) => error.into(),
+        }
+    }
+}
+
+impl From<ListFilesError> for Problem {
+    fn from(error: ListFilesError) -> Self {
+        match error {
+            ListFilesError::Objects(error) => error.into(),
+            ListFilesError::Derived(error) => error.into(),
+        }
+    }
+}
+
 impl From<SourceControlError> for Problem {
     fn from(error: SourceControlError) -> Self {
         match error {
@@ -350,6 +375,8 @@ impl From<SourceControlError> for Problem {
             SourceControlError::Land(error) => error.into(),
             SourceControlError::ReadFile(error) => error.into(),
             SourceControlError::History(error) => error.into(),
+            SourceControlError::Workspace(error) => error.into(),
+            SourceControlError::ListFiles(error) => error.into(),
         }
     }
 }

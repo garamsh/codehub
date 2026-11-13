@@ -1,10 +1,13 @@
 //! Source control that queues a landed changeset's checks (ADR 0035).
 
+use std::collections::BTreeMap;
+
 use crate::domain::address::Address;
 use crate::domain::changeset::Change;
+use crate::domain::draft::Edit;
 use crate::domain::file_version::FileVersionNode;
 use crate::domain::name::DraftName;
-use crate::domain::path::Path;
+use crate::domain::path::{Path, Prefix};
 use crate::domain::principal::Caller;
 use crate::domain::repository::RepositoryId;
 use crate::port::driven::changeset_log::ChangesetLog;
@@ -14,7 +17,8 @@ use crate::port::driven::job_queue::JobQueue;
 use crate::port::driven::object_store::{Grant, ObjectStore};
 use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driving::source_control::{
-    FileContent, LandError, Landing, SourceControl, SourceControlError,
+    FileContent, LandError, Landing, ListedFile, PathDiff, SourceControl, SourceControlError,
+    Workspace,
 };
 use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::post_land_checks::PostLandChecks;
@@ -92,6 +96,78 @@ where
     ) -> Result<(), SourceControlError> {
         self.inner
             .stage(caller, repository, draft, path, change)
+            .await
+    }
+
+    async fn open_workspace(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        draft: &DraftName,
+    ) -> Result<Workspace, SourceControlError> {
+        self.inner.open_workspace(caller, repository, draft).await
+    }
+
+    async fn workspace(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        draft: &DraftName,
+    ) -> Result<Workspace, SourceControlError> {
+        self.inner.workspace(caller, repository, draft).await
+    }
+
+    async fn describe(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        draft: &DraftName,
+        description: String,
+    ) -> Result<(), SourceControlError> {
+        self.inner
+            .describe(caller, repository, draft, description)
+            .await
+    }
+
+    async fn snapshot(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        draft: &DraftName,
+        edits: BTreeMap<Path, Edit>,
+    ) -> Result<(), SourceControlError> {
+        self.inner.snapshot(caller, repository, draft, edits).await
+    }
+
+    async fn restore(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        draft: &DraftName,
+        path: &Path,
+    ) -> Result<(), SourceControlError> {
+        self.inner.restore(caller, repository, draft, path).await
+    }
+
+    async fn diff(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        draft: &DraftName,
+        path: Option<&Path>,
+    ) -> Result<Vec<PathDiff>, SourceControlError> {
+        self.inner.diff(caller, repository, draft, path).await
+    }
+
+    async fn list_files(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        changeset: Address,
+        prefix: &Prefix,
+    ) -> Result<Vec<ListedFile>, SourceControlError> {
+        self.inner
+            .list_files(caller, repository, changeset, prefix)
             .await
     }
 

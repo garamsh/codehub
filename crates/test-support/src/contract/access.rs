@@ -41,13 +41,13 @@ fn acme() -> OrganisationName {
 }
 
 /// The members port over the harness's adapters, administered by `admin` in `acme`.
-struct Admin<'a, H> {
-    harness: &'a H,
-    caller: &'a Caller,
+pub(crate) struct Admin<'a, H> {
+    pub(crate) harness: &'a H,
+    pub(crate) caller: &'a Caller,
 }
 
 impl<H: Deployment> Admin<'_, H> {
-    async fn add(&self, member: &Caller, role: Role) {
+    pub(crate) async fn add(&self, member: &Caller, role: Role) {
         MembersService::new(
             MembersAdapters {
                 directory: self.harness.directory(),
@@ -75,7 +75,7 @@ impl<H: Deployment> Admin<'_, H> {
         .unwrap();
     }
 
-    async fn grant(&self, member: &Caller, path: &str, access: Access) {
+    pub(crate) async fn grant(&self, member: &Caller, path: &str, access: Access) {
         MembersService::new(
             MembersAdapters {
                 directory: self.harness.directory(),
@@ -96,7 +96,7 @@ impl<H: Deployment> Admin<'_, H> {
         .unwrap();
     }
 
-    async fn ungrant(&self, member: &Caller, path: &str, access: Access) {
+    pub(crate) async fn ungrant(&self, member: &Caller, path: &str, access: Access) {
         MembersService::new(
             MembersAdapters {
                 directory: self.harness.directory(),

@@ -659,7 +659,7 @@ async fn documents_no_request_body_on_a_delete_operation() {
         }
     }
     // The control: the document has delete operations, and a put keeps its body.
-    assert_eq!(deletes, 4);
+    assert_eq!(deletes, 5);
     assert!(document["paths"]["/v1/orgs/{org}/members"]["put"]["requestBody"].is_object());
 }
 
@@ -1159,4 +1159,221 @@ async fn reports_each_outcome_as_its_own_state() {
         assert_eq!(shown["state"], status);
         assert_eq!(shown["exit_code"], exit_code, "{status}");
     }
+}
+
+#[cfg(test)]
+const WORK: &str = "/v1/orgs/acme/repos/app/drafts/work";
+
+#[tokio::test]
+async fn opens_snapshots_diffs_restores_and_lands_a_workspace() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    api.repository(&ada, "acme").await;
+    api.stage(&ada, "acme", "base", "a.txt", "one\ntwo\n").await;
+    api.stage(&ada, "acme", "base", "b.txt", "b\n").await;
+    assert_eq!(api.land(&ada, "acme", "base").await.status, StatusCode::OK);
+
+    let opened = api.send(Method::PUT, WORK, Some(&ada), None).await;
+    assert_eq!(opened.status, StatusCode::OK);
+    assert_eq!(opened.body["description"], "");
+    assert_eq!(opened.body["changes"], json!([]));
+    assert!(opened.body["base"].is_string());
+
+    let described = api
+        .put(
+            &format!("{WORK}/description"),
+            &ada,
+            json!({"description": "Edit a"}),
+        )
+        .await;
+    assert_eq!(described.status, StatusCode::NO_CONTENT);
+
+    let edited = api.upload(&ada, "acme", "one\n2\n").await;
+    let added = api.upload(&ada, "acme", "c\n").await;
+    let snapshot = api
+        .post(
+            &format!("{WORK}/snapshot"),
+            &ada,
+            json!({"changes": [
+                {"path": "a.txt", "action": "file", "kind": "regular", "content": edited},
+                {"path": "b.txt", "action": "delete"},
+                {"path": "c.txt", "action": "file", "kind": "executable", "content": added},
+            ]}),
+        )
+        .await;
+    assert_eq!(snapshot.status, StatusCode::NO_CONTENT);
+
+    let read = api.get(WORK, &ada).await;
+    assert_eq!(read.status, StatusCode::OK);
+    assert_eq!(read.body["description"], "Edit a");
+    let changes = read.body["changes"].as_array().unwrap();
+    let summary: Vec<(&str, &str, &str, bool)> = changes
+        .iter()
+        .map(|change| {
+            (
+                change["path"].as_str().unwrap(),
+                change["status"].as_str().unwrap(),
+                change["kind"].as_str().unwrap(),
+                change["download"].is_object(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("a.txt", "modified", "regular", true),
+            ("b.txt", "deleted", "regular", false),
+            ("c.txt", "added", "executable", true),
+        ]
+    );
+    assert_eq!(
+        api.download("acme", &changes[0]["download"]).await,
+        "one\n2\n"
+    );
+
+    let diff = api.get(&format!("{WORK}/diff?path=a.txt"), &ada).await;
+    assert_eq!(diff.status, StatusCode::OK);
+    assert_eq!(
+        diff.body["diffs"],
+        json!([{
+            "path": "a.txt",
+            "status": "modified",
+            "diff": {
+                "type": "lines",
+                "unified": "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+2\n",
+            },
+        }])
+    );
+    let all = api.get(&format!("{WORK}/diff"), &ada).await;
+    assert_eq!(all.body["diffs"].as_array().unwrap().len(), 3);
+
+    // Restoring a path, and restoring one that is unchanged, both answer 204.
+    for _ in 0..2 {
+        let restored = delete(&api, &ada, &format!("{WORK}/changes/b.txt")).await;
+        assert_eq!(restored.status, StatusCode::NO_CONTENT);
+    }
+    let read = api.get(WORK, &ada).await;
+    assert_eq!(read.body["changes"].as_array().unwrap().len(), 2);
+
+    // Landing without a message takes the description.
+    let landed = api.post(&format!("{WORK}/land"), &ada, json!({})).await;
+    assert_eq!(landed.status, StatusCode::OK);
+    let changeset = landed.body["changeset"].as_str().unwrap();
+    let file = api
+        .get(
+            &format!("/v1/orgs/acme/repos/app/files/a.txt?at={changeset}"),
+            &ada,
+        )
+        .await;
+    assert_eq!(file.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn answers_a_missing_workspace_with_404_and_a_bad_snapshot_with_its_reason() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    let bob = api.token("bob");
+    api.repository(&ada, "acme").await;
+    add_member(&api, &ada, "acme", "bob", "member").await;
+    grant(&api, Method::PUT, &ada, "bob", "src").await;
+
+    let snapshot_uri = format!("{WORK}/snapshot");
+    let description_uri = format!("{WORK}/description");
+    let diff_uri = format!("{WORK}/diff");
+    let restore_uri = format!("{WORK}/changes/src/a");
+    for reply in [
+        api.get(WORK, &bob).await,
+        api.get(&diff_uri, &bob).await,
+        api.put(&description_uri, &bob, json!({"description": "d"}))
+            .await,
+        delete(&api, &bob, &restore_uri).await,
+        api.post(&snapshot_uri, &bob, json!({"changes": []})).await,
+    ] {
+        assert_eq!(reply.status, StatusCode::NOT_FOUND);
+        assert_eq!(reply.content_type, PROBLEM);
+    }
+
+    assert_eq!(
+        api.send(Method::PUT, WORK, Some(&bob), None).await.status,
+        StatusCode::OK
+    );
+    let content = api.upload(&bob, "acme", "x\n").await;
+    let file =
+        |path: &str| json!({"path": path, "action": "file", "kind": "regular", "content": content});
+    let snapshot = |changes: Value| {
+        let (api, bob, uri) = (&api, &bob, &snapshot_uri);
+        async move { api.post(uri, bob, json!({"changes": changes})).await }
+    };
+
+    // One path bob may not write refuses the snapshot whole.
+    let denied = snapshot(json!([file("src/a"), file("docs/b")])).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+    assert_eq!(denied.body["paths"], json!(["docs/b"]));
+    assert_eq!(api.get(WORK, &bob).await.body["changes"], json!([]));
+
+    // Content that was never uploaded, and a path named twice, are 400.
+    let missing = Address::of(b"never").to_string();
+    let absent = json!({"path": "src/c", "action": "file", "kind": "regular", "content": missing});
+    assert_eq!(
+        snapshot(json!([file("src/a"), absent])).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    let twice = json!([file("src/a"), {"path": "src/a", "action": "delete"}]);
+    assert_eq!(snapshot(twice).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(api.get(WORK, &bob).await.body["changes"], json!([]));
+
+    // The control: the permitted path alone applies.
+    assert_eq!(
+        snapshot(json!([file("src/a")])).await.status,
+        StatusCode::NO_CONTENT
+    );
+    let held = api.get(WORK, &bob).await;
+    assert_eq!(held.body["changes"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn lists_the_files_of_a_changeset_and_refuses_the_listing_lacking_read_on_one() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    let bob = api.token("bob");
+    api.repository(&ada, "acme").await;
+    api.stage(&ada, "acme", "base", "src/a", "a\n").await;
+    api.stage(&ada, "acme", "base", "src/deep/c", "c\n").await;
+    api.stage(&ada, "acme", "base", "docs/d", "d\n").await;
+    let landed = api.land(&ada, "acme", "base").await.body["changeset"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let uri = format!("/v1/orgs/acme/repos/app/changesets/{landed}/files");
+
+    let all = api.get(&uri, &ada).await;
+    assert_eq!(all.status, StatusCode::OK);
+    let files = all.body["files"].as_array().unwrap();
+    let paths: Vec<&str> = files
+        .iter()
+        .map(|file| file["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, ["docs/d", "src/a", "src/deep/c"]);
+    assert_eq!(files[1]["kind"], "regular");
+    assert_eq!(files[1]["content"], address("a\n"));
+    assert_eq!(api.download("acme", &files[1]["download"]).await, "a\n");
+
+    let src = api.get(&format!("{uri}?prefix=src"), &ada).await;
+    assert_eq!(src.body["files"].as_array().unwrap().len(), 2);
+
+    // An unknown changeset is 404.
+    let unknown = format!(
+        "/v1/orgs/acme/repos/app/changesets/{}/files",
+        address("nothing")
+    );
+    assert_eq!(api.get(&unknown, &ada).await.status, StatusCode::NOT_FOUND);
+
+    // bob reads src only: the whole listing is refused, naming what he lacks.
+    add_member(&api, &ada, "acme", "bob", "member").await;
+    grant(&api, Method::PUT, &ada, "bob", "src").await;
+    let denied = api.get(&uri, &bob).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+    assert_eq!(denied.body["paths"], json!(["docs/d"]));
+    let readable = api.get(&format!("{uri}?prefix=src"), &bob).await;
+    assert_eq!(readable.status, StatusCode::OK);
 }

@@ -117,7 +117,8 @@ fn merge_kind(
     }
 }
 
-fn is_text(content: &[u8]) -> bool {
+/// Whether `content` is text: no NUL in its first bytes and valid UTF-8 (ADR 0017).
+pub(crate) fn is_text(content: &[u8]) -> bool {
     !content.iter().take(BINARY_SCAN_LEN).any(|byte| *byte == 0)
         && std::str::from_utf8(content).is_ok()
 }

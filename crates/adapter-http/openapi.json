@@ -741,6 +741,627 @@
         ]
       }
     },
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}": {
+      "put": {
+        "summary": "Open the caller's workspace: a draft based on `main` as it stands, or on no changeset where `main` is unset. Opening an existing workspace changes nothing and answers it as it is.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "description": "The organisation's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "description": "The repository's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "draft",
+            "in": "path",
+            "required": true,
+            "description": "The caller's draft name.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The workspace.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workspace"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A name, path, address or body is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer token was presented.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not write the repository, or may not read a path the workspace changes.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The caller may not read the repository, or it does not exist.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed; the body names no internals.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "get": {
+        "summary": "Read the caller's workspace: its base, its description and the paths it changes.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "description": "The organisation's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "description": "The repository's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "draft",
+            "in": "path",
+            "required": true,
+            "description": "The caller's draft name.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The workspace.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workspace"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A name, path, address or body is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer token was presented.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not read a path the workspace changes; the body names them.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The repository or the workspace does not exist, or the caller may not read the repository.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed; the body names no internals.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/description": {
+      "put": {
+        "summary": "Set the description of the caller's workspace, which a landing without a message takes as its message.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "description": "The organisation's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "description": "The repository's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "draft",
+            "in": "path",
+            "required": true,
+            "description": "The caller's draft name.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Description"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "The description was set."
+          },
+          "400": {
+            "description": "A name, path, address or body is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer token was presented.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not write the repository.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The repository or the workspace does not exist, or the caller may not read the repository.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed; the body names no internals.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/snapshot": {
+      "post": {
+        "summary": "Apply changes to the caller's workspace all or none: each file's content must already be uploaded, and the caller must be able to write every path.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "description": "The organisation's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "description": "The repository's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "draft",
+            "in": "path",
+            "required": true,
+            "description": "The caller's draft name.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Snapshot"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Every change was applied."
+          },
+          "400": {
+            "description": "A name, path, address or body is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer token was presented.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not write some of the paths; the body names them, and no change was applied.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The repository or the workspace does not exist, or the caller may not read the repository.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed; the body names no internals.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/changes/{path}": {
+      "delete": {
+        "summary": "Restore a path of the caller's workspace to its base. A path the workspace does not change is not an error.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "description": "The organisation's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "description": "The repository's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "draft",
+            "in": "path",
+            "required": true,
+            "description": "The caller's draft name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "description": "A file path: components separated by `/`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The path is as the base has it."
+          },
+          "400": {
+            "description": "A name, path, address or body is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer token was presented.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not write the path; the body names it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The repository or the workspace does not exist, or the caller may not read the repository.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed; the body names no internals.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/diff": {
+      "get": {
+        "summary": "Read what the caller's workspace changes as a diff from its base: a unified diff where both sides are text, otherwise a marker.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "description": "The organisation's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "description": "The repository's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "draft",
+            "in": "path",
+            "required": true,
+            "description": "The caller's draft name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "description": "Only this path's diff; every changed path's where absent.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The diffs, in path order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Diff"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A name, path, address or body is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer token was presented.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not read a path the diff covers; the body names them.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The repository or the workspace does not exist, or the caller may not read the repository.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed; the body names no internals.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/files/{path}": {
       "put": {
         "summary": "Stage a file, whose content is already uploaded, in the caller's draft; the draft is created on `main` as it stands if it does not exist.",
@@ -1773,6 +2394,116 @@
         ]
       }
     },
+    "/v1/orgs/{org}/repos/{repo}/changesets/{id}/files": {
+      "get": {
+        "summary": "List every file of a changeset's tree under a prefix, each with a grant to download its content.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "description": "The organisation's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "description": "The repository's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The changeset's address.",
+            "schema": {
+              "$ref": "#/components/schemas/Address"
+            }
+          },
+          {
+            "name": "prefix",
+            "in": "query",
+            "required": false,
+            "description": "A directory, components separated by `/`; the whole tree where absent or empty.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The files, in path order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Files"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A name, path, address or body is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer token was presented.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not read some of the listed paths; the body names them, and nothing is listed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The repository or the changeset does not exist, or the caller may not read the repository.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed; the body names no internals.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/v1/orgs/{org}/repos/{repo}/changesets/{id}/checks": {
       "get": {
         "summary": "List the checks of a changeset.",
@@ -2284,12 +3015,10 @@
       },
       "Landing": {
         "type": "object",
-        "required": [
-          "message"
-        ],
         "properties": {
           "message": {
-            "type": "string"
+            "type": "string",
+            "description": "The changeset's message; where absent or empty, the workspace's description."
           }
         }
       },
@@ -2804,6 +3533,288 @@
             }
           }
         ]
+      },
+      "Status": {
+        "type": "string",
+        "enum": [
+          "added",
+          "modified",
+          "deleted"
+        ]
+      },
+      "ChangedPath": {
+        "type": "object",
+        "required": [
+          "path",
+          "status",
+          "kind",
+          "download"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/Status"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/Kind",
+            "description": "The file mode; a deleted path's is the base's."
+          },
+          "download": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TransferGrant"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A grant to download the content of an added or modified path; null for a deleted one."
+          }
+        }
+      },
+      "Workspace": {
+        "type": "object",
+        "required": [
+          "base",
+          "description",
+          "changes"
+        ],
+        "properties": {
+          "base": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Address"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The changeset the workspace is based on; null where `main` was unset."
+          },
+          "description": {
+            "type": "string"
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChangedPath"
+            },
+            "description": "In path order; a path whose change leaves the base as it is is not listed."
+          }
+        }
+      },
+      "Description": {
+        "type": "object",
+        "required": [
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          }
+        }
+      },
+      "SnapshotChange": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "path",
+              "action",
+              "kind",
+              "content"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "action": {
+                "const": "file"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/Kind"
+              },
+              "content": {
+                "$ref": "#/components/schemas/Address"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "path",
+              "action"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "action": {
+                "const": "delete"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "path",
+              "action"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "action": {
+                "const": "restore"
+              }
+            }
+          }
+        ],
+        "description": "`file` records a file, `delete` records a deletion, `restore` returns the path to its base."
+      },
+      "Snapshot": {
+        "type": "object",
+        "required": [
+          "changes"
+        ],
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SnapshotChange"
+            },
+            "description": "At most one change to a path."
+          }
+        }
+      },
+      "PathDiff": {
+        "type": "object",
+        "required": [
+          "path",
+          "status",
+          "diff"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/Status"
+          },
+          "diff": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "type",
+                  "unified"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "lines"
+                  },
+                  "unified": {
+                    "type": "string",
+                    "description": "A unified diff with three lines of context."
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "binary"
+                  }
+                },
+                "description": "A side is not text (ADR 0017)."
+              },
+              {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "kind"
+                  }
+                },
+                "description": "Only the file mode changed."
+              }
+            ]
+          },
+          "kind_change": {
+            "type": "object",
+            "required": [
+              "before",
+              "after"
+            ],
+            "properties": {
+              "before": {
+                "$ref": "#/components/schemas/Kind"
+              },
+              "after": {
+                "$ref": "#/components/schemas/Kind"
+              }
+            },
+            "description": "Present where the path is on both sides and its file kind differs, whatever the content does."
+          }
+        }
+      },
+      "Diff": {
+        "type": "object",
+        "required": [
+          "diffs"
+        ],
+        "properties": {
+          "diffs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PathDiff"
+            }
+          }
+        }
+      },
+      "ListedFile": {
+        "type": "object",
+        "required": [
+          "path",
+          "kind",
+          "content",
+          "download"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/Kind"
+          },
+          "content": {
+            "$ref": "#/components/schemas/Address"
+          },
+          "download": {
+            "$ref": "#/components/schemas/TransferGrant"
+          }
+        }
+      },
+      "Files": {
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListedFile"
+            }
+          }
+        }
       }
     }
   }

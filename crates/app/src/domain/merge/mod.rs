@@ -5,6 +5,7 @@ mod file;
 use std::collections::BTreeMap;
 use std::fmt;
 
+pub(crate) use file::is_text;
 pub use file::{FileConflict, FileVersion, merge_file};
 
 /// What a delta records for one path.
