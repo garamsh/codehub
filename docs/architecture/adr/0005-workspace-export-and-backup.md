@@ -11,7 +11,7 @@ The decision was settled in the design session recorded in issue #1 (item 8). Wi
 
 ## Decision
 
-Export and backup are per workspace. The unit is a bundle of the changeset log, the objects it references, and metadata. Backup is incremental. Import reads the same bundle. The shape of the system is in `docs/architecture/workspace.md`.
+Export and backup are per workspace. The unit is a bundle of the changeset log, the objects it references, and metadata. Backup is incremental. Import reads the same bundle. The shape of the system is in `docs/architecture/tenancy.md`.
 
 ## Consequences
 

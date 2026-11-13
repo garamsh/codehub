@@ -11,7 +11,7 @@ The decision was settled in the design session recorded in issue #1 (item 2). Th
 
 ## Decision
 
-An organisation contains workspaces. One workspace is one codebase and has one changeset log. An organisation holds a base layer shared by its workspaces. The shape of the system is in `docs/architecture/workspace.md`.
+An organisation contains workspaces. One workspace is one codebase and has one changeset log. An organisation holds a base layer shared by its workspaces. The shape of the system is in `docs/architecture/tenancy.md`.
 
 ## Consequences
 
