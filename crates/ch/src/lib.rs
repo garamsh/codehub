@@ -7,6 +7,7 @@ pub mod failure;
 pub mod login;
 pub mod state;
 pub mod token;
+pub mod view;
 pub mod wire;
 
 use std::ffi::OsString;

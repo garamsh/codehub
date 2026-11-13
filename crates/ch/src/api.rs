@@ -9,9 +9,9 @@ use serde::de::DeserializeOwned;
 use crate::failure::{Failure, Operation};
 use crate::state::RepositoryRef;
 use crate::wire::{
-    Access, Checks, Created, CreatedRepository, File, Grant, History, Landed, Landing, Member,
-    NewName, NewRunner, Principal, Ref, Runner, Runners, StagedFile, TransferGrant, TransferMethod,
-    Upload,
+    Access, Checks, Created, CreatedRepository, Description, Diff, File, Files, Grant, History,
+    Landed, Landing, Member, NewName, NewRunner, Principal, Ref, Runner, Runners, Snapshot,
+    StagedFile, TransferGrant, TransferMethod, Upload, Workspace,
 };
 
 /// Percent-encodes `text` for use as a URL path segment or a form value.
@@ -285,6 +285,129 @@ impl<'a> Api<'a> {
             .await
     }
 
+    /// Opens `draft` as a workspace, creating it on `main` where it does not exist.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails.
+    pub async fn open_workspace(
+        &self,
+        repository: &RepositoryRef,
+        draft: &str,
+    ) -> Result<Workspace, Failure> {
+        let path = draft_path(repository, draft);
+        self.call(Method::PUT, &path, None::<&()>, Operation::Other)
+            .await
+    }
+
+    /// The workspace `draft`.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails.
+    pub async fn workspace(
+        &self,
+        repository: &RepositoryRef,
+        draft: &str,
+    ) -> Result<Workspace, Failure> {
+        let path = draft_path(repository, draft);
+        self.call(Method::GET, &path, None::<&()>, Operation::Other)
+            .await
+    }
+
+    /// Sets the description of `draft`.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails.
+    pub async fn describe(
+        &self,
+        repository: &RepositoryRef,
+        draft: &str,
+        description: &str,
+    ) -> Result<(), Failure> {
+        let path = format!("{}/description", draft_path(repository, draft));
+        let body = Description {
+            description: description.to_owned(),
+        };
+        self.call_empty(Method::PUT, &path, Some(&body)).await
+    }
+
+    /// Records `snapshot` in `draft`, all of it or none.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails.
+    pub async fn snapshot(
+        &self,
+        repository: &RepositoryRef,
+        draft: &str,
+        snapshot: &Snapshot,
+    ) -> Result<(), Failure> {
+        let path = format!("{}/snapshot", draft_path(repository, draft));
+        self.call_empty(Method::POST, &path, Some(snapshot)).await
+    }
+
+    /// Removes the change `draft` holds at `path`.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails.
+    pub async fn restore(
+        &self,
+        repository: &RepositoryRef,
+        draft: &str,
+        path: &str,
+    ) -> Result<(), Failure> {
+        let path = format!(
+            "{}/changes/{}",
+            draft_path(repository, draft),
+            encode_path(path)
+        );
+        self.call_empty(Method::DELETE, &path, None::<&()>).await
+    }
+
+    /// The differences of `draft` against its base, of `path` alone where one is given.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails.
+    pub async fn diff(
+        &self,
+        repository: &RepositoryRef,
+        draft: &str,
+        path: Option<&str>,
+    ) -> Result<Diff, Failure> {
+        let mut path_and_query = format!("{}/diff", draft_path(repository, draft));
+        if let Some(path) = path {
+            path_and_query.push_str("?path=");
+            path_and_query.push_str(&encode(path));
+        }
+        self.call(Method::GET, &path_and_query, None::<&()>, Operation::Other)
+            .await
+    }
+
+    /// The files of `changeset` under `prefix`.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails.
+    pub async fn files(
+        &self,
+        repository: &RepositoryRef,
+        changeset: &str,
+        prefix: &str,
+    ) -> Result<Files, Failure> {
+        let path = format!(
+            "{}/changesets/{}/files?prefix={}",
+            repo_path(repository),
+            encode(changeset),
+            encode(prefix)
+        );
+        self.call(Method::GET, &path, None::<&()>, Operation::Other)
+            .await
+    }
+
     /// Registers a runner in `organisation`.
     ///
     /// # Errors
@@ -374,6 +497,10 @@ fn repo_path(repository: &RepositoryRef) -> String {
         encode(&repository.organisation),
         encode(&repository.repository)
     )
+}
+
+fn draft_path(repository: &RepositoryRef, draft: &str) -> String {
+    format!("{}/drafts/{}", repo_path(repository), encode(draft))
 }
 
 fn draft_file(repository: &RepositoryRef, draft: &str, path: &str) -> String {

@@ -18,10 +18,13 @@ use crate::cli::{
 use crate::failure::Failure;
 use crate::login;
 use crate::state::{RepositoryRef, State, StateFile};
+use crate::view::View;
 use crate::wire::{
     Access, Check, CheckState, Grant, Kind, Member, NewRunner, Principal, Revert, Role, Runner,
     StagedFile, Upload,
 };
+
+mod workspace;
 
 /// What the verbs run against: the HTTP client and the local state.
 pub struct Context {
@@ -50,6 +53,11 @@ pub async fn execute(
         Command::Use { repository } => select(context, repository),
         Command::Put(arguments) => put(context, &arguments).await,
         Command::Land(arguments) => land(context, &arguments, json, out).await,
+        Command::Open(arguments) => workspace::open(context, &arguments).await,
+        Command::Status => workspace::status(context, json, out).await,
+        Command::Diff { path } => workspace::diff(context, path.as_deref(), json, out).await,
+        Command::Describe { message } => workspace::describe(context, &message).await,
+        Command::Restore { path } => workspace::restore(context, &path).await,
         Command::Log { path } => log(context, &path, json, out).await,
         Command::Read { path } => read(context, &path, json, out).await,
         Command::Org {
@@ -197,7 +205,7 @@ fn select(context: &Context, repository: RepositoryRef) -> Result<(), Failure> {
 }
 
 /// The address of `bytes`: `sha256:` and the digest in lowercase hex.
-fn address(bytes: &[u8]) -> String {
+pub(crate) fn address(bytes: &[u8]) -> String {
     let mut address = String::from("sha256:");
     for byte in Sha256::digest(bytes) {
         // Writing to a String does not fail.
@@ -247,10 +255,17 @@ async fn land(
     json: bool,
     out: &mut impl Write,
 ) -> Result<(), Failure> {
+    if let Some(view) = View::find(&std::env::current_dir()?)? {
+        return workspace::land(context, view, arguments.message.as_deref(), json, out).await;
+    }
+    let message = arguments
+        .message
+        .as_deref()
+        .ok_or_else(|| Failure::Usage("land needs --message outside a view".to_owned()))?;
     let session = Session::open(context).await?;
     let landed = session
         .api(context)
-        .land(session.repository()?, &arguments.draft, &arguments.message)
+        .land(session.repository()?, &arguments.draft, message)
         .await?;
     if json {
         print_json(out, &landed)

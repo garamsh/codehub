@@ -21,6 +21,7 @@ use app::domain::check::{CheckDefinition, Command, Timeout};
 use app::domain::name::{OrganisationName, RepositoryName};
 use app::domain::principal::Principal;
 use app::domain::revert::Revert;
+use app::port::driven::changeset_log::ChangesetLog;
 use app::port::driven::identity_verification::IdentityVerification;
 use app::port::driven::job_queue::JobQueue;
 use app::port::driven::repository_directory::RepositoryDirectory;
@@ -306,6 +307,28 @@ impl Server {
             .collect();
         self.stores.definitions.teach(&text, Ok(definitions));
         text
+    }
+
+    /// The message of the changeset `id` of `<org>/app`, as the server's log holds it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the repository or the changeset is not there.
+    pub async fn changeset_message(&self, org: &str, id: &str) -> String {
+        let organisation: OrganisationName = org.parse().unwrap();
+        let repository: RepositoryName = "app".parse().unwrap();
+        let repository = self
+            .stores
+            .directory
+            .find_repository(&organisation, &repository)
+            .await
+            .unwrap();
+        self.stores
+            .log
+            .get(repository, id.parse().unwrap())
+            .await
+            .unwrap()
+            .message
     }
 
     /// Records the revert of the first job of `changeset` as failed with `reason`, in place of

@@ -317,3 +317,81 @@ fn has_the_states_and_revert_outcomes_of_the_check_schemas() {
         assert_eq!(fields, properties, "{outcome}");
     }
 }
+
+#[test]
+fn has_the_fields_of_the_workspace_schemas() {
+    use ch::wire::{
+        ChangedPath, Description, Diff, DiffContent, Files, KindChange, ListedFile, PathDiff,
+        Snapshot, SnapshotChange, Status, Workspace,
+    };
+    let schemas = schemas();
+    let changed = ChangedPath {
+        path: "a".to_owned(),
+        status: Status::Added,
+        kind: Kind::Regular,
+        download: Some(grant()),
+    };
+    assert_fields(&changed, &schemas["ChangedPath"], "ChangedPath");
+    let workspace = Workspace {
+        base: None,
+        description: String::new(),
+        changes: Vec::new(),
+    };
+    assert_fields(&workspace, &schemas["Workspace"], "Workspace");
+    let description = Description {
+        description: String::new(),
+    };
+    assert_fields(&description, &schemas["Description"], "Description");
+    let snapshot = Snapshot {
+        changes: Vec::new(),
+    };
+    assert_fields(&snapshot, &schemas["Snapshot"], "Snapshot");
+    let path_diff = PathDiff {
+        path: "a".to_owned(),
+        status: Status::Modified,
+        diff: DiffContent::Kind,
+        kind_change: Some(KindChange {
+            before: Kind::Regular,
+            after: Kind::Executable,
+        }),
+    };
+    assert_fields(&path_diff, &schemas["PathDiff"], "PathDiff");
+    assert_fields(&Diff { diffs: Vec::new() }, &schemas["Diff"], "Diff");
+    let listed = ListedFile {
+        path: "a".to_owned(),
+        kind: Kind::Regular,
+        content: address(),
+        download: grant(),
+    };
+    assert_fields(&listed, &schemas["ListedFile"], "ListedFile");
+    assert_fields(&Files { files: Vec::new() }, &schemas["Files"], "Files");
+
+    let statuses = [Status::Added, Status::Modified, Status::Deleted];
+    assert_eq!(allowed(&schemas["Status"]), written(&statuses));
+
+    // Each action of a snapshot change has the keys of one branch of the schema's `oneOf`.
+    let branches: BTreeSet<BTreeSet<String>> = schemas["SnapshotChange"]["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|branch| keys(branch["properties"].as_object().unwrap()))
+        .collect();
+    let changes = [
+        SnapshotChange::File {
+            path: "a".to_owned(),
+            kind: Kind::Regular,
+            content: address(),
+        },
+        SnapshotChange::Delete {
+            path: "a".to_owned(),
+        },
+        SnapshotChange::Restore {
+            path: "a".to_owned(),
+        },
+    ];
+    let keys_written: BTreeSet<BTreeSet<String>> = changes
+        .iter()
+        .map(|change| keys(serde_json::to_value(change).unwrap().as_object().unwrap()))
+        .collect();
+    assert_eq!(keys_written, branches);
+}

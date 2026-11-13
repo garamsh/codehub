@@ -7,6 +7,7 @@ rust-version.workspace = true
 [dependencies]
 base64.workspace = true
 clap = { workspace = true, features = ["std", "derive", "env", "help", "usage", "error-context", "suggestions"] }
+ignore.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
