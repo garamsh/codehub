@@ -401,6 +401,7 @@ name = "codehub"
 version = "0.0.0"
 dependencies = [
  "adapter-authzen",
+ "adapter-garam-directory",
  "adapter-http",
  "adapter-introspection",
  "adapter-oidc",

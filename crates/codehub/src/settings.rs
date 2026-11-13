@@ -53,6 +53,15 @@ pub enum AuthzenClientAuthentication {
     PrivateKeyJwt,
 }
 
+/// Where repository and organisation changes are delivered (ADR 0044).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
+pub enum DirectoryChangesMode {
+    /// Nowhere: the outbox is still written, and its entries are discarded as they come due.
+    None,
+    /// garam's `ApplyEntityChanges`, with the organisation's token.
+    Garam,
+}
+
 /// The server's settings. Each is a flag and has an environment variable of the same name,
 /// upper-cased, with the prefix `CODEHUB_`.
 #[derive(Parser)]
@@ -188,6 +197,19 @@ pub struct Config {
     /// Sent as the token request's `audience` parameter where given.
     #[arg(long, env = "CODEHUB_AUTHZEN_AUDIENCE")]
     pub authzen_audience: Option<String>,
+    /// Where repository and organisation changes are delivered: nowhere (`none`) or to garam's
+    /// `ApplyEntityChanges` (`garam`, which needs `--authzen-profile grn`). Every repository change
+    /// is written to the outbox either way (ADR 0044).
+    #[arg(long, env = "CODEHUB_DIRECTORY_CHANGES", value_enum, default_value_t = DirectoryChangesMode::None)]
+    pub directory_changes: DirectoryChangesMode,
+    /// The base URL of garam's policy service, which the entity changes are sent to; required with
+    /// `--directory-changes garam`.
+    #[arg(long, env = "CODEHUB_DIRECTORY_GARAM_URL")]
+    pub directory_garam_url: Option<String>,
+    /// How long creating a repository waits for its change to be delivered, in seconds. The
+    /// creation is answered once it elapses whether or not the change was delivered.
+    #[arg(long, env = "CODEHUB_DIRECTORY_DELIVERY_WAIT", default_value_t = 2)]
+    pub directory_delivery_wait: u64,
 }
 
 /// Prints every field but the secrets, which print as `<redacted>`. The impl destructures
@@ -231,6 +253,9 @@ impl fmt::Debug for Config {
             authzen_key_id,
             authzen_issuer,
             authzen_audience,
+            directory_changes,
+            directory_garam_url,
+            directory_delivery_wait,
         } = self;
         f.debug_struct("Config")
             .field("listen", listen)
@@ -277,6 +302,9 @@ impl fmt::Debug for Config {
             .field("authzen_key_id", authzen_key_id)
             .field("authzen_issuer", authzen_issuer)
             .field("authzen_audience", authzen_audience)
+            .field("directory_changes", directory_changes)
+            .field("directory_garam_url", directory_garam_url)
+            .field("directory_delivery_wait", directory_delivery_wait)
             .finish()
     }
 }
@@ -401,6 +429,9 @@ mod tests {
             authzen_key_id: Some("authzen-kid-visible".to_owned()),
             authzen_issuer: Some("http://garam.example".to_owned()),
             authzen_audience: Some("authzen-audience-visible".to_owned()),
+            directory_changes: DirectoryChangesMode::None,
+            directory_garam_url: Some("http://garam-visible.example".to_owned()),
+            directory_delivery_wait: 2,
         }
     }
 
