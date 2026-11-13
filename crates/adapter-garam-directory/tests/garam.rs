@@ -315,6 +315,10 @@ async fn counts_written_and_dropped_as_accepted_and_a_refusal_as_not() {
             false,
         ),
         (json!({"written": 0, "dropped": 0, "refusals": []}), false),
+        (
+            json!({"written": 1, "dropped": 0, "refusals": [{"index": 0, "error": "no manifest"}]}),
+            false,
+        ),
     ] {
         let reply = answer.to_string();
         let stand_in = StandIn::start(move |_, _| ("200 OK", reply.clone())).await;
