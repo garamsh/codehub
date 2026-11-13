@@ -2,6 +2,18 @@
 
 Starting the check services, running `codehub` against them, and landing and reading a file with `ch`, from a clean checkout.
 
+## Contents
+- Before you start
+- 1. Start the services
+- 2. Run `codehub`
+- 3. Log in
+- 4. Create an organisation and a repository, and select it
+- 5. Stage and land a file
+- 6. Read the history and the content
+- Stop and clean up
+- Federated mode
+- garam as issuer and decision point
+
 The output below was produced on 2026-11-11 from the commit `e4fe6227eb08e05d515d77ac625515cc6054340b` plus this file's change, with the services of `compose.yaml` running. Steps 5 and 6 changed afterwards only in the path of the scratch file, and were run again on 2026-11-12 from the commit `33ec12de6559b810aaf1a93494716df864dc62e0` plus that change: their output lines are the same apart from the changeset identifiers. Changeset identifiers contain a timestamp, so yours differ; every other line is the same.
 
 ## Before you start
@@ -309,3 +321,78 @@ A blocking check that fails or times out has its changeset reverted as a new cha
 ### Stop and clean up
 
 Stop `codehub` with Ctrl-C, and the runner. To start over, drop the database with `docker compose exec postgres dropdb -U codehub federated` and create it again.
+
+## garam as issuer and decision point
+
+The same `codehub` with garam as the OIDC issuer and the AuthZEN decision point, in the `grn` profile with `private_key_jwt`, and with garam told about each repository through the directory outbox. `docs/deployment.md` lists every setting; this section names the ones garam mode needs and runs the end-to-end test that shows them working. The decisions behind them are ADR 0042, 0043 and 0044 (`docs/architecture/`).
+
+The output below was produced on 2026-11-13 from the commit `9d375124b4defdc790006f837013b20b9459ea31` plus this file's change, with garam 0.8.0's images in the local Docker image store. `make e2e-garam` starts the services of `compose.yaml` itself.
+
+### Settings
+
+Set these on `codehub`, besides its database and object-store settings. The middle column is the value the end-to-end test gives (`e2e/tests/common/garam.rs`, with the addresses of `dev/garam/env.sh`); the right column is what an operator supplies.
+
+| Variable | End-to-end test | Operator |
+| --- | --- | --- |
+| `CODEHUB_OIDC_ISSUER` | `https://localhost:28081/api` | garam's issuer, `https://<host>/api`: garam requires the path `/api` |
+| `CODEHUB_OIDC_AUDIENCE` | `codehub` | the audience of the tokens garam issues for codehub |
+| `CODEHUB_AUTHORISATION` | `authzen` | `authzen` |
+| `CODEHUB_AUTHZEN_URL` | `https://localhost:28083` | garam's policy service |
+| `CODEHUB_AUTHZEN_TOKEN_ENDPOINT` | `https://localhost:28082/oauth/token` | garam's machine listener, at `/oauth/token` |
+| `CODEHUB_AUTHZEN_PROFILE` | `grn` | `grn` |
+| `CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION` | `private-key-jwt` | `private-key-jwt` |
+| `CODEHUB_AUTHZEN_CLIENT_ID` | `grn:{organisation}/iam/service/codehub` | the same template: `{organisation}` is replaced by each organisation's name |
+| `CODEHUB_AUTHZEN_KEY_FILE` | a throwaway `codehub.pem` | the PEM PKCS#8 private key whose public half is registered with garam for each organisation's service principal |
+| `CODEHUB_AUTHZEN_KEY_ID` | the key's RFC 7638 thumbprint | the `kid` garam holds that key under |
+| `CODEHUB_AUTHZEN_ISSUER` | `https://localhost:28081/api` | garam's issuer identifier |
+| `CODEHUB_AUTHZEN_AUDIENCE` | `policy` | `policy` |
+| `CODEHUB_DIRECTORY_CHANGES` | `garam` | `garam` |
+| `CODEHUB_DIRECTORY_GARAM_URL` | `https://localhost:28083` | garam's policy service |
+
+The end-to-end test also sets `SSL_CERT_FILE` to its throwaway certificate authority, because its TLS certificates are not publicly trusted; an operator whose garam serves publicly trusted certificates does not.
+
+`CODEHUB_DIRECTORY_CHANGES=garam` has to be set before any repository garam must know is created. With the default `none`, `codehub` accepts and discards every change its outbox holds, so a repository created under `none` is never sent to garam later, and garam answers requests about it as for a repository it does not hold (`ch` exits 5). Creation answers after `CODEHUB_DIRECTORY_DELIVERY_WAIT` (2 seconds by default) whether or not garam has the repository yet, so a step that needs garam to know it waits for that.
+
+### See it work
+
+```console
+$ make e2e-garam
+```
+
+The target starts garam's stack from `dev/garam/compose.yaml` (the server and policy images pinned by digest, two PostgreSQL containers and a Caddy gateway) with keys generated for the run, runs the tests of `e2e/tests/garam.rs` against the built `codehub` and `ch`, and removes the stack, its volumes and the keys at every exit. It needs the images in the local Docker image store (`pull_policy: never`), free host ports 28081 to 28083, and is not part of `make ci`. After the services of `compose.yaml` are healthy and the build is done, its output ends:
+
+```text
+policy feed started: 0 entities marked
+
+running 7 tests
+test garam_token_authenticates_a_person_and_another_audience_does_not ... ok
+test garam_denies_creating_an_organisation_and_a_repository_until_the_owner_has_a_role_link ... ok
+test garam_allows_an_owner_to_land_a_change ... ok
+test garam_denies_a_path_its_guardrail_forbids_beside_one_it_allows ... ok
+test garam_refuses_a_key_it_does_not_hold_and_the_request_allows_nothing ... ok
+test garam_holds_a_repository_once_the_outbox_delivers_it ... ok
+test garam_allows_an_owner_to_create_a_repository ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.03s
+
+test: 7 tests ran (-p e2e --test garam)
+```
+
+The tests run in parallel, so their order differs between runs. What each shows:
+
+- `garam_token_authenticates_a_person_and_another_audience_does_not`: a token garam issues for `codehub` authenticates a person, and a token for the audience `policy` makes `ch` exit 3.
+- `garam_denies_creating_an_organisation_and_a_repository_until_the_owner_has_a_role_link`: without a role link, garam's decision denies creating an organisation and a repository (`ch` exits 5); with one, both succeed.
+- `garam_refuses_a_key_it_does_not_hold_and_the_request_allows_nothing`: a key garam does not hold gets no token from garam, a server error (`ch` exits 1); the key it holds reaches garam's decision.
+- `garam_allows_an_owner_to_create_a_repository`: the owner creates a repository, and another person is denied the same.
+- `garam_holds_a_repository_once_the_outbox_delivers_it`: garam's policy database holds `grn:<organisation>/codehub/repo/<id>` after the repository is created, and holds none for one created under `CODEHUB_DIRECTORY_CHANGES=none`.
+- `garam_allows_an_owner_to_land_a_change`: `ch` creates a repository, stages a file and lands it, and reads it back.
+- `garam_denies_a_path_its_guardrail_forbids_beside_one_it_allows`: a path outside a guardrail lands, and a write under `src` is denied (`ch` exits 5).
+
+The people, role links and guardrails are written by the test where garam's console and platform would write them; the comments on `e2e/tests/common/garam.rs` name each.
+
+After the run, nothing is left behind:
+
+```console
+$ docker ps -a --filter name=codehub-garam-e2e
+CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
+```
