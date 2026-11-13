@@ -172,6 +172,7 @@ async fn prints_json_for_land_read_log_and_create() {
             "kind": "executable",
             "content": address("#!/bin/sh\n"),
             "previous": [],
+            "message": "tool",
         }])
     );
 }
