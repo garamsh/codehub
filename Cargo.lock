@@ -394,6 +394,7 @@ dependencies = [
  "adapter-s3",
  "adapter-toml",
  "app",
+ "aws-lc-rs",
  "axum",
  "base64 0.23.1",
  "clap",
@@ -1413,6 +1414,7 @@ name = "oauth-client"
 version = "0.0.0"
 dependencies = [
  "aws-lc-rs",
+ "base64 0.23.1",
  "jsonwebtoken",
  "reqwest",
  "serde",

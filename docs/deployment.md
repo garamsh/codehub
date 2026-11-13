@@ -62,9 +62,9 @@ The server listens on `127.0.0.1:8080` unless `CODEHUB_LISTEN` says otherwise, s
 | `--authzen-url` | `CODEHUB_AUTHZEN_URL` | no | The AuthZEN decision point; required with `authzen`. |
 | `--authzen-token-endpoint` | `CODEHUB_AUTHZEN_TOKEN_ENDPOINT` | no | The token endpoint for the decision point's bearer token; required with `authzen`. |
 | `--authzen-client-id` | `CODEHUB_AUTHZEN_CLIENT_ID` | no | The client id there; required with `authzen`. With `private-key-jwt` a template holding `{organisation}`, such as `grn:{organisation}/iam/service/codehub`. |
-| `--authzen-client-secret` | `CODEHUB_AUTHZEN_CLIENT_SECRET` | yes | The client secret there; required with `authzen`. |
+| `--authzen-client-secret` | `CODEHUB_AUTHZEN_CLIENT_SECRET` | yes | The client secret there; required with `client-secret`, unused with `private-key-jwt`. |
 | `--authzen-evaluations` | `CODEHUB_AUTHZEN_EVALUATIONS` | no | Send Access Evaluations where the decision point offers them (ADR 0041). |
-| `--authzen-profile` | `CODEHUB_AUTHZEN_PROFILE` | no | The names the adapter sends: `plain` (default) or `grn`, garam's. `grn` needs `private-key-jwt` (ADR 0043). |
+| `--authzen-profile` | `CODEHUB_AUTHZEN_PROFILE` | no | The names the adapter sends: `plain` (default) or `grn`, garam's. `grn` needs `authzen` and `private-key-jwt` (ADR 0043). |
 | `--authzen-client-authentication` | `CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION` | no | `client-secret` (default) or `private-key-jwt`, one client and token per organisation (ADR 0042). |
 | `--authzen-key-file` | `CODEHUB_AUTHZEN_KEY_FILE` | no | The path of the PEM PKCS#8 RSA or P-256 private key that signs the assertions; required with `private-key-jwt`. The key is read from the file, never from a setting. |
 | `--authzen-key-id` | `CODEHUB_AUTHZEN_KEY_ID` | no | The `kid` header of the assertions, such as the key's RFC 7638 thumbprint; optional. |

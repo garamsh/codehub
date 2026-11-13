@@ -10,6 +10,10 @@ pub mod common;
 use std::path::Path;
 use std::process::Command;
 
+use aws_lc_rs::encoding::{AsDer, Pkcs8V1Der};
+use aws_lc_rs::rsa::{KeyPair, KeySize};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use common::{Client, TestDatabase, count, env, introspection_settings, pairs};
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
@@ -305,7 +309,6 @@ async fn does_not_start_without_the_authzen_settings() {
 }
 
 /// The settings of the `grn` profile with `private_key_jwt`, the key being read from `key_file`.
-/// Only where the server is refused does the key need not be a key.
 #[cfg(test)]
 fn grn_settings(key_file: &str) -> Vec<(&'static str, String)> {
     let mut settings: Vec<_> = external_settings()
@@ -351,6 +354,27 @@ fn with_setting(
     settings
 }
 
+/// A freshly generated 2048-bit RSA key as a PEM PKCS#8 file in the tests' temporary directory,
+/// named `name`; returns its path.
+#[cfg(test)]
+fn write_rsa_key(name: &str) -> String {
+    let pair = KeyPair::generate(KeySize::Rsa2048).unwrap();
+    let der = AsDer::<Pkcs8V1Der>::as_der(&pair).unwrap();
+    let body = STANDARD.encode(der.as_ref());
+    let lines: Vec<&str> = body
+        .as_bytes()
+        .chunks(64)
+        .map(|line| std::str::from_utf8(line).unwrap())
+        .collect();
+    let pem = format!(
+        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+        lines.join("\n")
+    );
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::write(&path, pem).unwrap();
+    path.to_str().unwrap().to_owned()
+}
+
 #[tokio::test]
 async fn does_not_start_where_the_private_key_jwt_settings_are_wrong() {
     let database = TestDatabase::new().await;
@@ -360,7 +384,12 @@ async fn does_not_start_where_the_private_key_jwt_settings_are_wrong() {
     let garbage = garbage.to_str().unwrap();
     let missing = directory.join("authzen-no-such-key.pem");
     let missing = missing.to_str().unwrap();
-    let valid = grn_settings(garbage);
+    let valid = grn_settings(&write_rsa_key("authzen-rsa-key.pem"));
+
+    // The control: each refusal below differs from these settings in one setting, and these start.
+    let started = Server::try_start_with(Path::new(BINARY), &database, &pairs(&valid));
+    assert!(started.is_ok(), "{:?}", started.err());
+    drop(started);
 
     let cases = [
         (
@@ -395,8 +424,14 @@ async fn does_not_start_where_the_private_key_jwt_settings_are_wrong() {
         ),
         (
             "a key that is not PEM PKCS#8",
-            valid.clone(),
-            "(CODEHUB_AUTHZEN_CLIENT_ID, CODEHUB_AUTHZEN_KEY_FILE) are invalid",
+            with_setting(valid.clone(), "CODEHUB_AUTHZEN_KEY_FILE", Some(garbage)),
+            "(CODEHUB_AUTHZEN_CLIENT_ID, CODEHUB_AUTHZEN_KEY_FILE) are invalid: the key is not a \
+             PEM PKCS#8 private key",
+        ),
+        (
+            "the grn profile with built-in authorisation",
+            with_setting(valid.clone(), "CODEHUB_AUTHORISATION", Some("postgres")),
+            "CODEHUB_AUTHZEN_PROFILE=grn needs CODEHUB_AUTHORISATION=authzen",
         ),
         (
             "the grn profile with a client secret",

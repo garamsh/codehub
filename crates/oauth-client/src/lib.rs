@@ -490,19 +490,61 @@ mod tests {
         assert_eq!(names, ["fresh", "new", "unbounded"]);
     }
 
-    #[test]
-    fn refuses_a_key_that_is_not_pem_pkcs8() {
-        let refused = TokenClient::new(
+    fn client_with(key_pem: Vec<u8>) -> Result<TokenClient, InvalidClient> {
+        TokenClient::new(
             "http://token.test/token",
             None,
             Authentication::PrivateKeyJwt {
                 client_id_template: "grn:{organisation}/iam/service/codehub".to_owned(),
-                key_pem: b"not a key".to_vec(),
+                key_pem,
                 key_id: None,
                 issuer: "https://garam.test".to_owned(),
             },
-        );
-        assert!(matches!(refused, Err(InvalidClient(_))));
+        )
+    }
+
+    /// `der` as a PEM `PRIVATE KEY` block.
+    fn pem(der: &[u8]) -> Vec<u8> {
+        use base64::Engine as _;
+
+        let body = base64::engine::general_purpose::STANDARD.encode(der);
+        format!("-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n").into_bytes()
+    }
+
+    #[test]
+    fn refuses_a_key_that_is_not_pem_pkcs8() {
+        let ec = aws_lc_rs::signature::EcdsaKeyPair::generate_pkcs8(
+            &aws_lc_rs::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            &aws_lc_rs::rand::SystemRandom::new(),
+        )
+        .unwrap();
+        let der_without_pem = ec.as_ref().to_vec();
+
+        assert!(matches!(
+            client_with(b"not a key".to_vec()),
+            Err(InvalidClient(_))
+        ));
+        // A key's bytes that are not PEM are refused too, and the same key as PEM is accepted.
+        assert!(matches!(client_with(der_without_pem), Err(InvalidClient(_))));
+        assert!(client_with(pem(ec.as_ref())).is_ok());
+    }
+
+    #[test]
+    fn follows_the_algorithm_of_the_key() {
+        use aws_lc_rs::encoding::{AsDer, Pkcs8V1Der};
+
+        let rsa = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).unwrap();
+        let rsa = AsDer::<Pkcs8V1Der>::as_der(&rsa).unwrap();
+        let ec = aws_lc_rs::signature::EcdsaKeyPair::generate_pkcs8(
+            &aws_lc_rs::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            &aws_lc_rs::rand::SystemRandom::new(),
+        )
+        .unwrap();
+
+        let (_, algorithm) = signing_key(&pem(rsa.as_ref())).unwrap();
+        assert_eq!(algorithm, Algorithm::RS256);
+        let (_, algorithm) = signing_key(&pem(ec.as_ref())).unwrap();
+        assert_eq!(algorithm, Algorithm::ES256);
     }
 
     #[test]

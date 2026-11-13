@@ -241,9 +241,15 @@ fn verifier(config: &Config) -> Result<Verifier, Error> {
 /// Builds the AuthZEN decision point's adapter where `config` selects it, with the one token
 /// client it shares, before anything else is connected. The profile and the client
 /// authentication are checked together: the `grn` profile speaks to a decision point that binds
-/// each token to an organisation (ADR 0043), so it needs `private-key-jwt` (ADR 0042).
+/// each token to an organisation (ADR 0043), so it needs `private-key-jwt` (ADR 0042) and is
+/// refused where the AuthZEN adapter is not selected.
 fn authzen(config: &Config) -> Result<Option<AuthzenAuthorisationDecision>, Error> {
     if config.authorisation != Authorisation::Authzen {
+        if config.authzen_profile == AuthzenProfile::Grn {
+            return Err(Error::IncompatibleSettings(
+                "CODEHUB_AUTHZEN_PROFILE=grn needs CODEHUB_AUTHORISATION=authzen",
+            ));
+        }
         return Ok(None);
     }
     let url = require(&config.authzen_url, "--authzen-url (CODEHUB_AUTHZEN_URL)")?;

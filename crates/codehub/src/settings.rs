@@ -156,7 +156,8 @@ pub struct Config {
     /// `{organisation}`, such as `grn:{organisation}/iam/service/codehub`.
     #[arg(long, env = "CODEHUB_AUTHZEN_CLIENT_ID")]
     pub authzen_client_id: Option<String>,
-    /// The client secret used at that token endpoint; required with `--authorisation authzen`.
+    /// The client secret used at that token endpoint; required with
+    /// `--authzen-client-authentication client-secret`.
     #[arg(long, env = "CODEHUB_AUTHZEN_CLIENT_SECRET", hide_env_values = true)]
     pub authzen_client_secret: Option<String>,
     /// Sends one AuthZEN Access Evaluations request for many resources where the decision point
@@ -165,7 +166,7 @@ pub struct Config {
     #[arg(long, env = "CODEHUB_AUTHZEN_EVALUATIONS")]
     pub authzen_evaluations: bool,
     /// The names the AuthZEN adapter sends: codehub's own (`plain`) or garam's (`grn`, which needs
-    /// `--authzen-client-authentication private-key-jwt`).
+    /// `--authorisation authzen` and `--authzen-client-authentication private-key-jwt`).
     #[arg(long, env = "CODEHUB_AUTHZEN_PROFILE", value_enum, default_value_t = AuthzenProfile::Plain)]
     pub authzen_profile: AuthzenProfile,
     /// How the adapter authenticates to the token endpoint: by client secret, or by a signed
