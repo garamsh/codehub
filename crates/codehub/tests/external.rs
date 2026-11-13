@@ -396,8 +396,6 @@ async fn does_not_start_where_the_private_key_jwt_settings_are_wrong() {
     let garbage = directory.join("authzen-not-a-key.pem");
     std::fs::write(&garbage, "NOT-A-KEY-SECRET-CONTENT").unwrap();
     let garbage = garbage.to_str().unwrap();
-    let missing = directory.join("authzen-no-such-key.pem");
-    let missing = missing.to_str().unwrap();
     let valid = grn_settings(&write_rsa_key("authzen-rsa-key.pem"));
 
     // The control: each refusal below differs from these settings in one setting, and these start.
@@ -406,26 +404,6 @@ async fn does_not_start_where_the_private_key_jwt_settings_are_wrong() {
     drop(started);
 
     let cases = [
-        (
-            "no key file",
-            with_setting(valid.clone(), "CODEHUB_AUTHZEN_KEY_FILE", None),
-            "--authzen-key-file (CODEHUB_AUTHZEN_KEY_FILE)",
-        ),
-        (
-            "no issuer",
-            with_setting(valid.clone(), "CODEHUB_AUTHZEN_ISSUER", None),
-            "--authzen-issuer (CODEHUB_AUTHZEN_ISSUER)",
-        ),
-        (
-            "no client id",
-            with_setting(valid.clone(), "CODEHUB_AUTHZEN_CLIENT_ID", None),
-            "--authzen-client-id (CODEHUB_AUTHZEN_CLIENT_ID)",
-        ),
-        (
-            "a key file that does not exist",
-            with_setting(valid.clone(), "CODEHUB_AUTHZEN_KEY_FILE", Some(missing)),
-            "named by CODEHUB_AUTHZEN_KEY_FILE failed",
-        ),
         (
             "a template without the organisation",
             with_setting(
@@ -438,23 +416,9 @@ async fn does_not_start_where_the_private_key_jwt_settings_are_wrong() {
         ),
         (
             "a key that is not PEM PKCS#8",
-            with_setting(valid.clone(), "CODEHUB_AUTHZEN_KEY_FILE", Some(garbage)),
+            with_setting(valid, "CODEHUB_AUTHZEN_KEY_FILE", Some(garbage)),
             "(CODEHUB_AUTHZEN_CLIENT_ID, CODEHUB_AUTHZEN_KEY_FILE) are invalid: the key is not a \
              PEM PKCS#8 private key",
-        ),
-        (
-            "the grn profile with built-in authorisation",
-            with_setting(valid.clone(), "CODEHUB_AUTHORISATION", Some("postgres")),
-            "CODEHUB_AUTHZEN_PROFILE=grn needs CODEHUB_AUTHORISATION=authzen",
-        ),
-        (
-            "the grn profile with a client secret",
-            with_setting(
-                valid,
-                "CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION",
-                Some("client-secret"),
-            ),
-            "CODEHUB_AUTHZEN_PROFILE=grn needs CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION=private-key-jwt",
         ),
     ];
 

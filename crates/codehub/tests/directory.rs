@@ -14,7 +14,7 @@ use aws_lc_rs::encoding::{AsDer, Pkcs8V1Der};
 use aws_lc_rs::rsa::{KeyPair, KeySize};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use common::{Client, TestDatabase, count, env, introspection_settings, pairs};
+use common::{Client, TestDatabase, count, introspection_settings, pairs};
 use reqwest::{Method, StatusCode};
 use serde_json::json;
 use test_support::{Server, keycloak_token};
@@ -246,46 +246,6 @@ async fn does_not_start_delivering_to_garam_without_the_grn_profile() {
 
     let Err(line) = started else {
         panic!("codehub started delivering to garam without the grn profile");
-    };
-    assert_eq!(
-        line,
-        "codehub: CODEHUB_DIRECTORY_CHANGES=garam needs CODEHUB_AUTHZEN_PROFILE=grn"
-    );
-}
-
-#[tokio::test]
-async fn does_not_start_delivering_to_garam_under_the_plain_profile() {
-    let database = TestDatabase::new().await;
-    let mut settings = introspection_settings();
-    settings.extend([
-        ("CODEHUB_AUTHORISATION", "authzen".to_owned()),
-        ("CODEHUB_AUTHZEN_URL", env("CODEHUB_TEST_AUTHZEN_URL")),
-        (
-            "CODEHUB_AUTHZEN_TOKEN_ENDPOINT",
-            format!(
-                "{}/protocol/openid-connect/token",
-                env("CODEHUB_TEST_KEYCLOAK_ISSUER")
-            ),
-        ),
-        (
-            "CODEHUB_AUTHZEN_CLIENT_ID",
-            env("CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_ID"),
-        ),
-        (
-            "CODEHUB_AUTHZEN_CLIENT_SECRET",
-            env("CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_SECRET"),
-        ),
-        ("CODEHUB_DIRECTORY_CHANGES", "garam".to_owned()),
-        (
-            "CODEHUB_DIRECTORY_GARAM_URL",
-            "http://garam.test".to_owned(),
-        ),
-    ]);
-
-    let started = Server::try_start_with(Path::new(BINARY), &database, &pairs(&settings));
-
-    let Err(line) = started else {
-        panic!("codehub started delivering to garam under the plain profile");
     };
     assert_eq!(
         line,

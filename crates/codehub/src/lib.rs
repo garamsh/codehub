@@ -33,7 +33,6 @@ use app::port::driven::directory_changes::{
 };
 use app::port::driven::identity_verification::{IdentityError, IdentityVerification};
 use app::port::driven::object_store::ObjectStoreError;
-use app::use_case::administration::Administration;
 use app::use_case::authentication::AuthenticationService;
 use app::use_case::checked_source_control::{CheckedAdapters, CheckedSourceControl};
 use app::use_case::checks::{ChecksAdapters, ChecksService};
@@ -44,7 +43,7 @@ use app::use_case::relay::{DirectoryRelay, RelayEnvironment};
 use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
 use app::use_case::runners::{RunnersAdapters, RunnersService};
 use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
-use oauth_client::{Authentication, InvalidClient, TokenClient};
+use oauth_client::{InvalidClient, TokenClient};
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -52,11 +51,11 @@ mod readiness;
 mod settings;
 
 use readiness::Probe;
-use settings::require;
 pub use settings::{
     Authorisation, AuthzenClientAuthentication, AuthzenProfile, Config, DirectoryChangesMode,
     Identity,
 };
+use settings::{AuthorisationMode, AuthzenMode, IdentityMode};
 
 /// Why the server did not start or stopped serving.
 #[derive(Debug)]
@@ -260,159 +259,62 @@ impl AuthorisationDecision for Decider {
     }
 }
 
-/// Builds the identity verification `config` selects.
-fn verifier(config: &Config) -> Result<Verifier, Error> {
-    match config.identity {
-        Identity::Oidc => OidcIdentityVerification::new(
-            require(&config.oidc_issuer, "--oidc-issuer (CODEHUB_OIDC_ISSUER)")?,
-            require(
-                &config.oidc_audience,
-                "--oidc-audience (CODEHUB_OIDC_AUDIENCE)",
-            )?,
+/// Builds the identity verification `selection` names.
+fn verifier(selection: IdentityMode<'_>, config: &Config) -> Result<Verifier, Error> {
+    match selection {
+        IdentityMode::Oidc { issuer, audience } => OidcIdentityVerification::new(
+            issuer,
+            audience,
             Duration::from_secs(config.jwks_min_refetch_seconds),
         )
         .map(|verifier| Verifier::Oidc(Box::new(verifier))),
-        Identity::Introspection => IntrospectionIdentityVerification::new(
-            require(
-                &config.introspection_endpoint,
-                "--introspection-endpoint (CODEHUB_INTROSPECTION_ENDPOINT)",
-            )?,
-            require(
-                &config.introspection_client_id,
-                "--introspection-client-id (CODEHUB_INTROSPECTION_CLIENT_ID)",
-            )?,
-            require(
-                &config.introspection_client_secret,
-                "--introspection-client-secret (CODEHUB_INTROSPECTION_CLIENT_SECRET)",
-            )?,
-            require(
-                &config.introspection_issuer,
-                "--introspection-issuer (CODEHUB_INTROSPECTION_ISSUER)",
-            )?,
-            require(
-                &config.introspection_audience,
-                "--introspection-audience (CODEHUB_INTROSPECTION_AUDIENCE)",
-            )?,
+        IdentityMode::Introspection {
+            endpoint,
+            client_id,
+            client_secret,
+            issuer,
+            audience,
+        } => IntrospectionIdentityVerification::new(
+            endpoint,
+            client_id,
+            client_secret,
+            issuer,
+            audience,
         )
         .map(Verifier::Introspection),
     }
     .map_err(Error::Identity)
 }
 
-/// Builds the AuthZEN decision point's adapter where `config` selects it, with the one token
-/// client it shares, before anything else is connected. The profile and the client
-/// authentication are checked together: the `grn` profile speaks to a decision point that binds
-/// each token to an organisation (ADR 0043), so it needs `private-key-jwt` (ADR 0042) and is
-/// refused where the AuthZEN adapter is not selected.
+/// Builds the AuthZEN decision point's adapter and where the directory changes go, with the one
+/// token client they share: garam binds each token to an organisation, so the changes are sent
+/// under the `grn` profile's clients (ADR 0043).
 fn authzen(
+    mode: AuthzenMode<'_>,
     config: &Config,
-) -> Result<Option<(AuthzenAuthorisationDecision, Arc<TokenClient>)>, Error> {
-    if config.authorisation != Authorisation::Authzen {
-        if config.authzen_profile == AuthzenProfile::Grn {
-            return Err(Error::IncompatibleSettings(
-                "CODEHUB_AUTHZEN_PROFILE=grn needs CODEHUB_AUTHORISATION=authzen",
-            ));
-        }
-        return Ok(None);
-    }
-    let url = require(&config.authzen_url, "--authzen-url (CODEHUB_AUTHZEN_URL)")?;
-    let token_endpoint = require(
-        &config.authzen_token_endpoint,
-        "--authzen-token-endpoint (CODEHUB_AUTHZEN_TOKEN_ENDPOINT)",
-    )?;
-    let client_id = require(
-        &config.authzen_client_id,
-        "--authzen-client-id (CODEHUB_AUTHZEN_CLIENT_ID)",
-    )?;
-    let authentication = match config.authzen_client_authentication {
-        AuthzenClientAuthentication::ClientSecret => {
-            if config.authzen_profile == AuthzenProfile::Grn {
-                return Err(Error::IncompatibleSettings(
-                    "CODEHUB_AUTHZEN_PROFILE=grn needs \
-                     CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION=private-key-jwt",
-                ));
-            }
-            Authentication::ClientSecret {
-                client_id: client_id.to_owned(),
-                client_secret: require(
-                    &config.authzen_client_secret,
-                    "--authzen-client-secret (CODEHUB_AUTHZEN_CLIENT_SECRET)",
-                )?
-                .to_owned(),
-            }
-        }
-        AuthzenClientAuthentication::PrivateKeyJwt => {
-            let key_file = config
-                .authzen_key_file
-                .as_ref()
-                .ok_or(Error::MissingSetting(
-                    "--authzen-key-file (CODEHUB_AUTHZEN_KEY_FILE)",
-                ))?;
-            let issuer = require(
-                &config.authzen_issuer,
-                "--authzen-issuer (CODEHUB_AUTHZEN_ISSUER)",
-            )?;
-            let key_pem =
-                std::fs::read(key_file).map_err(|error| Error::KeyFile(key_file.clone(), error))?;
-            Authentication::PrivateKeyJwt {
-                client_id_template: client_id.to_owned(),
-                key_pem,
-                key_id: config.authzen_key_id.clone(),
-                issuer: issuer.to_owned(),
-            }
-        }
-    };
-    let tokens = TokenClient::new(
-        token_endpoint,
-        config.authzen_audience.clone(),
-        authentication,
-    )
-    .map_err(Error::Client)?;
-    let tokens = Arc::new(tokens);
-    let profile = match config.authzen_profile {
+) -> Result<(AuthzenAuthorisationDecision, Changes), Error> {
+    let tokens = Arc::new(
+        TokenClient::new(
+            mode.token_endpoint,
+            config.authzen_audience.clone(),
+            mode.authentication,
+        )
+        .map_err(Error::Client)?,
+    );
+    let profile = match mode.profile {
         AuthzenProfile::Plain => Profile::Plain,
         AuthzenProfile::Grn => Profile::Grn,
     };
-    AuthzenAuthorisationDecision::new(url, Arc::clone(&tokens), profile)
-        .map(|decider| {
-            Some((
-                decider.with_access_evaluations(config.authzen_evaluations),
-                tokens,
-            ))
-        })
-        .map_err(Error::Authorisation)
-}
-
-/// Builds where the directory changes go, sharing the one token client of the AuthZEN adapter:
-/// garam binds each token to an organisation, so the changes are sent under the `grn` profile's
-/// clients (ADR 0043), and the profile is checked before anything is connected.
-fn directory_changes(config: &Config, tokens: Option<&Arc<TokenClient>>) -> Result<Changes, Error> {
-    match config.directory_changes {
-        DirectoryChangesMode::None => Ok(Changes::Nowhere),
-        DirectoryChangesMode::Garam => {
-            let (AuthzenProfile::Grn, Some(tokens)) = (config.authzen_profile, tokens) else {
-                return Err(Error::IncompatibleSettings(
-                    "CODEHUB_DIRECTORY_CHANGES=garam needs CODEHUB_AUTHZEN_PROFILE=grn",
-                ));
-            };
-            let url = require(
-                &config.directory_garam_url,
-                "--directory-garam-url (CODEHUB_DIRECTORY_GARAM_URL)",
-            )?;
-            GaramDirectoryChanges::new(url, Arc::clone(tokens))
-                .map(|changes| Changes::Garam(Box::new(changes)))
-                .map_err(Error::DirectoryChanges)
-        }
-    }
-}
-
-/// The authorisation decision: the `authzen` adapter where [`authzen`] built one, else PostgreSQL
-/// over `database`.
-fn decider(database: &Database, authzen: Option<AuthzenAuthorisationDecision>) -> Decider {
-    authzen.map_or_else(
-        || Decider::Postgres(PostgresAuthorisationDecision::new(database)),
-        |decider| Decider::Authzen(Box::new(decider)),
-    )
+    let decider = AuthzenAuthorisationDecision::new(mode.url, Arc::clone(&tokens), profile)
+        .map_err(Error::Authorisation)?
+        .with_access_evaluations(config.authzen_evaluations);
+    let changes = match mode.garam_url {
+        None => Changes::Nowhere,
+        Some(url) => GaramDirectoryChanges::new(url, tokens)
+            .map(|changes| Changes::Garam(Box::new(changes)))
+            .map_err(Error::DirectoryChanges)?,
+    };
+    Ok((decider, changes))
 }
 
 /// Connects, migrates, binds and serves until SIGTERM or SIGINT, then finishes the requests in
@@ -422,23 +324,25 @@ fn decider(database: &Database, authzen: Option<AuthzenAuthorisationDecision>) -
 ///
 /// An [`Error`] naming the step that failed.
 pub async fn run(config: Config) -> Result<(), Error> {
-    config.check_runner_lease()?;
-    let identity = verifier(&config)?;
-    let authzen = authzen(&config)?;
-    let changes = Arc::new(directory_changes(
-        &config,
-        authzen.as_ref().map(|(_, tokens)| tokens),
-    )?);
-    let authzen = authzen.map(|(decider, _)| decider);
-    let administration = match config.authorisation {
-        Authorisation::Postgres => Administration::BuiltIn,
-        Authorisation::Authzen => Administration::External,
+    let selection = config.select()?;
+    let administration = selection.administration;
+    let identity = verifier(selection.identity, &config)?;
+    let (authzen, changes) = match selection.authorisation {
+        AuthorisationMode::Postgres => (None, Changes::Nowhere),
+        AuthorisationMode::Authzen(mode) => {
+            let (decider, changes) = authzen(mode, &config)?;
+            (Some(decider), changes)
+        }
     };
+    let changes = Arc::new(changes);
     let database = Database::connect(&config.postgres_url, config.postgres_pool_size)
         .await
         .map_err(Error::Database)?;
     database.migrate().await.map_err(Error::Database)?;
-    let authorisation = decider(&database, authzen);
+    let authorisation = authzen.map_or_else(
+        || Decider::Postgres(PostgresAuthorisationDecision::new(&database)),
+        |decider| Decider::Authzen(Box::new(decider)),
+    );
     let relay = Arc::new(DirectoryRelay::new(
         Arc::new(PostgresDirectoryOutbox::new(&database)),
         Arc::clone(&changes),

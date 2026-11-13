@@ -1,13 +1,15 @@
-//! The server's settings: the flags and variables, the check that a mode's settings are given,
-//! and the redaction of secrets where they are printed.
+//! The server's settings: the flags and variables, the checks that a mode's settings are given and
+//! go together, and the redaction of secrets where they are printed.
 
 use std::fmt;
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 
+use app::use_case::administration::Administration;
 use app::use_case::landing_attempts::LandingAttempts;
 use clap::{Parser, ValueEnum};
+use oauth_client::Authentication;
 
 use crate::Error;
 
@@ -309,13 +311,94 @@ impl fmt::Debug for Config {
     }
 }
 
+/// The settings of a [`Config`] after every check: what each mode needs, given, and the modes that
+/// go together. The composition site builds adapters from it and decides nothing more.
+pub(crate) struct Selection<'a> {
+    /// The identity verification to build.
+    pub(crate) identity: IdentityMode<'a>,
+    /// The authorisation decision to build.
+    pub(crate) authorisation: AuthorisationMode<'a>,
+    /// Who administers members, which the authorisation decision selects.
+    pub(crate) administration: Administration,
+}
+
+/// The identity verification selected, with the settings it needs.
+pub(crate) enum IdentityMode<'a> {
+    /// An OpenID Connect JWT, verified offline.
+    Oidc { issuer: &'a str, audience: &'a str },
+    /// RFC 7662 introspection.
+    Introspection {
+        endpoint: &'a str,
+        client_id: &'a str,
+        client_secret: &'a str,
+        issuer: &'a str,
+        audience: &'a str,
+    },
+}
+
+/// The authorisation decision selected, with the settings it needs.
+pub(crate) enum AuthorisationMode<'a> {
+    /// Grants kept in PostgreSQL; repository changes go nowhere.
+    Postgres,
+    /// An AuthZEN decision point.
+    Authzen(AuthzenMode<'a>),
+}
+
+/// The AuthZEN decision point and the changes that share its token client.
+pub(crate) struct AuthzenMode<'a> {
+    pub(crate) url: &'a str,
+    pub(crate) token_endpoint: &'a str,
+    /// How the token client authenticates, the key file already read.
+    pub(crate) authentication: Authentication,
+    pub(crate) profile: AuthzenProfile,
+    /// The base URL of garam's policy service where changes are delivered to garam, none where
+    /// they go nowhere.
+    pub(crate) garam_url: Option<&'a str>,
+}
+
 impl Config {
-    /// Checks that the lease outlasts the heartbeat interval.
+    /// Checks the settings against each other and against the modes selected, and reads the
+    /// AuthZEN key file where the selected authentication names one.
+    ///
+    /// The `grn` profile speaks to a decision point that binds each token to an organisation
+    /// (ADR 0043), so it needs the AuthZEN adapter and `private-key-jwt` (ADR 0042), and so does
+    /// delivering changes to garam.
     ///
     /// # Errors
     ///
-    /// [`Error::RunnerLease`] where it does not.
-    pub(crate) fn check_runner_lease(&self) -> Result<(), Error> {
+    /// [`Error::RunnerLease`] where the lease does not exceed the heartbeat interval,
+    /// [`Error::MissingSetting`] where a selected mode lacks a setting,
+    /// [`Error::IncompatibleSettings`] where settings cannot go together and
+    /// [`Error::KeyFile`] where the key file cannot be read.
+    pub(crate) fn select(&self) -> Result<Selection<'_>, Error> {
+        self.check_runner_lease()?;
+        let identity = self.select_identity()?;
+        let (authorisation, administration) = match self.authorisation {
+            Authorisation::Postgres => {
+                if self.authzen_profile == AuthzenProfile::Grn {
+                    return Err(Error::IncompatibleSettings(
+                        "CODEHUB_AUTHZEN_PROFILE=grn needs CODEHUB_AUTHORISATION=authzen",
+                    ));
+                }
+                if self.directory_changes == DirectoryChangesMode::Garam {
+                    return Err(garam_needs_grn());
+                }
+                (AuthorisationMode::Postgres, Administration::BuiltIn)
+            }
+            Authorisation::Authzen => (
+                AuthorisationMode::Authzen(self.select_authzen()?),
+                Administration::External,
+            ),
+        };
+        Ok(Selection {
+            identity,
+            authorisation,
+            administration,
+        })
+    }
+
+    /// Checks that the lease outlasts the heartbeat interval.
+    fn check_runner_lease(&self) -> Result<(), Error> {
         if self.runner_lease > self.runner_heartbeat_interval {
             Ok(())
         } else {
@@ -325,6 +408,111 @@ impl Config {
             })
         }
     }
+
+    fn select_identity(&self) -> Result<IdentityMode<'_>, Error> {
+        Ok(match self.identity {
+            Identity::Oidc => IdentityMode::Oidc {
+                issuer: require(&self.oidc_issuer, "--oidc-issuer (CODEHUB_OIDC_ISSUER)")?,
+                audience: require(
+                    &self.oidc_audience,
+                    "--oidc-audience (CODEHUB_OIDC_AUDIENCE)",
+                )?,
+            },
+            Identity::Introspection => IdentityMode::Introspection {
+                endpoint: require(
+                    &self.introspection_endpoint,
+                    "--introspection-endpoint (CODEHUB_INTROSPECTION_ENDPOINT)",
+                )?,
+                client_id: require(
+                    &self.introspection_client_id,
+                    "--introspection-client-id (CODEHUB_INTROSPECTION_CLIENT_ID)",
+                )?,
+                client_secret: require(
+                    &self.introspection_client_secret,
+                    "--introspection-client-secret (CODEHUB_INTROSPECTION_CLIENT_SECRET)",
+                )?,
+                issuer: require(
+                    &self.introspection_issuer,
+                    "--introspection-issuer (CODEHUB_INTROSPECTION_ISSUER)",
+                )?,
+                audience: require(
+                    &self.introspection_audience,
+                    "--introspection-audience (CODEHUB_INTROSPECTION_AUDIENCE)",
+                )?,
+            },
+        })
+    }
+
+    fn select_authzen(&self) -> Result<AuthzenMode<'_>, Error> {
+        let url = require(&self.authzen_url, "--authzen-url (CODEHUB_AUTHZEN_URL)")?;
+        let token_endpoint = require(
+            &self.authzen_token_endpoint,
+            "--authzen-token-endpoint (CODEHUB_AUTHZEN_TOKEN_ENDPOINT)",
+        )?;
+        let client_id = require(
+            &self.authzen_client_id,
+            "--authzen-client-id (CODEHUB_AUTHZEN_CLIENT_ID)",
+        )?;
+        let authentication = match self.authzen_client_authentication {
+            AuthzenClientAuthentication::ClientSecret => {
+                if self.authzen_profile == AuthzenProfile::Grn {
+                    return Err(Error::IncompatibleSettings(
+                        "CODEHUB_AUTHZEN_PROFILE=grn needs \
+                         CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION=private-key-jwt",
+                    ));
+                }
+                Authentication::ClientSecret {
+                    client_id: client_id.to_owned(),
+                    client_secret: require(
+                        &self.authzen_client_secret,
+                        "--authzen-client-secret (CODEHUB_AUTHZEN_CLIENT_SECRET)",
+                    )?
+                    .to_owned(),
+                }
+            }
+            AuthzenClientAuthentication::PrivateKeyJwt => {
+                let key_file = self.authzen_key_file.as_ref().ok_or(Error::MissingSetting(
+                    "--authzen-key-file (CODEHUB_AUTHZEN_KEY_FILE)",
+                ))?;
+                let issuer = require(
+                    &self.authzen_issuer,
+                    "--authzen-issuer (CODEHUB_AUTHZEN_ISSUER)",
+                )?;
+                let key_pem = std::fs::read(key_file)
+                    .map_err(|error| Error::KeyFile(key_file.clone(), error))?;
+                Authentication::PrivateKeyJwt {
+                    client_id_template: client_id.to_owned(),
+                    key_pem,
+                    key_id: self.authzen_key_id.clone(),
+                    issuer: issuer.to_owned(),
+                }
+            }
+        };
+        let garam_url = match self.directory_changes {
+            DirectoryChangesMode::None => None,
+            DirectoryChangesMode::Garam => {
+                if self.authzen_profile != AuthzenProfile::Grn {
+                    return Err(garam_needs_grn());
+                }
+                Some(require(
+                    &self.directory_garam_url,
+                    "--directory-garam-url (CODEHUB_DIRECTORY_GARAM_URL)",
+                )?)
+            }
+        };
+        Ok(AuthzenMode {
+            url,
+            token_endpoint,
+            authentication,
+            profile: self.authzen_profile,
+            garam_url,
+        })
+    }
+}
+
+/// Delivering changes to garam is refused under any profile but `grn`.
+fn garam_needs_grn() -> Error {
+    Error::IncompatibleSettings("CODEHUB_DIRECTORY_CHANGES=garam needs CODEHUB_AUTHZEN_PROFILE=grn")
 }
 
 /// What stands where a secret would print.
@@ -381,15 +569,14 @@ fn redact_userinfo(userinfo: &str) -> String {
 }
 
 /// The value of an optional setting a mode needs, or [`Error::MissingSetting`] naming `setting`.
-pub(crate) fn require<'a>(
-    value: &'a Option<String>,
-    setting: &'static str,
-) -> Result<&'a str, Error> {
+fn require<'a>(value: &'a Option<String>, setting: &'static str) -> Result<&'a str, Error> {
     value.as_deref().ok_or(Error::MissingSetting(setting))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::OnceLock;
+
     use super::*;
 
     fn config(postgres_url: &str) -> Config {
@@ -530,29 +717,253 @@ mod tests {
         assert!(!without.contains("<redacted>@"), "{without}");
     }
 
-    #[test]
-    fn a_lease_must_exceed_the_heartbeat_interval() {
+    /// A change to the settings of a case.
+    type Change = fn(&mut Config);
+
+    /// The message `select` refuses `config` with after `change`, none where it selects.
+    fn refusal(change: impl FnOnce(&mut Config)) -> Option<String> {
         let mut config = config("postgres://db.example/codehub");
-        config.runner_heartbeat_interval = NonZeroU32::MIN.saturating_add(4);
-        for lease in [1, 4, 5] {
-            config.runner_lease = NonZeroU32::new(lease).unwrap();
-            let error = config.check_runner_lease().unwrap_err();
-            assert!(
-                error.to_string().contains("CODEHUB_RUNNER_LEASE"),
-                "{error}"
-            );
-        }
-        config.runner_lease = NonZeroU32::new(6).unwrap();
-        assert!(config.check_runner_lease().is_ok());
+        change(&mut config);
+        config.select().err().map(|error| error.to_string())
+    }
+
+    /// Settings of the `grn` profile with `private-key-jwt`, delivering to garam.
+    fn grn(config: &mut Config) {
+        config.authzen_profile = AuthzenProfile::Grn;
+        config.authzen_client_authentication = AuthzenClientAuthentication::PrivateKeyJwt;
+        config.authzen_key_file = Some(key_file());
+        config.directory_changes = DirectoryChangesMode::Garam;
+    }
+
+    /// A readable file in the temporary directory, written once so that parallel tests read it
+    /// whole.
+    fn key_file() -> PathBuf {
+        static PATH: OnceLock<PathBuf> = OnceLock::new();
+        PATH.get_or_init(|| {
+            let path = std::env::temp_dir().join(format!("codehub-key-{}.pem", std::process::id()));
+            std::fs::write(&path, "key-bytes").unwrap();
+            path
+        })
+        .clone()
     }
 
     #[test]
-    fn require_names_the_missing_setting_and_passes_a_given_one() {
-        let given = Some("value".to_owned());
-        assert_eq!(require(&given, "--x (X)").ok(), Some("value"));
+    fn a_lease_must_exceed_the_heartbeat_interval() {
+        let at = |lease: u32| {
+            refusal(|config| {
+                config.runner_heartbeat_interval = NonZeroU32::MIN.saturating_add(4);
+                config.runner_lease = NonZeroU32::new(lease).unwrap();
+            })
+        };
+        for lease in [1, 4, 5] {
+            let message = at(lease).unwrap_or_default();
+            assert!(
+                message.contains("CODEHUB_RUNNER_LEASE"),
+                "{lease}: {message}"
+            );
+        }
+        assert_eq!(at(6), None);
+    }
+
+    #[test]
+    fn names_the_setting_a_selected_mode_lacks() {
+        assert_eq!(refusal(|_| {}), None);
+        assert_eq!(refusal(grn), None);
+        let cases: [(&str, Change, &str); 13] = [
+            (
+                "oidc issuer",
+                |config| {
+                    config.identity = Identity::Oidc;
+                    config.oidc_issuer = None;
+                },
+                "--oidc-issuer (CODEHUB_OIDC_ISSUER)",
+            ),
+            (
+                "oidc audience",
+                |config| {
+                    config.identity = Identity::Oidc;
+                    config.oidc_audience = None;
+                },
+                "--oidc-audience (CODEHUB_OIDC_AUDIENCE)",
+            ),
+            (
+                "introspection client secret",
+                |config| config.introspection_client_secret = None,
+                "--introspection-client-secret (CODEHUB_INTROSPECTION_CLIENT_SECRET)",
+            ),
+            (
+                "introspection client id",
+                |config| config.introspection_client_id = None,
+                "--introspection-client-id (CODEHUB_INTROSPECTION_CLIENT_ID)",
+            ),
+            (
+                "introspection issuer",
+                |config| config.introspection_issuer = None,
+                "--introspection-issuer (CODEHUB_INTROSPECTION_ISSUER)",
+            ),
+            (
+                "introspection audience",
+                |config| config.introspection_audience = None,
+                "--introspection-audience (CODEHUB_INTROSPECTION_AUDIENCE)",
+            ),
+            (
+                "authzen url",
+                |config| config.authzen_url = None,
+                "--authzen-url (CODEHUB_AUTHZEN_URL)",
+            ),
+            (
+                "authzen token endpoint",
+                |config| config.authzen_token_endpoint = None,
+                "--authzen-token-endpoint (CODEHUB_AUTHZEN_TOKEN_ENDPOINT)",
+            ),
+            (
+                "authzen client id",
+                |config| config.authzen_client_id = None,
+                "--authzen-client-id (CODEHUB_AUTHZEN_CLIENT_ID)",
+            ),
+            (
+                "authzen client secret",
+                |config| config.authzen_client_secret = None,
+                "--authzen-client-secret (CODEHUB_AUTHZEN_CLIENT_SECRET)",
+            ),
+            (
+                "authzen key file",
+                |config| {
+                    grn(config);
+                    config.authzen_key_file = None;
+                },
+                "--authzen-key-file (CODEHUB_AUTHZEN_KEY_FILE)",
+            ),
+            (
+                "authzen issuer",
+                |config| {
+                    grn(config);
+                    config.authzen_issuer = None;
+                },
+                "--authzen-issuer (CODEHUB_AUTHZEN_ISSUER)",
+            ),
+            (
+                "garam url",
+                |config| {
+                    grn(config);
+                    config.directory_garam_url = None;
+                },
+                "--directory-garam-url (CODEHUB_DIRECTORY_GARAM_URL)",
+            ),
+        ];
+        for (case, change, setting) in cases {
+            let message = refusal(change).unwrap_or_default();
+            assert!(message.contains(setting), "{case}: {message}");
+        }
+    }
+
+    #[test]
+    fn leaves_settings_of_a_mode_that_is_not_selected_unchecked() {
+        assert_eq!(
+            refusal(|config| {
+                config.authorisation = Authorisation::Postgres;
+                config.authzen_url = None;
+                config.authzen_client_secret = None;
+            }),
+            None
+        );
+        assert_eq!(
+            refusal(|config| {
+                config.identity = Identity::Oidc;
+                config.introspection_endpoint = None;
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn refuses_settings_that_cannot_go_together_and_accepts_the_grn_profile_beside_them() {
+        assert_eq!(refusal(grn), None);
+        let cases: [(&str, Change, &str); 4] = [
+            (
+                "grn with built-in authorisation",
+                |config| {
+                    grn(config);
+                    config.authorisation = Authorisation::Postgres;
+                },
+                "CODEHUB_AUTHZEN_PROFILE=grn needs CODEHUB_AUTHORISATION=authzen",
+            ),
+            (
+                "grn with a client secret",
+                |config| {
+                    grn(config);
+                    config.authzen_client_authentication =
+                        AuthzenClientAuthentication::ClientSecret;
+                },
+                "CODEHUB_AUTHZEN_PROFILE=grn needs \
+                 CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION=private-key-jwt",
+            ),
+            (
+                "garam under the plain profile",
+                |config| {
+                    grn(config);
+                    config.authzen_profile = AuthzenProfile::Plain;
+                    config.authzen_client_authentication =
+                        AuthzenClientAuthentication::ClientSecret;
+                },
+                "CODEHUB_DIRECTORY_CHANGES=garam needs CODEHUB_AUTHZEN_PROFILE=grn",
+            ),
+            (
+                "garam with built-in authorisation",
+                |config| {
+                    config.authorisation = Authorisation::Postgres;
+                    config.directory_changes = DirectoryChangesMode::Garam;
+                },
+                "CODEHUB_DIRECTORY_CHANGES=garam needs CODEHUB_AUTHZEN_PROFILE=grn",
+            ),
+        ];
+        for (case, change, expected) in cases {
+            assert_eq!(refusal(change).as_deref(), Some(expected), "{case}");
+        }
+    }
+
+    #[test]
+    fn reads_the_key_file_and_names_one_it_cannot_read() {
+        let mut config = config("postgres://db.example/codehub");
+        grn(&mut config);
+        let Ok(Selection {
+            authorisation: AuthorisationMode::Authzen(mode),
+            ..
+        }) = config.select()
+        else {
+            panic!("the readable key file was refused");
+        };
         assert!(matches!(
-            require(&None, "--x (X)"),
-            Err(Error::MissingSetting("--x (X)"))
+            mode.authentication,
+            Authentication::PrivateKeyJwt { ref key_pem, .. } if key_pem == b"key-bytes"
         ));
+
+        let missing = std::env::temp_dir().join("codehub-no-such-key-file.pem");
+        assert!(!missing.exists(), "{} exists", missing.display());
+        config.authzen_key_file = Some(missing.clone());
+        let Some(Error::KeyFile(path, _)) = config.select().err() else {
+            panic!("the missing key file was accepted");
+        };
+        assert_eq!(path, missing);
+    }
+
+    #[test]
+    fn selects_who_administers_members_by_the_authorisation_mode() {
+        let administration = |change: Change| {
+            let mut config = config("postgres://db.example/codehub");
+            change(&mut config);
+            config
+                .select()
+                .map(|selection| selection.administration)
+                .ok()
+        };
+        assert_eq!(
+            administration(|config| config.authorisation = Authorisation::Postgres),
+            Some(Administration::BuiltIn)
+        );
+        assert_eq!(
+            administration(|config| config.authorisation = Authorisation::Authzen),
+            Some(Administration::External)
+        );
     }
 }
