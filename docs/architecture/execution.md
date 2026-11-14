@@ -10,6 +10,12 @@ How a job's environment is built from repository data: caches, images, their del
 - A read-only filesystem image used for mounting is derived data: rebuildable, cacheable anywhere, excluded from export.
 - An organisation holds a base layer shared by its repositories (`tenancy.md`). How it and other layers combine in a job is open.
 - Promoting a new cache version is a server policy limited to trusted jobs, because an untrusted job writing the cache would poison later jobs.
+- **A build cache is a cache ref** (ADR 0049).
+  - The ref maps (repository, folder, cache path) to a tree in the object store.
+  - A job starts from the ref's tree.
+  - The ref advances to the tree the job leaves only when the job passed and its changeset is later on `main` than the one the ref records. Otherwise the job's changes are dropped.
+  - A trusted job is a post-land job on `main`.
+  - A cache is not part of a check's key.
 
 ### Delivery (ADR 0008)
 
@@ -52,4 +58,5 @@ Declared in the application's terms (`docs/architecture/structure.md`); the adap
 - **Chunking and lazy fetch.** Options: whole-file fetch, chunked images fetched on demand. Recommendation: whole-file first, chunking when image size makes fetch time dominate.
 - **Cache eviction.** Options: least recently used per host, a fixed per-host budget, explicit retention per repository. Recommendation: least recently used within a per-host budget.
 - **Scheduling by cache locality.** Options: ignore, prefer runners already holding the version, require it. Recommendation: prefer; expressed through the label and pool routing in `runner.md`.
-- **Definition of a trusted job.** Options: jobs on landed changesets only, jobs on named branches of changesets, an explicit repository setting. Recommendation: jobs on landed changesets; depends on `access.md`.
+- **Quotas and eviction of cache refs and outputs** per organisation. Options: none until a store fills; a per-organisation budget enforced through garam. No recommendation yet.
+- **Working-cache volumes attached to a microVM** in place of downloaded cache trees. This depends on naru and mvmd gaining disk clones and volume attachment (garamsh/aurora#811 issuecomment-6872422105).

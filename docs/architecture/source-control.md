@@ -40,7 +40,15 @@ How versions of a repository's content are stored, changed, landed and queried.
   - on a lost swap, read `main` again, rebase the same delta and swap again, up to a bound set by the server (32 by default), with authorisation and the draft read done once; when the bound is spent the landing is answered as moved (ADR 0036);
   - queue the post-land checks;
   - revert the landing when a blocking check fails.
-- **Post-land checks are configured in the repository** (ADR 0035). `.codehub/checks.toml` in the landed tree lists checks, each with a name, a command, labels, `blocking` (default true) and a timeout (default 600 s). Each landing on `main` queues one job per check (`runner.md`). A file that does not parse counts as one failed blocking check.
+- **Post-land checks are configured in the repository** (ADR 0035, ADR 0049). Any folder's `.codehub/checks.toml` in the landed tree lists checks, each with a name, a command, labels, `blocking` (default true) and a timeout (default 600 s), and optionally:
+  - `inputs`: path patterns, relative to the folder, or to the root when they start with `//`. Without them, the check's input is its folder.
+  - `needs`: checks that must pass first.
+  - `outputs`: paths the check produces, handed to the checks that need it.
+  - `caches`: paths kept between runs as cache refs (`execution.md`).
+
+  A root check keeps its bare name; another is named `<folder>:<name>`. A file that does not parse, a `needs` naming no check, and a cycle of `needs` each count as one failed blocking check named for the file.
+- **A check runs only when its key has not passed** (ADR 0049). The key is the check's definition, the paths and addresses of the files its `inputs` match, and the keys and output trees of the checks it needs. A key that passed is recorded as passed from the cache, with that run's output tree; a failed, timed-out or cancelled run is not cached. The result cache is per repository.
+- **Checks run in `needs` order** (ADR 0049). A check is queued once every check it needs has passed. When one fails, times out or is cancelled, the check is recorded as skipped: not passed, and reverting nothing.
 - **`last-green` moves forward only**, by compare-and-swap, to a changeset on `main` whose blocking checks have all passed; a changeset with no blocking checks passes on landing (ADR 0035).
 - **A blocking check that fails or times out reverts its changeset** as a new changeset on `main`, made by the landing merge, authored by the server and naming the changeset and the check. A changeset is reverted at most once, an automatic revert is not itself reverted, a revert that conflicts lands nothing and is recorded with the check result, and a revert that fails after it was reserved lands nothing and is recorded with the check result and the reason, and is not tried again. Cancelled and non-blocking checks revert nothing (ADR 0035).
 - **The rebase at landing merges as follows** (ADR 0012):
@@ -140,7 +148,7 @@ The ports below follow from the decisions, named for the conversation and in the
 - **Derived data** — read and write computed trees, file-version nodes, blame and skip lists for a repository. Served by PostgreSQL (ADR 0022).
 - **Draft store** — put and get draft changesets with their description, held outside the log until they land (ADR 0012, ADR 0048). Served by PostgreSQL (ADR 0022).
 - **Check dispatch** — ask for the post-land checks to run and receive their results. Served by the job queue port (`docs/architecture/runner.md`).
-- **Check definitions** — read the checks a changeset declares from the bytes of `.codehub/checks.toml`. Served by a TOML adapter, and an in-memory adapter for tests (ADR 0035).
+- **Check definitions** — read the checks a changeset declares from the bytes of each folder's `.codehub/checks.toml`. Served by a TOML adapter, and an in-memory adapter for tests (ADR 0035, ADR 0049).
 - Driving adapters are the server API behind `ch` (`docs/architecture/interfaces.md`). They reach the application through four driving ports: **source control** (open, read, describe, snapshot, restore and diff a workspace, stage a change into a draft (served as opening the draft if absent and recording one edit), grant an upload, land a draft on `main`, read a file, list a changeset's files and read a path's history with each version's landing message), **repositories** (create organisations and repositories), **members** (add and remove members and grants) and **authentication** (verify the credential presented with a request).
 
 ## Rationale
@@ -158,6 +166,7 @@ The ports below follow from the decisions, named for the conversation and in the
 - The trigger for distributed SQL, over moving now, a trigger by agent count and leaving it open: ADR 0040.
 - The object key, checksum verification, no compression and single-part uploads are ADR 0023: per-repository keys because export and deletion are per repository; compression and multipart upload not taken because each forgoes the store's check of the bytes against the address. Facts checked on 2026-11-11 are cited there.
 - Checks in the repository, `last-green` on blocking checks only, and automatic revert as a new changeset: ADR 0035, with the alternatives not taken.
+- Checks per folder with `inputs`, `needs`, `outputs` and `caches`, and the result cache, over Bazel-style targets, an external CI service, inferred dependencies, a `with` relation, default inputs per language and copy-on-write volumes: ADR 0049.
 - Tenancy that scopes the log to a repository is ADR 0004.
 - Bundle-based export is ADR 0005.
 
@@ -175,4 +184,5 @@ Each is undecided; the recommendation is not a decision.
 - **Skip-list spacing.** Which ancestors each changeset's skip list points at. No option has been examined.
 - **Retention and deletion of objects** no longer referenced by any changeset. Options: never delete; garbage-collect after a grace period.
   - Recommendation: garbage-collect after a grace period, with the export bundle (`tenancy.md`) as the safety copy.
+- **`last-green` per folder**, so that one folder's failing check does not hold back another folder's deployment (ADR 0049). Options: one `last-green` per repository, as now; one per folder that declares checks. No recommendation yet.
 - **Client cache and checkout.** How a client lays out a working copy from cached objects; no option has been examined.

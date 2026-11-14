@@ -75,3 +75,4 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0046-gaon-executor-driver.md` — ADR 0046, a gaon executor driver runs each job in a run-once MicroVM, and the job reports its result back to the runner
 - `adr/0047-runner-check-executor.md` — ADR 0047, `codehub-runner check-executor` runs one job with a given command through the configured executor, without a server
 - `adr/0048-server-workspace-and-disposable-view.md` — ADR 0048, a draft is the caller's server-side workspace, opened as a disposable view and snapshotted by each `ch` command; supersedes ADR 0025's verb list as the whole surface and its three items of local state, for views
+- `adr/0049-folder-checks-inputs-needs-outputs-and-caches.md` — ADR 0049, checks are declared per folder with file inputs, run in `needs` order, hand on their outputs, start from cache refs and are skipped when their result is cached; extends ADR 0035

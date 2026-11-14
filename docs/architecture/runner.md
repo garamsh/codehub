@@ -17,7 +17,7 @@ How a runner joins the system, receives jobs and runs them: registration, pollin
 
 ### Job lifecycle
 
-A job is queued with the post-land checks of a landing (`source-control.md`, ADR 0035), then:
+A job is queued for each post-land check of a landing whose key has not passed, once every check it needs has passed (`source-control.md`, ADR 0035, ADR 0049), then:
 - **claimed** by a matching runner, which holds a lease renewed by heartbeats;
 - **returned to the queue** when the lease passes without a heartbeat;
 - **ended as timed out** past its timeout;
@@ -25,6 +25,16 @@ A job is queued with the post-land checks of a landing (`source-control.md`, ADR
 - otherwise **reported passed or failed** by the runner.
 
 The runner stops its job when a heartbeat answers stop.
+
+### What a job receives (ADR 0049)
+
+- **Only the files the check declares:**
+  - the files its `inputs` match, at the landed changeset;
+  - the output trees of the checks it needs, at the paths they declared;
+  - the trees of its cache refs.
+
+  No other file of the repository is granted, and nothing is cloned.
+- **On a clean exit** the runner uploads the files under the check's `outputs`, and those under its `caches`, that the object store lacks. It reports their trees with the result.
 
 ### Ports
 
