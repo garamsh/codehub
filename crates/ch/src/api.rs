@@ -10,7 +10,7 @@ use crate::failure::{Failure, Operation};
 use crate::state::RepositoryRef;
 use crate::wire::{
     Access, Checks, Created, CreatedRepository, Description, Diff, File, Files, Grant, History,
-    Landed, Landing, Member, NewName, NewRunner, Principal, Ref, Runner, Runners, Snapshot,
+    Landed, Landing, Member, NewName, NewRunner, Plan, Principal, Ref, Runner, Runners, Snapshot,
     StagedFile, TransferGrant, TransferMethod, Upload, Workspace,
 };
 
@@ -458,6 +458,21 @@ impl<'a> Api<'a> {
             "{}/changesets/{}/checks",
             repo_path(repository),
             encode(changeset)
+        );
+        self.call(Method::GET, &path, None::<&()>, Operation::Other)
+            .await
+    }
+
+    /// The plan of the draft `draft` of `repository`.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails.
+    pub async fn plan(&self, repository: &RepositoryRef, draft: &str) -> Result<Plan, Failure> {
+        let path = format!(
+            "{}/drafts/{}/checks/plan",
+            repo_path(repository),
+            encode(draft)
         );
         self.call(Method::GET, &path, None::<&()>, Operation::Other)
             .await

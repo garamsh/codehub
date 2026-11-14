@@ -496,3 +496,30 @@ async fn snapshots_on_land_and_on_diff_without_another_verb_first() {
     assert_eq!(ada.ok(&["read", "a.txt"]).await, "three\n");
     assert_eq!(ada.ok(&["read", "new.txt"]).await, "fresh\n");
 }
+
+#[tokio::test]
+async fn plans_the_view_after_sending_its_edits() {
+    let server = serve().await;
+    let ada = server.user("ada");
+    repository(&ada).await;
+    let checks = server.checks_file(&[("unit", true)]);
+    base(
+        &ada,
+        &[(".codehub/checks.toml", &checks), ("a.txt", "one\n")],
+    )
+    .await;
+    let view = Scratch::new();
+    open(&ada, &view).await;
+
+    // The control: with nothing edited, the check's key is known and has no passed run.
+    assert_eq!(
+        ok_at(&ada, view.path(), &["checks", "plan"]).await,
+        "unit blocking run (no passed run)\n  inputs: **\n"
+    );
+
+    std::fs::write(view.join("a.txt"), "two\n").unwrap();
+    assert_eq!(
+        ok_at(&ada, view.path(), &["checks", "plan"]).await,
+        "unit blocking run (inputs changed)\n  inputs: **\n"
+    );
+}

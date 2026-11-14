@@ -57,6 +57,7 @@ pub type ChecksOf<'a, H> = ChecksService<
     MemoryObjectStore,
     <H as Deployment>::Derived,
     <H as RunnerDeployment>::Definitions,
+    <H as Deployment>::Drafts,
 >;
 
 /// The driving ports over a deployment's adapters.

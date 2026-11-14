@@ -278,6 +278,45 @@ fn has_the_fields_of_the_runner_and_check_schemas() {
 }
 
 #[test]
+fn has_the_fields_and_values_of_the_plan_schemas() {
+    use ch::wire::{Plan, PlanOutcome, PlanReason, PlannedCheck, ReasonKind};
+
+    let schemas = schemas();
+    let reason = PlanReason {
+        reason: ReasonKind::NeedRuns,
+        check: Some("a:unit".into()),
+    };
+    let planned = PlannedCheck {
+        name: "c:package".into(),
+        blocking: true,
+        inputs: vec!["**".into()],
+        outcome: PlanOutcome::Run,
+        reasons: vec![],
+    };
+    assert_fields(&reason, &schemas["PlanReason"], "PlanReason");
+    assert_fields(&planned, &schemas["PlannedCheck"], "PlannedCheck");
+    assert_fields(
+        &Plan {
+            checks: vec![planned],
+        },
+        &schemas["Plan"],
+        "Plan",
+    );
+    assert_eq!(
+        allowed(&schemas["PlannedCheck"]["properties"]["outcome"]),
+        written(&[PlanOutcome::Run, PlanOutcome::Cached])
+    );
+    assert_eq!(
+        allowed(&schemas["PlanReason"]["properties"]["reason"]),
+        written(&[
+            ReasonKind::InputsChanged,
+            ReasonKind::NeedRuns,
+            ReasonKind::NoPassedRun
+        ])
+    );
+}
+
+#[test]
 fn has_the_states_and_revert_outcomes_of_the_check_schemas() {
     let schemas = schemas();
     let states = [

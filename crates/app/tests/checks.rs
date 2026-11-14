@@ -135,3 +135,14 @@ async fn a_skipped_blocking_check_keeps_last_green_back_and_reverts_nothing() {
 async fn cancelling_a_check_skips_the_checks_that_need_it() {
     checks::cancelling_a_check_skips_the_checks_that_need_it::<Harness>().await;
 }
+
+#[tokio::test]
+async fn a_plan_runs_what_the_draft_changes_and_takes_the_rest_from_the_cache() {
+    checks::a_plan_runs_what_the_draft_changes_and_takes_the_rest_from_the_cache::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_plan_names_a_check_that_never_passed_and_refuses_a_draft_it_cannot_read() {
+    checks::a_plan_names_a_check_that_never_passed_and_refuses_a_draft_it_cannot_read::<Harness>()
+        .await;
+}

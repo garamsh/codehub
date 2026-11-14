@@ -144,7 +144,7 @@ impl<'a, O, L, D, S, R, A, M, Q, G, C, X, V, I>
     }
 
     /// The checks port.
-    pub const fn checks(&self) -> ChecksService<'a, Q, L, R, A, O, D, C> {
+    pub const fn checks(&self) -> ChecksService<'a, Q, L, R, A, O, D, C, S> {
         ChecksService::new(
             ChecksAdapters {
                 queue: self.queue,
@@ -154,6 +154,7 @@ impl<'a, O, L, D, S, R, A, M, Q, G, C, X, V, I>
                 objects: self.objects,
                 derived: self.derived,
                 definitions: self.definitions,
+                drafts: self.drafts,
             },
             self.attempts,
         )

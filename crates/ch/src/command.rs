@@ -12,16 +12,16 @@ use sha2::{Digest, Sha256};
 
 use crate::api::{Api, transfer};
 use crate::cli::{
-    Checks, Cli, Command, Credentials, Land, Login, MemberCommand, OrgCommand, Put, RepoCommand,
-    Role as CliRole, RunnerCommand,
+    Checks, ChecksCommand, Cli, Command, Credentials, Land, Login, MemberCommand, OrgCommand, Put,
+    RepoCommand, Role as CliRole, RunnerCommand,
 };
 use crate::failure::Failure;
 use crate::login;
 use crate::state::{RepositoryRef, State, StateFile};
 use crate::view::View;
 use crate::wire::{
-    Access, Check, Grant, Kind, Member, NewRunner, Principal, Revert, Role, Runner, StagedFile,
-    Upload,
+    Access, Check, Grant, Kind, Member, NewRunner, Plan, PlanOutcome, PlanReason, Principal,
+    ReasonKind, Revert, Role, Runner, StagedFile, Upload,
 };
 
 mod workspace;
@@ -594,12 +594,67 @@ fn names(checks: &[Check], selected: impl Fn(&Check) -> bool) -> String {
     names.join(", ")
 }
 
+/// `checks plan`: in a view, the view's draft after its edits are sent; elsewhere `draft`.
+async fn plan(
+    context: &Context,
+    draft: &str,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<(), Failure> {
+    let plan = if let Some(view) = View::find(&std::env::current_dir()?)? {
+        workspace::plan(context, view).await?
+    } else {
+        let session = Session::open(context).await?;
+        session
+            .api(context)
+            .plan(session.repository()?, draft)
+            .await?
+    };
+    if json {
+        print_json(out, &plan)
+    } else {
+        print_plan(out, &plan)
+    }
+}
+
+/// One line per check, then its inputs on a line of their own.
+fn print_plan(out: &mut impl Write, plan: &Plan) -> Result<(), Failure> {
+    for check in &plan.checks {
+        let blocking = if check.blocking {
+            "blocking"
+        } else {
+            "non-blocking"
+        };
+        let outcome = match check.outcome {
+            PlanOutcome::Cached => "cached".to_owned(),
+            PlanOutcome::Run => {
+                let reasons: Vec<String> = check.reasons.iter().map(reason).collect();
+                format!("run ({})", reasons.join("; "))
+            }
+        };
+        writeln!(out, "{} {blocking} {outcome}", check.name)?;
+        writeln!(out, "  inputs: {}", check.inputs.join(", "))?;
+    }
+    Ok(())
+}
+
+fn reason(reason: &PlanReason) -> String {
+    match reason.reason {
+        ReasonKind::InputsChanged => "inputs changed".to_owned(),
+        ReasonKind::NeedRuns => format!("needs {} to run", reason.check.as_deref().unwrap_or("?")),
+        ReasonKind::NoPassedRun => "no passed run".to_owned(),
+    }
+}
+
 async fn checks(
     context: &Context,
     arguments: &Checks,
     json: bool,
     out: &mut impl Write,
 ) -> Result<(), Failure> {
+    if let Some(ChecksCommand::Plan { draft }) = &arguments.command {
+        return plan(context, draft, json, out).await;
+    }
     let session = Session::open(context).await?;
     let repository = session.repository()?;
     let api = session.api(context);

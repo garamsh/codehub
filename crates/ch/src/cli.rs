@@ -217,13 +217,18 @@ pub enum Command {
         #[command(subcommand)]
         command: RunnerCommand,
     },
-    /// Show the check results of a changeset of the selected repository, and `last-green`.
+    /// Show the check results of a changeset of the selected repository, and `last-green`; or, with
+    /// `plan`, what landing a draft would do about each check.
     Checks(Checks),
 }
 
 /// Arguments of `checks`.
 #[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct Checks {
+    /// The verb; the results of a changeset where absent.
+    #[command(subcommand)]
+    pub command: Option<ChecksCommand>,
     /// The changeset; defaults to the head of `main`.
     pub changeset: Option<String>,
     /// Poll until every check has ended; exit 0 if every blocking check passed, else 4.
@@ -241,6 +246,18 @@ pub struct Checks {
         value_name = "MILLISECONDS"
     )]
     pub poll_interval_ms: u64,
+}
+
+/// A verb on checks.
+#[derive(Debug, Subcommand)]
+pub enum ChecksCommand {
+    /// Print each check landing a draft would run or take from the cache, in `needs` order, and why.
+    /// In a view, the view's draft after its edits are sent; elsewhere the draft named.
+    Plan {
+        /// The draft, outside a view.
+        #[arg(long, default_value = "default")]
+        draft: String,
+    },
 }
 
 /// A verb on runners.
@@ -469,6 +486,20 @@ mod tests {
         assert_eq!((checks.timeout, checks.poll_interval_ms), (600, 2000));
         assert!(parse(&["checks", "--timeout", "5"]).is_err());
         assert!(parse(&["checks", "abc", "--wait", "--timeout", "5"]).is_ok());
+    }
+
+    #[test]
+    fn takes_plan_as_a_verb_of_checks_and_a_changeset_otherwise() {
+        let Command::Checks(checks) = parse(&["checks", "plan"]).unwrap().command else {
+            panic!("not checks");
+        };
+        let Some(ChecksCommand::Plan { draft }) = checks.command else {
+            panic!("not plan");
+        };
+        assert_eq!(draft, "default");
+        assert!(parse(&["checks", "plan", "--draft", "work"]).is_ok());
+        assert!(parse(&["checks", "plan", "--wait"]).is_err());
+        assert!(parse(&["checks", "abc"]).is_ok());
     }
 
     #[test]

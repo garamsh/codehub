@@ -256,6 +256,12 @@ impl Server {
         text
     }
 
+    /// From now on reads the check file whose text is `text` as `definitions`, which the memory
+    /// definitions do not parse from a format of their own.
+    pub fn teach_checks(&self, text: &str, definitions: Vec<CheckDefinition>) {
+        self.stores.definitions.teach(text, Ok(definitions));
+    }
+
     /// The message of the changeset `id` of `<org>/app`, as the server's log holds it.
     ///
     /// # Panics

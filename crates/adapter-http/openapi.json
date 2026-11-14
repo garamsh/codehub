@@ -1362,6 +1362,127 @@
         ]
       }
     },
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/checks/plan": {
+      "get": {
+        "summary": "Plan the caller's draft: every check its tree would define, in needs order, each run or taken from the cache, with keys computed against the tree as if the draft landed now.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "description": "The organisation's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "description": "The repository's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "draft",
+            "in": "path",
+            "required": true,
+            "description": "The caller's draft name.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The plan.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Plan"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A name, path, address or body is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer token was presented.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not read the repository.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The repository or the draft does not exist, or the caller may not see the repository.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The draft conflicts with changes landed on `main` since its base; the body names the paths.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The check definitions the draft would land cannot be read; the body names the file.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed; the body names no internals.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/files/{path}": {
       "put": {
         "summary": "Stage a file, whose content is already uploaded, in the caller's draft; the draft is created on `main` as it stands if it does not exist.",
@@ -3468,6 +3589,80 @@
             "items": {
               "$ref": "#/components/schemas/Check"
             }
+          }
+        }
+      },
+      "Plan": {
+        "type": "object",
+        "required": [
+          "checks"
+        ],
+        "properties": {
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlannedCheck"
+            }
+          }
+        }
+      },
+      "PlannedCheck": {
+        "type": "object",
+        "required": [
+          "name",
+          "blocking",
+          "inputs",
+          "outcome",
+          "reasons"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The check's name, with its folder where it is not at the root."
+          },
+          "blocking": {
+            "type": "boolean"
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The patterns that select the files the check reads."
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "run",
+              "cached"
+            ]
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanReason"
+            },
+            "description": "Why the check runs; empty where it is cached."
+          }
+        }
+      },
+      "PlanReason": {
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "inputs_changed",
+              "needs_run",
+              "no_passed_run"
+            ]
+          },
+          "check": {
+            "type": "string",
+            "description": "The needed check that runs, for `needs_run`."
           }
         }
       },
