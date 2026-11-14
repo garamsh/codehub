@@ -10,6 +10,14 @@ pub struct AuthenticationService<'a, I> {
     identity: &'a I,
 }
 
+impl<I> Clone for AuthenticationService<'_, I> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<I> Copy for AuthenticationService<'_, I> {}
+
 impl<'a, I> AuthenticationService<'a, I> {
     /// Authentication that verifies credentials with `identity`.
     pub const fn new(identity: &'a I) -> Self {

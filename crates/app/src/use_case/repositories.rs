@@ -43,6 +43,14 @@ pub struct RepositoriesService<'a, R, A, M, C, D> {
     administration: Administration,
 }
 
+impl<R, A, M, C, D> Clone for RepositoriesService<'_, R, A, M, C, D> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<R, A, M, C, D> Copy for RepositoriesService<'_, R, A, M, C, D> {}
+
 impl<'a, R, A, M, C, D> RepositoriesService<'a, R, A, M, C, D> {
     /// Repositories over `adapters`. Where `administration` is built-in, the creator of an
     /// organisation is made its admin in the membership; where it is external, no grant is

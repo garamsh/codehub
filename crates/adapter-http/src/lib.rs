@@ -294,7 +294,7 @@ async fn no_route() -> Problem {
     Problem::no_route()
 }
 
-/// The router serving the API over these driving ports.
+/// The router serving the API over these driving ports, answering a request no route matches.
 ///
 /// The router owns the ports for as long as it lives and shares them between requests, so they
 /// are `'static`. A service that borrows its driven ports is made `'static` by the caller, by
@@ -311,7 +311,24 @@ where
     M: Members + Send + Sync + 'static,
     S: SourceControl + Send + Sync + 'static,
 {
-    routed().fallback(no_route).with_state(Arc::new(Ports {
+    source_router(authentication, repositories, members, source_control).fallback(no_route)
+}
+
+/// The routes of [`router`] without its fallback, so that another router can be merged in before
+/// the fallback is set.
+fn source_router<A, R, M, S>(
+    authentication: A,
+    repositories: R,
+    members: M,
+    source_control: S,
+) -> Router
+where
+    A: Authentication + Send + Sync + 'static,
+    R: Repositories + Send + Sync + 'static,
+    M: Members + Send + Sync + 'static,
+    S: SourceControl + Send + Sync + 'static,
+{
+    routed().with_state(Arc::new(Ports {
         authentication,
         repositories,
         members,
@@ -322,9 +339,9 @@ where
 /// The router serving the runner API over these driving ports: registrations, the runner's job
 /// conversation, and the checks and refs of a repository.
 ///
-/// It routes only what [`RUNNER_ROUTES`] lists and has no fallback, so a caller merges it into
-/// [`router`]'s, which answers a request no route matches. `settings` says how a claim is held.
-pub fn runner_router<A, R, N, J, C>(
+/// It routes only what [`RUNNER_ROUTES`] lists and has no fallback. `settings` says how a claim
+/// is held.
+fn runner_router<A, R, N, J, C>(
     authentication: A,
     repositories: R,
     runners: N,
@@ -355,4 +372,62 @@ where
 /// request to `/readyz`.
 pub fn health_router<P: Readiness>(readiness: P) -> Router {
     health_routed().with_state(Arc::new(readiness))
+}
+
+/// A server with no dependency to ask about, which is always ready.
+impl Readiness for () {
+    async fn check(&self) -> Result<(), NotReady> {
+        Ok(())
+    }
+}
+
+/// The router serving the whole API over these driving ports: every route of [`ROUTES`],
+/// [`RUNNER_ROUTES`] and [`HEALTH_ROUTES`], and a fallback for a request no route matches.
+/// `settings` says how a runner's claim is held, and `readiness` is asked on every request to
+/// `/readyz`.
+///
+/// Authentication and repositories serve both the source-control and the runner routes, so each
+/// is cloned for the second. The router owns the ports for as long as it lives, so they are
+/// `'static`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one argument for each driving port the API serves, plus its two settings"
+)]
+pub fn api_router<A, R, M, S, N, J, C, P>(
+    authentication: A,
+    repositories: R,
+    members: M,
+    source_control: S,
+    runners: N,
+    jobs: J,
+    checks: C,
+    settings: RunnerSettings,
+    readiness: P,
+) -> Router
+where
+    A: Authentication + Clone + Send + Sync + 'static,
+    R: Repositories + Clone + Send + Sync + 'static,
+    M: Members + Send + Sync + 'static,
+    S: SourceControl + Send + Sync + 'static,
+    N: Runners + Send + Sync + 'static,
+    J: Jobs + Send + Sync + 'static,
+    C: Checks + Send + Sync + 'static,
+    P: Readiness,
+{
+    source_router(
+        authentication.clone(),
+        repositories.clone(),
+        members,
+        source_control,
+    )
+    .merge(runner_router(
+        authentication,
+        repositories,
+        runners,
+        jobs,
+        checks,
+        settings,
+    ))
+    .merge(health_router(readiness))
+    .fallback(no_route)
 }
