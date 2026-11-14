@@ -3,6 +3,7 @@
 //! authorisation decision, that the caller may do what it asks.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 
 use crate::domain::address::Address;
 use crate::domain::changeset::Change;
@@ -29,6 +30,7 @@ use crate::use_case::land::land;
 use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::landing_gates::LandingGates;
 use crate::use_case::list_files::files_under;
+use crate::use_case::post_land_checks::AfterLandingError;
 use crate::use_case::read_file::read_file;
 use crate::use_case::upload::request_upload;
 use crate::use_case::workspace::{changed, diffs, require_uploaded, workspace};
@@ -49,8 +51,41 @@ pub struct SourceControlAdapters<'a, O, L, D, S, R, A> {
     pub authorisation: &'a A,
 }
 
-/// Source control over the driven ports the composition site passes to it.
-pub struct SourceControlService<'a, O, L, D, S, R, A> {
+/// What happens after a changeset has landed on `main`.
+pub trait AfterLanding {
+    /// Acts on `landed` having landed in `repository`, with `timestamp` as the time of anything
+    /// it records.
+    ///
+    /// # Errors
+    ///
+    /// [`AfterLandingError`] where what follows the landing could not be done; the changeset has
+    /// landed all the same.
+    fn after_landing(
+        &self,
+        repository: RepositoryId,
+        landed: Address,
+        timestamp: i64,
+    ) -> impl Future<Output = Result<(), AfterLandingError>> + Send;
+}
+
+/// The step after a landing that does nothing.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoAfterLanding;
+
+impl AfterLanding for NoAfterLanding {
+    async fn after_landing(
+        &self,
+        _repository: RepositoryId,
+        _landed: Address,
+        _timestamp: i64,
+    ) -> Result<(), AfterLandingError> {
+        Ok(())
+    }
+}
+
+/// Source control over the driven ports the composition site passes to it, running `P` after
+/// each landing.
+pub struct SourceControlService<'a, O, L, D, S, R, A, P = NoAfterLanding> {
     objects: &'a O,
     log: &'a L,
     derived: &'a D,
@@ -59,14 +94,16 @@ pub struct SourceControlService<'a, O, L, D, S, R, A> {
     authorisation: &'a A,
     max_upload_size: u64,
     attempts: LandingAttempts,
+    after_landing: P,
     /// One gate per repository, held while a landing of it rebases and swaps: the landings of one
     /// repository wait for one another within this service, and not across server processes.
     gates: LandingGates,
 }
 
 impl<'a, O, L, D, S, R, A> SourceControlService<'a, O, L, D, S, R, A> {
-    /// Source control over `adapters` that grants uploads of at most `max_upload_size` bytes and
-    /// tries each landing as often as [`LandingAttempts::default`] says.
+    /// Source control over `adapters` that grants uploads of at most `max_upload_size` bytes,
+    /// tries each landing as often as [`LandingAttempts::default`] says and does nothing after
+    /// a landing.
     pub fn new(
         adapters: SourceControlAdapters<'a, O, L, D, S, R, A>,
         max_upload_size: u64,
@@ -88,19 +125,54 @@ impl<'a, O, L, D, S, R, A> SourceControlService<'a, O, L, D, S, R, A> {
             authorisation,
             max_upload_size,
             attempts: LandingAttempts::new(LandingAttempts::DEFAULT),
+            after_landing: NoAfterLanding,
             gates: LandingGates::new(),
         }
     }
+}
 
+impl<'a, O, L, D, S, R, A, P> SourceControlService<'a, O, L, D, S, R, A, P> {
     /// This source control with each landing that lost the compare-and-swap on `main` tried at
     /// most `attempts` times.
     #[must_use]
     pub fn with_landing_attempts(self, attempts: LandingAttempts) -> Self {
         Self { attempts, ..self }
     }
+
+    /// This source control running `after_landing` after each landing.
+    #[must_use]
+    pub fn with_after_landing<N>(
+        self,
+        after_landing: N,
+    ) -> SourceControlService<'a, O, L, D, S, R, A, N> {
+        let Self {
+            objects,
+            log,
+            derived,
+            drafts,
+            directory,
+            authorisation,
+            max_upload_size,
+            attempts,
+            gates,
+            after_landing: _,
+        } = self;
+        SourceControlService {
+            objects,
+            log,
+            derived,
+            drafts,
+            directory,
+            authorisation,
+            max_upload_size,
+            attempts,
+            after_landing,
+            gates,
+        }
+    }
 }
 
-impl<O, L, D, S, R, A> SourceControlService<'_, O, L, D, S, R, A>
+impl<O, L, D, S, R, A, P> SourceControlService<'_, O, L, D, S, R, A, P>
 where
     R: RepositoryDirectory + Sync,
     A: AuthorisationDecision + Sync,
@@ -142,7 +214,7 @@ where
     }
 }
 
-impl<O, L, D, S, R, A> SourceControlService<'_, O, L, D, S, R, A>
+impl<O, L, D, S, R, A, P> SourceControlService<'_, O, L, D, S, R, A, P>
 where
     O: ObjectStore + Sync,
     D: DerivedData + Sync,
@@ -182,7 +254,7 @@ fn draft_id(caller: &Caller, draft: &DraftName) -> DraftId {
     }
 }
 
-impl<O, L, D, S, R, A> SourceControl for SourceControlService<'_, O, L, D, S, R, A>
+impl<O, L, D, S, R, A, P> SourceControl for SourceControlService<'_, O, L, D, S, R, A, P>
 where
     O: ObjectStore + Sync,
     L: ChangesetLog + Sync,
@@ -190,6 +262,7 @@ where
     S: DraftStore + Sync,
     R: RepositoryDirectory + Sync,
     A: AuthorisationDecision + Sync,
+    P: AfterLanding + Sync,
 {
     async fn request_upload(
         &self,
@@ -474,6 +547,7 @@ where
         } else {
             landing
         };
+        let timestamp = landing.timestamp;
         let arrival = self.gates.reach(repository);
         let _one_at_a_time = arrival.pass().await;
         let landed = land(
@@ -491,6 +565,13 @@ where
             .remove(repository, &draft)
             .await
             .map_err(LandError::from)?;
+        self.after_landing
+            .after_landing(repository, landed, timestamp)
+            .await
+            .map_err(|error| LandError::ChecksNotQueued {
+                landed,
+                cause: error.to_string(),
+            })?;
         Ok(landed)
     }
 

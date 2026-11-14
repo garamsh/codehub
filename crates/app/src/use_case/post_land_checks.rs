@@ -22,11 +22,11 @@ use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driving::jobs::JobsError;
 use crate::port::driving::revert::{QueueChecksError, RevertError};
 use crate::port::driving::source_control::{LandError, Landing};
-use crate::use_case::checked_source_control::CheckedAdapters;
 use crate::use_case::land::land;
 use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::last_green::{advance, blocking_checks_passed};
 use crate::use_case::read_file::file_at;
+use crate::use_case::source_control::AfterLanding;
 
 /// Why the post-land checks of a landing failed after it landed.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -114,24 +114,40 @@ impl From<SettleError> for JobsError {
     }
 }
 
+/// The driven ports the post-land checks are built over.
+pub struct PostLandChecksAdapters<'a, O, D, L, R, Q, C> {
+    /// Stores blobs.
+    pub objects: &'a O,
+    /// Stores derived data.
+    pub derived: &'a D,
+    /// Stores changesets and `last-green`.
+    pub log: &'a L,
+    /// Finds a repository's organisation.
+    pub directory: &'a R,
+    /// Holds the jobs.
+    pub queue: &'a Q,
+    /// Reads the check definitions.
+    pub definitions: &'a C,
+}
+
 /// The post-land checks over the driven ports a landing and the queuing of its checks use, with
 /// the number of times a revert that lost the compare-and-swap on `main` is tried.
 pub struct PostLandChecks<'a, O, D, L, R, Q, C> {
-    adapters: CheckedAdapters<'a, O, D, L, R, Q, C>,
+    adapters: PostLandChecksAdapters<'a, O, D, L, R, Q, C>,
     attempts: LandingAttempts,
 }
 
 impl<'a, O, D, L, R, Q, C> PostLandChecks<'a, O, D, L, R, Q, C> {
     /// Post-land checks over `adapters`, each revert tried at most `attempts` times.
     pub const fn new(
-        adapters: CheckedAdapters<'a, O, D, L, R, Q, C>,
+        adapters: PostLandChecksAdapters<'a, O, D, L, R, Q, C>,
         attempts: LandingAttempts,
     ) -> Self {
         Self { adapters, attempts }
     }
 }
 
-impl<O, D, L, R, Q, C> PostLandChecks<'_, O, D, L, R, Q, C>
+impl<O, D, L, R, Q, C> AfterLanding for PostLandChecks<'_, O, D, L, R, Q, C>
 where
     O: ObjectStore + Sync,
     D: DerivedData + Sync,
@@ -148,7 +164,7 @@ where
     ///
     /// [`AfterLandingError::Queue`] where the checks were not queued, and
     /// [`AfterLandingError::Revert`] where the revert failed.
-    pub async fn after_landing(
+    async fn after_landing(
         &self,
         repository: RepositoryId,
         landed: Address,
@@ -165,7 +181,17 @@ where
         }
         Ok(())
     }
+}
 
+impl<O, D, L, R, Q, C> PostLandChecks<'_, O, D, L, R, Q, C>
+where
+    O: ObjectStore + Sync,
+    D: DerivedData + Sync,
+    L: ChangesetLog + Sync,
+    R: RepositoryDirectory + Sync,
+    Q: JobQueue + Sync,
+    C: CheckDefinitions + Sync,
+{
     /// Acts on time having passed to `now`: expires the queue's jobs and, for each blocking job
     /// that timed out, reverts its changeset with `now` as the revert's time.
     ///

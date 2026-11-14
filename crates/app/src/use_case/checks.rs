@@ -14,9 +14,8 @@ use crate::port::driven::object_store::ObjectStore;
 use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driving::checks::{Checks, ChecksError};
 use crate::use_case::access::{readable_repository, require};
-use crate::use_case::checked_source_control::CheckedAdapters;
 use crate::use_case::landing_attempts::LandingAttempts;
-use crate::use_case::post_land_checks::PostLandChecks;
+use crate::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
 
 /// The driven ports the checks are built over.
 pub struct ChecksAdapters<'a, Q, L, R, A, O, D, C> {
@@ -67,7 +66,7 @@ impl<'a, Q, L, R, A, O, D, C> ChecksService<'a, Q, L, R, A, O, D, C> {
             directory,
             authorisation,
             checks: PostLandChecks::new(
-                CheckedAdapters {
+                PostLandChecksAdapters {
                     objects,
                     derived,
                     log,

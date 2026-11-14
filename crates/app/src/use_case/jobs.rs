@@ -16,9 +16,8 @@ use crate::port::driven::object_store::ObjectStore;
 use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driven::runner_registry::RunnerRegistry;
 use crate::port::driving::jobs::{Claimed, ClaimedFile, Jobs, JobsError};
-use crate::use_case::checked_source_control::CheckedAdapters;
 use crate::use_case::landing_attempts::LandingAttempts;
-use crate::use_case::post_land_checks::PostLandChecks;
+use crate::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
 
 /// The driven ports the jobs are built over.
 pub struct JobsAdapters<'a, G, Q, O, D, L, R, C> {
@@ -72,7 +71,7 @@ impl<'a, G, Q, O, D, L, R, C> JobsService<'a, G, Q, O, D, L, R, C> {
             objects,
             derived,
             checks: PostLandChecks::new(
-                CheckedAdapters {
+                PostLandChecksAdapters {
                     objects,
                     derived,
                     log,
