@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use adapter_memory::{MemoryIdentityVerification, MemoryObjectStore};
 use app::domain::address::Address;
-use app::domain::check::{CheckDefinition, Command, Timeout};
+use app::domain::check::{CheckDefinition, Command, Need, Timeout};
 use app::domain::name::{Label, OrganisationName};
 use app::domain::principal::Caller;
 use app::port::driven::check_definitions::{CheckDefinitions, CheckFileError};
@@ -159,6 +159,8 @@ pub struct Spec {
     pub blocking: bool,
     /// Its timeout in seconds.
     pub timeout: u64,
+    /// The checks it needs, as a check file writes them.
+    pub needs: &'static [&'static str],
 }
 
 /// A blocking check named `name` that requires no label and has the default timeout.
@@ -169,6 +171,7 @@ pub const fn check(name: &'static str) -> Spec {
         labels: &[],
         blocking: true,
         timeout: 600,
+        needs: &[],
     }
 }
 
@@ -188,6 +191,12 @@ impl Spec {
         }
     }
 
+    /// The same check, needing `needs`, as a check file writes them.
+    #[must_use]
+    pub const fn needing(self, needs: &'static [&'static str]) -> Self {
+        Self { needs, ..self }
+    }
+
     /// The same check with a timeout of `timeout` seconds.
     #[must_use]
     pub const fn timing_out_after(self, timeout: u64) -> Self {
@@ -205,13 +214,15 @@ pub fn text(specs: &[Spec]) -> String {
             .iter()
             .map(|label| format!("{label:?}"))
             .collect();
+        let needs: Vec<String> = spec.needs.iter().map(|need| format!("{need:?}")).collect();
         text.push_str(&format!(
-            "[[check]]\nname = {:?}\ncommand = \"run {}\"\nlabels = [{}]\nblocking = {}\ntimeout = {}\n\n",
+            "[[check]]\nname = {:?}\ncommand = \"run {}\"\nlabels = [{}]\nblocking = {}\ntimeout = {}\nneeds = [{}]\n\n",
             spec.name,
             spec.name,
             labels.join(", "),
             spec.blocking,
-            spec.timeout
+            spec.timeout,
+            needs.join(", ")
         ));
     }
     text
@@ -226,12 +237,20 @@ pub fn text(specs: &[Spec]) -> String {
 pub fn definitions(specs: &[Spec]) -> Vec<CheckDefinition> {
     specs
         .iter()
-        .map(|spec| CheckDefinition {
-            name: spec.name.parse().unwrap(),
-            command: Command::new(&format!("run {}", spec.name)).unwrap(),
-            labels: labels(spec.labels),
-            blocking: spec.blocking,
-            timeout: Timeout::new(spec.timeout).unwrap(),
+        .map(|spec| {
+            let mut definition = CheckDefinition::new(
+                spec.name.parse().unwrap(),
+                Command::new(&format!("run {}", spec.name)).unwrap(),
+                labels(spec.labels),
+                spec.blocking,
+                Timeout::new(spec.timeout).unwrap(),
+            );
+            definition.needs = spec
+                .needs
+                .iter()
+                .map(|need| need.parse::<Need>().unwrap())
+                .collect();
+            definition
         })
         .collect()
 }
@@ -327,4 +346,35 @@ pub async fn land_checks<H: RunnerDeployment>(
     repo.harness.teach(&text, Ok(definitions(specs)));
     let file = repo.harness.definitions().file().to_string();
     land(repo, caller, name, &[(&file, &text)]).await.unwrap()
+}
+
+/// Lands a changeset that defines, in each folder of `folders`, the checks `specs` (the root
+/// folder is `""`), teaching the definitions what each file reads as, and returns it.
+///
+/// # Panics
+///
+/// Where the landing fails.
+pub async fn land_checks_in<H: RunnerDeployment>(
+    repo: &Repo<'_, H>,
+    caller: &Caller,
+    name: &str,
+    folders: &[(&str, &[Spec])],
+) -> Address {
+    let file = repo.harness.definitions().file().to_string();
+    let mut files = Vec::new();
+    for (folder, specs) in folders {
+        let text = text(specs);
+        repo.harness.teach(&text, Ok(definitions(specs)));
+        let path = if folder.is_empty() {
+            file.clone()
+        } else {
+            format!("{folder}/{file}")
+        };
+        files.push((path, text));
+    }
+    let files: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(path, text)| (path.as_str(), text.as_str()))
+        .collect();
+    land(repo, caller, name, &files).await.unwrap()
 }

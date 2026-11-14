@@ -1,11 +1,11 @@
 //! Checks queued on landing, run by runners, and what they do to `last-green`.
 
 use crate::contract::runner_deployment::{
-    LEASE, RunnerDeployment, check, land, land_checks, organisation, runner,
+    LEASE, RunnerDeployment, Spec, check, land, land_checks, land_checks_in, organisation, runner,
 };
 use app::domain::address::Address;
 use app::domain::job::{Heartbeat, Job, JobResult, JobState, Outcome, StopReason};
-use app::domain::path::Prefix;
+use app::domain::path::{Component, Prefix};
 use app::domain::principal::Caller;
 use app::port::driven::changeset_log::{ChangesetLog, Ref};
 use app::port::driven::check_definitions::CheckDefinitions;
@@ -498,4 +498,156 @@ pub async fn main_is_served_as_a_ref<H: RunnerDeployment>() {
     assert_eq!(main, head);
     assert_ne!(main, Some(first));
     assert_eq!(last_green(&harness, &ada, &repo).await, Some(first));
+}
+
+/// The names the jobs of `changeset` show under, sorted.
+async fn queued_ids<H: RunnerDeployment>(
+    harness: &H,
+    caller: &Caller,
+    repo: &crate::contract::Repo<'_, H>,
+    changeset: Address,
+) -> Vec<String> {
+    let mut ids: Vec<String> = jobs(harness, caller, repo, changeset, 0)
+        .await
+        .iter()
+        .map(|job| job.check.id().to_string())
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// Checks files in several folders queue the checks of every one: a check of the root keeps its bare
+/// name, and any other is named `<folder>:<name>`.
+pub async fn checks_files_in_every_folder_queue_their_checks<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let landed = land_checks_in(
+        &repo,
+        &ada,
+        "folders",
+        &[
+            ("", &[check("unit")]),
+            ("lib", &[check("build"), check("lint").non_blocking()]),
+            ("svc/api", &[check("unit")]),
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        queued_ids(&harness, &ada, &repo, landed).await,
+        ["lib:build", "lib:lint", "svc/api:unit", "unit"]
+    );
+    let queued = jobs(&harness, &ada, &repo, landed, 0).await;
+    assert!(queued.iter().all(|job| job.state == JobState::Queued));
+    let lib = queued
+        .iter()
+        .find(|job| job.check.id().to_string() == "lib:build")
+        .unwrap();
+    assert_eq!(
+        lib.check.folder,
+        Prefix::new(vec![Component::new(b"lib".to_vec()).unwrap()])
+    );
+    assert_eq!(lib.check.name.as_str(), "build");
+}
+
+/// A job carries the `needs` its check file gave, as written.
+pub async fn a_queued_job_carries_the_needs_of_its_check<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let landed = land_checks_in(
+        &repo,
+        &ada,
+        "needs",
+        &[
+            ("", &[check("unit").needing(&["//lib:build"])]),
+            ("lib", &[check("build"), check("test").needing(&["build"])]),
+        ],
+    )
+    .await;
+
+    let queued = jobs(&harness, &ada, &repo, landed, 0).await;
+    let needs_of = |id: &str| -> Vec<String> {
+        queued
+            .iter()
+            .find(|job| job.check.id().to_string() == id)
+            .unwrap()
+            .check
+            .needs
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    };
+    assert_eq!(needs_of("unit"), ["//lib:build"]);
+    assert_eq!(needs_of("lib:test"), ["build"]);
+    assert!(needs_of("lib:build").is_empty());
+}
+
+/// Lands the checks `folders`, which are fault free, then the checks `broken`, and expects the
+/// second landing to be recorded as one failed blocking job named for the file `file_in` and the
+/// first to queue its checks normally.
+async fn a_needs_fault_is_one_failed_blocking_job<H: RunnerDeployment>(
+    control: &[(&str, &[Spec])],
+    broken: &[(&str, &[Spec])],
+    control_ids: &[&str],
+    file_in: &str,
+) {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let file = harness.definitions().file().to_string();
+
+    let fine = land_checks_in(&repo, &ada, "control", control).await;
+    assert_eq!(queued_ids(&harness, &ada, &repo, fine).await, control_ids);
+    let fine_jobs = jobs(&harness, &ada, &repo, fine, 0).await;
+    assert!(fine_jobs.iter().all(|job| job.state == JobState::Queued));
+
+    let landed = land_checks_in(&repo, &ada, "broken", broken).await;
+    let queued = jobs(&harness, &ada, &repo, landed, 0).await;
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].state, JobState::Failed);
+    assert!(queued[0].check.blocking);
+    assert_eq!(queued[0].check.name.as_str(), "checks-file");
+    let declaring = if file_in.is_empty() {
+        file
+    } else {
+        format!("{file_in}/{file}")
+    };
+    assert_eq!(queued[0].check.command.as_str(), declaring);
+    assert!(!queued[0].output.is_empty());
+    assert_ne!(last_green(&harness, &ada, &repo).await, Some(landed));
+}
+
+/// A `needs` naming no check becomes one failed blocking job named for the file that declares the
+/// check, like a file that does not parse.
+pub async fn a_need_naming_no_check_gives_one_failed_blocking_job<H: RunnerDeployment>() {
+    a_needs_fault_is_one_failed_blocking_job::<H>(
+        &[
+            ("", &[check("unit")]),
+            ("lib", &[check("build").needing(&["//:unit"])]),
+        ],
+        &[
+            ("", &[check("unit")]),
+            ("lib", &[check("build").needing(&["//:missing"])]),
+        ],
+        &["lib:build", "unit"],
+        "lib",
+    )
+    .await;
+}
+
+/// A cycle of `needs` becomes one failed blocking job named for the file that declares a check on
+/// the cycle.
+pub async fn a_cycle_of_needs_gives_one_failed_blocking_job<H: RunnerDeployment>() {
+    a_needs_fault_is_one_failed_blocking_job::<H>(
+        &[("", &[check("a").needing(&["b"]), check("b")])],
+        &[(
+            "",
+            &[check("a").needing(&["b"]), check("b").needing(&["a"])],
+        )],
+        &["a", "b"],
+        "",
+    )
+    .await;
 }

@@ -1,24 +1,25 @@
-//! Check definitions: where a repository keeps them and how their text is read (ADR 0035).
+//! Check definitions: where a repository keeps them and how their text is read (ADR 0035,
+//! ADR 0049).
 
 use std::fmt;
 
 use crate::domain::check::CheckDefinition;
 use crate::domain::name::CheckName;
-use crate::domain::path::Path;
+use crate::domain::path::{Path, Prefix};
 
-/// Reads the check definitions a repository holds in a file of its tree. The format of the file
-/// is the adapter's.
+/// Reads the check definitions a repository holds in the files of its tree. The format of the
+/// files is the adapter's.
 pub trait CheckDefinitions {
-    /// The path of the file in a repository's tree that holds its check definitions.
+    /// The path, relative to a folder, of the file that holds the check definitions of the folder.
     fn file(&self) -> &Path;
 
-    /// The check definitions in `bytes`, the content of [`CheckDefinitions::file`], in the order
-    /// the file lists them.
+    /// The check definitions in `bytes`, the content of [`CheckDefinitions::file`] of `folder`,
+    /// in the order the file lists them, each with `folder` as its folder.
     ///
     /// # Errors
     ///
     /// The [`CheckFileError`] naming the first fault in `bytes`.
-    fn parse(&self, bytes: &[u8]) -> Result<Vec<CheckDefinition>, CheckFileError>;
+    fn parse(&self, folder: &Prefix, bytes: &[u8]) -> Result<Vec<CheckDefinition>, CheckFileError>;
 }
 
 /// Why the check definitions' file is not read.
@@ -31,8 +32,8 @@ pub enum CheckFileError {
         /// What it is.
         description: String,
     },
-    /// A check is not valid: a name, command, label or timeout the domain refuses, or a field
-    /// the format does not know.
+    /// A check is not valid: a name, command, label, timeout, pattern, need or path the domain
+    /// refuses, or a field the format does not know.
     Invalid {
         /// Where the check's definition starts.
         line: usize,

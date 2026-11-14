@@ -14,7 +14,9 @@ use crate::database::Database;
 macro_rules! job_columns {
     () => {
         "id, organisation, repository, changeset, check_name, command, check_labels, blocking, \
-         timeout_seconds, state, runner, lease_expires_at, deadline, exit_code, output, revert_landed, revert_conflicts, revert_failed"
+         timeout_seconds, folder, inputs, needs, outputs, caches, state, runner, \
+         lease_expires_at, deadline, exit_code, output, revert_landed, revert_conflicts, \
+         revert_failed"
     };
 }
 
@@ -53,6 +55,11 @@ struct JobRow {
     check_labels: Vec<String>,
     blocking: bool,
     timeout_seconds: i64,
+    folder: Vec<u8>,
+    inputs: Vec<String>,
+    needs: Vec<String>,
+    outputs: Vec<Vec<u8>>,
+    caches: Vec<Vec<u8>>,
     state: String,
     runner: Option<i64>,
     lease_expires_at: Option<i64>,
@@ -71,13 +78,18 @@ impl JobRow {
             organisation: self.organisation.parse().map_err(backend)?,
             repository: conversion::repository(self.repository).map_err(backend)?,
             changeset: conversion::address(self.changeset).map_err(backend)?,
-            check: conversion::check(
-                &self.check_name,
-                &self.command,
-                &self.check_labels,
-                self.blocking,
-                self.timeout_seconds,
-            )
+            check: conversion::check(&conversion::CheckColumns {
+                name: &self.check_name,
+                command: &self.command,
+                labels: &self.check_labels,
+                blocking: self.blocking,
+                timeout_seconds: self.timeout_seconds,
+                folder: &self.folder,
+                inputs: &self.inputs,
+                needs: &self.needs,
+                outputs: &self.outputs,
+                caches: &self.caches,
+            })
             .map_err(backend)?,
             state: conversion::state(&self.state, self.lease_expires_at, self.deadline)
                 .map_err(backend)?,
@@ -124,8 +136,9 @@ async fn insert(
         conversion::number_column(job.check.timeout.seconds(), "timeout").map_err(backend)?;
     sqlx::query_as::<_, JobRow>(concat!(
         "insert into jobs (organisation, repository, changeset, check_name, command, \
-         check_labels, blocking, timeout_seconds, state, output) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning ",
+         check_labels, blocking, timeout_seconds, folder, inputs, needs, outputs, caches, \
+         state, output) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) returning ",
         job_columns!()
     ))
     .bind(job.organisation.as_str())
@@ -136,6 +149,11 @@ async fn insert(
     .bind(conversion::labels_column(&job.check.labels))
     .bind(job.check.blocking)
     .bind(timeout)
+    .bind(conversion::prefix_column(&job.check.folder))
+    .bind(conversion::texts(&job.check.inputs))
+    .bind(conversion::texts(&job.check.needs))
+    .bind(conversion::path_columns(&job.check.outputs))
+    .bind(conversion::path_columns(&job.check.caches))
     .bind(conversion::state_column(state))
     .bind(output)
     .fetch_one(connection)
