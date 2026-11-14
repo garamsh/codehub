@@ -1,6 +1,6 @@
 # Quickstart
 
-Starting the check services, running `codehub` against them, and landing and reading a file with `ch`, from a clean checkout.
+Starting the check services, running `codehub` against them, and changing, landing and reading a file with `ch`, from a clean checkout.
 
 ## Contents
 - Before you start
@@ -8,13 +8,14 @@ Starting the check services, running `codehub` against them, and landing and rea
 - 2. Run `codehub`
 - 3. Log in
 - 4. Create an organisation and a repository, and select it
-- 5. Stage and land a file
+- 5. Change the repository in a view
 - 6. Read the history and the content
+- 7. Change a file without a view
 - Stop and clean up
 - Federated mode
 - garam as issuer and decision point
 
-The output below was produced on 2026-11-11 from the commit `e4fe6227eb08e05d515d77ac625515cc6054340b` plus this file's change, with the services of `compose.yaml` running. Steps 5 and 6 changed afterwards only in the path of the scratch file, and were run again on 2026-11-12 from the commit `33ec12de6559b810aaf1a93494716df864dc62e0` plus that change: their output lines are the same apart from the changeset identifiers. Changeset identifiers contain a timestamp, so yours differ; every other line is the same.
+The output of steps 1 to 4 was produced on 2026-11-11 from the commit `e4fe6227eb08e05d515d77ac625515cc6054340b` plus this file's change, with the services of `compose.yaml` running. The output of steps 5 to 7 was produced on 2026-11-14 from the commit `a1decc3fe4f9c1c421e6c20c5fe949ba3f1d994c` plus this file's change, with the check stack running and `codehub` listening on port 18090; its path lines differ from yours in the view's directory. Changeset identifiers contain a timestamp, so yours differ; every other line is the same.
 
 ## Before you start
 
@@ -96,40 +97,79 @@ $ ch use acme/app
 
 `ch use` prints nothing.
 
-## 5. Stage and land a file
+## 5. Change the repository in a view
+
+A view is a directory that holds the repository's files and the server-side workspace they belong to (ADR 0048). Open one, edit it with ordinary tools, and land it. The repository is empty, so the view starts empty:
 
 ```console
-$ tmp=$(mktemp -d)
-$ echo 'hello from codehub' > "$tmp/hello.txt"
-$ ch put docs/hello.txt "$tmp/hello.txt"
-$ ch land -m first
-sha256:db8a02d35b9d85376a1ec639a8b16832debe88b4baf128c66825d2a66fcb9375
+$ ch open work
+$ cd work
+$ mkdir docs
+$ echo 'hello from codehub' > docs/hello.txt
+$ ch status
+added docs/hello.txt
+$ ch describe add the greeting
+$ ch land
+sha256:7e9655a6f8f134d7b1475513155629f081296fba558f77de4702e9c487fad3a1
 ```
 
-The file is written under a temporary directory, so the repository is left as it was. `ch put` prints nothing; it stages the file in the draft `default`. `ch land` prints the landed changeset's identifier.
+`ch open` and `ch describe` print nothing. `ch status` snapshots the view first, so it lists what the workspace now holds against its base. `ch land` lands the workspace with its description as the message and prints the landed changeset's identifier. After it, the view is closed and a later command in it is refused.
+
+Open a second view to change the file. `ch diff` shows the server's diff, and `ch land -m` lands with a message in place of the description:
+
+```console
+$ cd ..
+$ ch open second
+$ cd second
+$ echo 'hello again from codehub' > docs/hello.txt
+$ ch diff docs/hello.txt
+modified docs/hello.txt
+--- a/docs/hello.txt
++++ b/docs/hello.txt
+@@ -1,1 +1,1 @@
+-hello from codehub
++hello again from codehub
+$ ch land -m greet again
+sha256:5dd4239a37630f32050a9903ecd9da567c4a07cce16e839c547b689405c786e1
+$ ch status
+ch: this view is closed, its workspace landed; run `ch open <directory>` to open a new one
+```
+
+The last command exits 2. `ch restore <path>` returns a path to the base's content, and `ch open <directory> --prefix <path>` holds only the files under a path.
 
 ## 6. Read the history and the content
 
 ```console
+$ cd ..
 $ ch log docs/hello.txt
-sha256:db8a02d35b9d85376a1ec639a8b16832debe88b4baf128c66825d2a66fcb9375 sha256:ca8c8fd1dca71b3bbfb9d42472525ebe830054c35ca192a2db6d200360bf6a54
-$ ch read docs/hello.txt
-hello from codehub
-```
-
-Each `log` line is a changeset and the address of the file's content in it, newest first. Land a second version to see the chain:
-
-```console
-$ echo 'hello again from codehub' > "$tmp/hello.txt"
-$ ch put docs/hello.txt "$tmp/hello.txt"
-$ ch land -m second
-sha256:a2c2e7d07690c05c7fbc8f3cdeac500f3772fed22b0516eed6d012ddc3ac9617
-$ ch log docs/hello.txt
-sha256:a2c2e7d07690c05c7fbc8f3cdeac500f3772fed22b0516eed6d012ddc3ac9617 sha256:14fc3169e3290826388d13a6b1a3a3e39f517d1cdfb7a8c4d79648c2a1f7cd15
-sha256:db8a02d35b9d85376a1ec639a8b16832debe88b4baf128c66825d2a66fcb9375 sha256:ca8c8fd1dca71b3bbfb9d42472525ebe830054c35ca192a2db6d200360bf6a54
+sha256:5dd4239a37630f32050a9903ecd9da567c4a07cce16e839c547b689405c786e1 sha256:14fc3169e3290826388d13a6b1a3a3e39f517d1cdfb7a8c4d79648c2a1f7cd15 greet again
+sha256:7e9655a6f8f134d7b1475513155629f081296fba558f77de4702e9c487fad3a1 sha256:ca8c8fd1dca71b3bbfb9d42472525ebe830054c35ca192a2db6d200360bf6a54 add the greeting
 $ ch read docs/hello.txt
 hello again from codehub
 ```
+
+Each `log` line is a changeset, the address of the file's content in it, and the first line of the message it landed with, newest first. `ch log --json` prints the whole message.
+
+## 7. Change a file without a view
+
+A caller with no directory to work in stages one file at a time with `ch put`, then lands:
+
+```console
+$ echo 'put without a view' > seed.txt
+$ ch put docs/put.txt seed.txt
+$ ch land -m put a file
+sha256:9f0ae20d00da6d470dba304932c349e3277c50654f38b7855aedbbcfa983ae13
+```
+
+`ch put` prints nothing; it stages the file in the draft `default`, which `ch land` outside a view lands and which needs `--message`. `ch put --delete docs/hello.txt` stages a deletion. Inside a view, `ch put` is refused, because it would change the workspace behind the view's back:
+
+```console
+$ cd second
+$ ch put docs/hello.txt ../seed.txt
+ch: put is for a caller without a view, and this is inside the view at /tmp/tmp.zuwSbGG02n/second; edit its files and run `ch status`, `ch describe` and `ch land`
+```
+
+The command exits 2.
 
 ## Stop and clean up
 

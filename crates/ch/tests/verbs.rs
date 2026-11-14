@@ -34,11 +34,27 @@ async fn stages_lands_reads_and_logs_a_file() {
     assert_eq!(ada.ok(&["read", "src/a.txt"]).await, "two\n");
     let log = ada.ok(&["log", "src/a.txt"]).await;
     let expected = format!(
-        "{second} {}\n{first} {}\n",
+        "{second} {} second\n{first} {} first\n",
         address("two\n"),
         address("one\n")
     );
     assert_eq!(log, expected);
+}
+
+#[tokio::test]
+async fn prints_the_first_line_of_the_landing_message_in_the_log() {
+    let server = serve().await;
+    let ada = server.user("ada");
+    repository(&ada).await;
+    put(&ada, "default", "a.txt", "one\n").await;
+    let landed = ada
+        .ok(&["land", "-m", "subject line\n\nthe body"])
+        .await
+        .trim()
+        .to_owned();
+
+    let log = ada.ok(&["log", "a.txt"]).await;
+    assert_eq!(log, format!("{landed} {} subject line\n", address("one\n")));
 }
 
 #[tokio::test]
