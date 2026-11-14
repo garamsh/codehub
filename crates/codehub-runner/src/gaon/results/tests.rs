@@ -1,7 +1,7 @@
 //! Tests of the result listener, over real HTTP.
 
 use super::*;
-use crate::run_job::PostedEnd;
+use crate::run_job::{PostedEnd, PostedProduced};
 
 async fn listen(results: &Results) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -15,6 +15,7 @@ fn posted() -> Posted {
     Posted {
         end: PostedEnd::Exited(3),
         output: "tail".to_owned(),
+        produced: PostedProduced::default(),
     }
 }
 
@@ -111,6 +112,7 @@ async fn a_full_output_tail_of_control_bytes_is_taken_and_a_body_past_the_limit_
     let full = Posted {
         end: PostedEnd::Exited(1),
         output: "\u{1}".repeat(crate::host::OUTPUT_LIMIT),
+        produced: PostedProduced::default(),
     };
     let text = serde_json::to_string(&full).unwrap();
     assert!(

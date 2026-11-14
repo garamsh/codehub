@@ -6,12 +6,17 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
+use sha2::Digest as _;
 use tokio::time::Instant;
 
 use crate::executor::{End, Execution, Executor, Stop};
 use crate::host::HostExecutor;
-use crate::job_source::{Address, Download, Job, JobFile, JobId};
+use crate::job_source::{
+    Address, Download, Job, JobFile, JobId, Produced, ProducedFile, RelativePath,
+};
 
 /// How long a result that is not accepted is posted again.
 pub const POST_WINDOW: Duration = Duration::from_secs(30);
@@ -39,16 +44,85 @@ pub struct Posted {
     pub end: PostedEnd,
     /// The end of its combined output, or what stopped it from running.
     pub output: String,
+    /// The files it left under the check's outputs and caches, which the runner uploads.
+    #[serde(default)]
+    pub produced: PostedProduced,
+}
+
+/// The files a command left, as `run-job` posts them.
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize, Debug)]
+pub struct PostedProduced {
+    outputs: Vec<PostedFile>,
+    caches: Vec<PostedFile>,
+}
+
+/// A file a command left, with its bytes in base64.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+struct PostedFile {
+    path: String,
+    executable: bool,
+    bytes: String,
+}
+
+impl PostedProduced {
+    fn of(produced: &Produced) -> Self {
+        let posted = |files: &[ProducedFile]| {
+            files
+                .iter()
+                .map(|file| PostedFile {
+                    path: file.path.to_string(),
+                    executable: file.executable,
+                    bytes: STANDARD.encode(&file.bytes),
+                })
+                .collect()
+        };
+        Self {
+            outputs: posted(&produced.outputs),
+            caches: posted(&produced.caches),
+        }
+    }
+
+    /// The files posted, addressed by their bytes; `None` where a path or the base64 is bad.
+    fn produced(&self) -> Option<Produced> {
+        let read = |files: &[PostedFile]| {
+            files
+                .iter()
+                .map(|file| {
+                    let bytes = STANDARD.decode(&file.bytes).ok()?;
+                    Some(ProducedFile {
+                        path: file.path.parse::<RelativePath>().ok()?,
+                        address: Address::new(sha2::Sha256::digest(&bytes).into()),
+                        executable: file.executable,
+                        bytes,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()
+        };
+        Some(Produced {
+            outputs: read(&self.outputs)?,
+            caches: read(&self.caches)?,
+        })
+    }
 }
 
 impl From<Posted> for Execution {
     fn from(posted: Posted) -> Self {
+        let produced = posted.produced.produced();
+        let (end, output) = match (posted.end, produced.is_some()) {
+            (PostedEnd::Exited(code), true) => (End::Exited(code), posted.output),
+            (PostedEnd::Exited(_), false) => (
+                End::Signalled,
+                format!(
+                    "{}\ncodehub: the files the job left could not be read\n",
+                    posted.output
+                ),
+            ),
+            (PostedEnd::Signalled, _) => (End::Signalled, posted.output),
+        };
         Self {
-            end: match posted.end {
-                PostedEnd::Exited(code) => End::Exited(code),
-                PostedEnd::Signalled => End::Signalled,
-            },
-            output: posted.output,
+            end,
+            output,
+            produced: produced.unwrap_or_default(),
         }
     }
 }
@@ -72,6 +146,9 @@ pub struct Description {
     repository: u64,
     changeset: String,
     check: String,
+    folder: String,
+    outputs: Vec<String>,
+    caches: Vec<String>,
     command: String,
     files: Vec<DescribedFile>,
     result_url: String,
@@ -100,6 +177,9 @@ impl Description {
             repository: job.repository,
             changeset: job.changeset.to_string(),
             check: job.check.clone(),
+            folder: job.folder.clone(),
+            outputs: job.outputs.iter().map(ToString::to_string).collect(),
+            caches: job.caches.iter().map(ToString::to_string).collect(),
             command: job.command.clone(),
             files: job
                 .files
@@ -150,6 +230,17 @@ impl Description {
                 .parse::<Address>()
                 .map_err(|e| bad("changeset", &e))?,
             check: self.check.clone(),
+            folder: self.folder.clone(),
+            outputs: self
+                .outputs
+                .iter()
+                .map(|path| path.parse().map_err(|e| bad("output path", &e)))
+                .collect::<Result<_, DescriptionError>>()?,
+            caches: self
+                .caches
+                .iter()
+                .map(|path| path.parse().map_err(|e| bad("cache path", &e)))
+                .collect::<Result<_, DescriptionError>>()?,
             command: self.command.clone(),
             heartbeat_interval: Duration::ZERO,
             files,
@@ -184,20 +275,25 @@ async fn run_within(path: &Path, window: Duration) -> Result<ExitCode, String> {
         Ok(Execution {
             end: End::Exited(code),
             output,
+            produced,
         }) => Posted {
             end: PostedEnd::Exited(code),
             output,
+            produced: PostedProduced::of(&produced),
         },
         Ok(Execution {
             end: End::Signalled | End::Stopped(_),
             output,
+            ..
         }) => Posted {
             end: PostedEnd::Signalled,
             output,
+            produced: PostedProduced::default(),
         },
         Err(error) => Posted {
             end: PostedEnd::Signalled,
             output: error.to_string(),
+            produced: PostedProduced::default(),
         },
     };
     post(

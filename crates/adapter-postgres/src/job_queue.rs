@@ -1,9 +1,10 @@
 use app::domain::address::Address;
 use app::domain::check::CheckKey;
 use app::domain::job::{
-    Heartbeat, Job, JobId, JobResult, JobState, NewJob, Resolution, StopReason,
+    CacheRef, Heartbeat, Job, JobId, JobResult, JobState, NewJob, Resolution, StopReason,
 };
 use app::domain::name::OrganisationName;
+use app::domain::path::{Path, Prefix};
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
 use app::domain::runner::{Registration, RegistrationId};
@@ -381,6 +382,21 @@ impl JobQueue for PostgresJobQueue {
         }
     }
 
+    async fn running(&self, job: JobId, runners: &[RegistrationId]) -> Result<Job, JobQueueError> {
+        sqlx::query_as::<_, JobRow>(concat!(
+            "select ",
+            job_columns!(),
+            " from jobs where id = $1 and state = 'running' and runner = any($2)"
+        ))
+        .bind(number(job)?)
+        .bind(numbers(runners)?)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?
+        .ok_or(JobQueueError::NotFound(job))?
+        .job()
+    }
+
     async fn complete(
         &self,
         job: JobId,
@@ -507,6 +523,79 @@ impl JobQueue for PostgresJobQueue {
         .await
         .map_err(backend)?;
         jobs(rows)
+    }
+
+    async fn cache_ref(
+        &self,
+        repository: RepositoryId,
+        folder: &Prefix,
+        path: &Path,
+    ) -> Result<Option<CacheRef>, JobQueueError> {
+        let row = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
+            "select tree, changeset from cache_refs \
+             where repository = $1 and folder = $2 and cache_path = $3",
+        )
+        .bind(conversion::repository_column(repository).map_err(backend)?)
+        .bind(conversion::prefix_column(folder))
+        .bind(conversion::path_column(path))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?;
+        row.map(|(tree, changeset)| {
+            Ok::<_, String>(CacheRef {
+                tree: conversion::address(tree)?,
+                changeset: conversion::address(changeset)?,
+            })
+        })
+        .transpose()
+        .map_err(backend)
+    }
+
+    async fn advance_cache_ref(
+        &self,
+        repository: RepositoryId,
+        folder: &Prefix,
+        path: &Path,
+        from: Option<Address>,
+        to: CacheRef,
+    ) -> Result<bool, JobQueueError> {
+        let repository = conversion::repository_column(repository).map_err(backend)?;
+        let folder = conversion::prefix_column(folder);
+        let path = conversion::path_column(path);
+        let tree = to.tree.digest().as_slice();
+        let changeset = to.changeset.digest().as_slice();
+        let moved = match from {
+            None => {
+                sqlx::query(
+                    "insert into cache_refs (repository, folder, cache_path, tree, changeset) \
+                     values ($1, $2, $3, $4, $5) on conflict do nothing",
+                )
+                .bind(repository)
+                .bind(folder)
+                .bind(path)
+                .bind(tree)
+                .bind(changeset)
+                .execute(&self.pool)
+                .await
+            }
+            Some(from) => {
+                sqlx::query(
+                    "update cache_refs set tree = $4, changeset = $5, updated_at = now() \
+                     where repository = $1 and folder = $2 and cache_path = $3 and changeset = $6",
+                )
+                .bind(repository)
+                .bind(folder)
+                .bind(path)
+                .bind(tree)
+                .bind(changeset)
+                .bind(from.digest().as_slice())
+                .execute(&self.pool)
+                .await
+            }
+        }
+        .map_err(backend)?
+        .rows_affected();
+        Ok(moved == 1)
     }
 
     async fn expire(&self, now: i64) -> Result<Vec<Job>, JobQueueError> {

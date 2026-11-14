@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::host::HostExecutor;
+use crate::job_source::Produced;
 use crate::run_job::Description;
 
 use super::*;
@@ -40,6 +41,7 @@ impl Executor for Recording {
         Ok(Execution {
             end: self.end,
             output: String::new(),
+            produced: Produced::default(),
         })
     }
 }
@@ -83,6 +85,7 @@ fn an_end_that_is_not_a_code_from_0_to_255_gives_code_1_and_the_line_names_it() 
         Outcome::of(Ok(Execution {
             end,
             output: String::new(),
+            produced: Produced::default(),
         }))
     };
     let signalled = of(End::Signalled);

@@ -16,7 +16,7 @@ use tokio::net::unix::pipe;
 use tokio::process::Command;
 
 use crate::executor::{End, Execution, Executor, ExecutorError, Stop};
-use crate::job_source::{Address, Job, JobFile};
+use crate::job_source::{Address, Job, JobFile, Produced, ProducedFile, RelativePath};
 
 /// How much of a command's output a report carries.
 pub const OUTPUT_LIMIT: usize = 64 * 1024;
@@ -94,12 +94,23 @@ impl HostExecutor {
     ) -> Result<Execution, ExecutorError> {
         let fetched = tokio::select! {
             reason = stop.requested() => {
-                return Ok(Execution { end: End::Stopped(reason), output: String::new() });
+                return Ok(Execution {
+                    end: End::Stopped(reason),
+                    output: String::new(),
+                    produced: Produced::default(),
+                });
             }
             fetched = self.fetch_all(job, dir) => fetched,
         };
         fetched?;
-        self.command(job, dir, stop).await
+        let mut execution = self.command(job, dir, stop).await?;
+        if execution.end == End::Exited(0) {
+            execution.produced = Produced {
+                outputs: collect(dir, &job.outputs).await?,
+                caches: collect(dir, &job.caches).await?,
+            };
+        }
+        Ok(execution)
     }
 
     async fn fetch_all(&self, job: &Job, dir: &Path) -> Result<(), ExecutorError> {
@@ -180,6 +191,7 @@ impl HostExecutor {
             .env("CODEHUB_REPOSITORY", job.repository.to_string())
             .env("CODEHUB_CHANGESET", job.changeset.to_string())
             .env("CODEHUB_CHECK", &job.check)
+            .env("CODEHUB_FOLDER", &job.folder)
             .stdin(Stdio::null())
             .stdout(writer)
             .stderr(writer_again)
@@ -219,8 +231,56 @@ impl HostExecutor {
             drain_abort.abort();
         }
         let output = tail.lock().unwrap_or_else(PoisonError::into_inner).text();
-        Ok(Execution { end, output })
+        Ok(Execution {
+            end,
+            output,
+            produced: Produced::default(),
+        })
     }
+}
+
+/// The regular files under each of `declared`, in the job's directory `dir`. A path the command
+/// left no directory at has none; a link or another kind of file is not collected.
+async fn collect(
+    dir: &Path,
+    declared: &[RelativePath],
+) -> Result<Vec<ProducedFile>, ExecutorError> {
+    let mut found = Vec::new();
+    for path in declared {
+        let mut pending = vec![(dir.join(path.as_path()), path.to_string())];
+        while let Some((at, name)) = pending.pop() {
+            let fail = |error: std::io::Error| ExecutorError::Collect {
+                path: name.clone(),
+                reason: error.to_string(),
+            };
+            let kind = match tokio::fs::symlink_metadata(&at).await {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(fail(error)),
+            };
+            if kind.is_dir() {
+                let mut entries = tokio::fs::read_dir(&at).await.map_err(fail)?;
+                while let Some(entry) = entries.next_entry().await.map_err(fail)? {
+                    let child = entry.file_name().to_string_lossy().into_owned();
+                    pending.push((entry.path(), format!("{name}/{child}")));
+                }
+            } else if kind.is_file() {
+                let bytes = tokio::fs::read(&at).await.map_err(fail)?;
+                found.push(ProducedFile {
+                    path: name.parse().map_err(|error| ExecutorError::Collect {
+                        path: name.clone(),
+                        reason: format!("{error}"),
+                    })?,
+                    address: Address::new(Sha256::digest(&bytes).into()),
+                    executable: kind.permissions().mode() & 0o111 != 0,
+                    bytes,
+                });
+            }
+        }
+    }
+    found.sort_by_key(|file| file.path.to_string());
+    found.dedup_by(|a, b| a.path == b.path);
+    Ok(found)
 }
 
 async fn read_into(mut receiver: pipe::Receiver, tail: Arc<Mutex<Tail>>) {

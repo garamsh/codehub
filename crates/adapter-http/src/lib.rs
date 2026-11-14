@@ -275,6 +275,7 @@ routes! {
     "/v1/runner/jobs/claim" => post(jobs::claim::<P>);
     "/v1/runner/jobs/{id}/heartbeat" => post(jobs::heartbeat::<P>);
     "/v1/runner/jobs/{id}/result" => post(jobs::report::<P>);
+    "/v1/runner/jobs/{id}/uploads" => post(jobs::uploads::<P>);
     "/v1/orgs/{org}/repos/{repo}/changesets/{id}/checks" => get(checks::list::<P>);
     "/v1/orgs/{org}/repos/{repo}/jobs/{id}/cancel" => post(checks::cancel::<P>);
     "/v1/orgs/{org}/repos/{repo}/refs/{name}" => get(checks::reference::<P>);

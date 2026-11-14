@@ -156,6 +156,28 @@ pub struct JobFile {
     pub download: Download,
 }
 
+/// A file a command left under a path its check declares as an output or a cache.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ProducedFile {
+    /// Where the file sits in the tree, `/`-separated.
+    pub path: RelativePath,
+    /// What its bytes hash to.
+    pub address: Address,
+    /// Whether it is executable.
+    pub executable: bool,
+    /// Its bytes.
+    pub bytes: Vec<u8>,
+}
+
+/// The files a command left under the paths its check declares as outputs and as caches.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Produced {
+    /// The files under the check's outputs.
+    pub outputs: Vec<ProducedFile>,
+    /// The files under the check's caches.
+    pub caches: Vec<ProducedFile>,
+}
+
 /// A job a claim returned.
 #[derive(Clone, Debug)]
 pub struct Job {
@@ -167,8 +189,14 @@ pub struct Job {
     pub repository: u64,
     /// The changeset the check runs against.
     pub changeset: Address,
-    /// The check's name.
+    /// The check's identifier: `<folder>:<name>`, the bare name at the repository root.
     pub check: String,
+    /// The folder the check is defined in, `/`-separated; empty for the repository root.
+    pub folder: String,
+    /// The paths the check declares as outputs, from the repository root.
+    pub outputs: Vec<RelativePath>,
+    /// The paths the check declares as caches, from the repository root.
+    pub caches: Vec<RelativePath>,
     /// The command to run under `/bin/sh -c`.
     pub command: String,
     /// How often to heartbeat.
@@ -217,6 +245,8 @@ pub struct Report {
     pub exit_code: Option<i32>,
     /// The end of the output.
     pub output: String,
+    /// The files the command left under the check's outputs and caches; none unless it passed.
+    pub produced: Produced,
 }
 
 /// Why a conversation with the server failed.
@@ -265,7 +295,9 @@ pub trait JobSource {
     /// server no longer holds the job for this runner.
     fn heartbeat(&self, job: JobId) -> impl Future<Output = Result<Heartbeat, SourceError>> + Send;
 
-    /// Reports how `job` ended, which ends it on the server.
+    /// Reports how `job` ended, which ends it on the server. Uploads the files of the report the
+    /// server lacks first; where that fails, reports anyway, and the server ends a passed job
+    /// whose files it lacks as failed.
     ///
     /// # Errors
     ///

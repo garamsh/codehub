@@ -2515,6 +2515,100 @@
         ]
       }
     },
+    "/v1/runner/jobs/{id}/uploads": {
+      "post": {
+        "summary": "Get grants to upload the files a held job left, before reporting its result.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The job's identifier.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobUploads"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The grants.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobUploadGrants"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A name, path, address, id or body is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer token was presented.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not a registered runner.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The job is not held by the caller.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed; the body names no internals.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/v1/orgs/{org}/repos/{repo}/changesets/{id}/files": {
       "get": {
         "summary": "List every file of a changeset's tree under a prefix, each with a grant to download its content.",
@@ -3401,13 +3495,21 @@
           "check": {
             "type": "object",
             "required": [
-              "name",
+              "id",
+              "folder",
               "command",
-              "timeout"
+              "timeout",
+              "outputs",
+              "caches"
             ],
             "properties": {
-              "name": {
-                "type": "string"
+              "id": {
+                "type": "string",
+                "description": "The check's identifier: `<folder>:<name>`, the bare name at the repository root."
+              },
+              "folder": {
+                "type": "string",
+                "description": "The folder the check is defined in, components separated by `/`; empty for the repository root."
               },
               "command": {
                 "type": "string"
@@ -3416,6 +3518,20 @@
                 "type": "integer",
                 "minimum": 0,
                 "description": "Seconds."
+              },
+              "outputs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The directories the check declares as outputs, from the repository root."
+              },
+              "caches": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The directories the check declares as caches, from the repository root."
               }
             }
           },
@@ -3428,7 +3544,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/JobFile"
-            }
+            },
+            "description": "The files the job is granted: the changeset files its inputs match, the output trees of the checks it needs at their declared paths, and the tree of each cache ref at the cache paths. A file not listed is not granted."
           }
         }
       },
@@ -3492,6 +3609,20 @@
           "output_tail": {
             "type": "string",
             "description": "The end of the command's output."
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProducedFile"
+            },
+            "description": "The files the command left under the check's outputs, already uploaded; read only where the status is `passed`."
+          },
+          "caches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProducedFile"
+            },
+            "description": "The files the command left under the check's caches, already uploaded; read only where the status is `passed`."
           }
         }
       },
@@ -4017,6 +4148,67 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ListedFile"
+            }
+          }
+        }
+      },
+      "ProducedFile": {
+        "type": "object",
+        "required": [
+          "path",
+          "address",
+          "executable"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Where the file is in the repository, from the root."
+          },
+          "address": {
+            "$ref": "#/components/schemas/Address"
+          },
+          "executable": {
+            "type": "boolean"
+          }
+        }
+      },
+      "JobUploads": {
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Upload"
+            }
+          }
+        }
+      },
+      "JobUploadGrants": {
+        "type": "object",
+        "required": [
+          "grants"
+        ],
+        "properties": {
+          "grants": {
+            "type": "array",
+            "description": "One grant for each requested file the object store lacks; a file it holds has none.",
+            "items": {
+              "type": "object",
+              "required": [
+                "address",
+                "grant"
+              ],
+              "properties": {
+                "address": {
+                  "$ref": "#/components/schemas/Address"
+                },
+                "grant": {
+                  "$ref": "#/components/schemas/TransferGrant"
+                }
+              }
             }
           }
         }

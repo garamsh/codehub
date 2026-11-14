@@ -6,7 +6,9 @@ use std::time::Duration;
 use tokio::time::{MissedTickBehavior, interval_at};
 
 use crate::executor::{End, Execution, Executor, ExecutorError, Stop, StopSignal};
-use crate::job_source::{Heartbeat, Job, JobSource, Report, SourceError, Status, StopReason};
+use crate::job_source::{
+    Heartbeat, Job, JobSource, Produced, Report, SourceError, Status, StopReason,
+};
 
 /// How long the runner waits after a failed claim before it claims again.
 pub const RETRY_PAUSE: Duration = Duration::from_secs(5);
@@ -91,7 +93,11 @@ async fn keep_alive<S: JobSource>(source: &S, job: &Job, signal: &StopSignal) ->
 
 fn report_of(result: Result<Execution, ExecutorError>) -> Report {
     match result {
-        Ok(Execution { end, output }) => {
+        Ok(Execution {
+            end,
+            output,
+            produced,
+        }) => {
             let (status, exit_code) = match end {
                 End::Exited(0) => (Status::Passed, Some(0)),
                 End::Exited(code) => (Status::Failed, Some(code)),
@@ -103,12 +109,18 @@ fn report_of(result: Result<Execution, ExecutorError>) -> Report {
                 status,
                 exit_code,
                 output,
+                produced: if status == Status::Passed {
+                    produced
+                } else {
+                    Produced::default()
+                },
             }
         }
         Err(error) => Report {
             status: Status::Failed,
             exit_code: None,
             output: error.to_string(),
+            produced: Produced::default(),
         },
     }
 }
@@ -129,6 +141,9 @@ mod tests {
             repository: 3,
             changeset: Address::new([1; 32]),
             check: "unit".into(),
+            folder: String::new(),
+            outputs: Vec::new(),
+            caches: Vec::new(),
             command: "true".into(),
             heartbeat_interval: Duration::from_secs(5),
             files: Vec::new(),
@@ -197,9 +212,14 @@ mod tests {
                 reason = stop.requested() => Ok(Execution {
                     end: End::Stopped(reason),
                     output: "stopped".into(),
+                    produced: Produced::default(),
                 }),
                 () = tokio::time::sleep(self.after) => match &self.end {
-                    Ok(end) => Ok(Execution { end: *end, output: "out".into() }),
+                    Ok(end) => Ok(Execution {
+                        end: *end,
+                        output: "out".into(),
+                        produced: Produced::default(),
+                    }),
                     Err(text) => Err(ExecutorError::Mismatch { path: text.clone() }),
                 },
             }
@@ -224,7 +244,8 @@ mod tests {
             [Report {
                 status: Status::Passed,
                 exit_code: Some(0),
-                output: "out".into()
+                output: "out".into(),
+                produced: Produced::default(),
             }]
         );
     }

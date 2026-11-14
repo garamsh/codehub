@@ -6,13 +6,16 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::job_source::{
-    Address, Download, Heartbeat, Job, JobFile, JobId, JobSource, Report, SourceError, Status,
-    StopReason,
+    Address, Download, Heartbeat, Job, JobFile, JobId, JobSource, Produced, ProducedFile, Report,
+    SourceError, Status, StopReason,
 };
 use crate::token::TokenSource;
 
 /// How long a claim may take. The server holds it, so this exceeds any hold.
 const CLAIM_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long the upload of one file may take.
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// How long any other request may take. A heartbeat that waits longer than the server's lease
 /// would let the job be handed to another runner while this one still runs it.
@@ -31,8 +34,11 @@ struct WireJob {
 
 #[derive(Deserialize)]
 struct WireCheck {
-    name: String,
+    id: String,
+    folder: String,
     command: String,
+    outputs: Vec<String>,
+    caches: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -75,6 +81,50 @@ struct WireResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     exit_code: Option<i32>,
     output_tail: &'a str,
+    outputs: Vec<WireProduced>,
+    caches: Vec<WireProduced>,
+}
+
+#[derive(Serialize)]
+struct WireProduced {
+    path: String,
+    address: String,
+    executable: bool,
+}
+
+impl WireProduced {
+    fn of(files: &[ProducedFile]) -> Vec<Self> {
+        files
+            .iter()
+            .map(|file| Self {
+                path: file.path.to_string(),
+                address: file.address.to_string(),
+                executable: file.executable,
+            })
+            .collect()
+    }
+}
+
+#[derive(Serialize)]
+struct WireUploads {
+    files: Vec<WireUpload>,
+}
+
+#[derive(Serialize)]
+struct WireUpload {
+    address: String,
+    size: usize,
+}
+
+#[derive(Deserialize)]
+struct WireUploadGrants {
+    grants: Vec<WireUploadGrant>,
+}
+
+#[derive(Deserialize)]
+struct WireUploadGrant {
+    address: String,
+    grant: WireGrant,
 }
 
 fn address(text: &str) -> Result<Address, SourceError> {
@@ -106,12 +156,24 @@ impl WireJob {
                 })
             })
             .collect::<Result<_, SourceError>>()?;
+        let paths = |texts: Vec<String>| {
+            texts
+                .into_iter()
+                .map(|text| {
+                    text.parse()
+                        .map_err(|error| SourceError::Malformed(format!("{text:?}: {error}")))
+                })
+                .collect::<Result<Vec<_>, SourceError>>()
+        };
         Ok(Job {
             id: JobId::new(self.id),
             organisation: self.organisation,
             repository: self.repository_id,
             changeset: address(&self.changeset)?,
-            check: self.check.name,
+            check: self.check.id,
+            folder: self.check.folder,
+            outputs: paths(self.check.outputs)?,
+            caches: paths(self.check.caches)?,
             command: self.check.command,
             heartbeat_interval: Duration::from_secs(self.heartbeat_interval),
             files,
@@ -184,6 +246,55 @@ impl HttpJobSource {
             status => Err(SourceError::Status(status.as_u16())),
         }
     }
+
+    /// Uploads the files of `produced` that the server's object store lacks.
+    async fn upload(&self, job: JobId, produced: &Produced) -> Result<(), SourceError> {
+        let files: Vec<&ProducedFile> = produced.outputs.iter().chain(&produced.caches).collect();
+        if files.is_empty() {
+            return Ok(());
+        }
+        let request = WireUploads {
+            files: files
+                .iter()
+                .map(|file| WireUpload {
+                    address: file.address.to_string(),
+                    size: file.bytes.len(),
+                })
+                .collect(),
+        };
+        let granted: WireUploadGrants = self
+            .post(
+                &format!("/v1/runner/jobs/{job}/uploads"),
+                self.call_timeout,
+                Some(&request),
+            )
+            .await?
+            .json()
+            .await
+            .map_err(|error| SourceError::Malformed(error.to_string()))?;
+        for grant in granted.grants {
+            let wanted = address(&grant.address)?;
+            let Some(file) = files.iter().find(|file| file.address == wanted) else {
+                continue;
+            };
+            let mut put = self
+                .http
+                .put(&grant.grant.url)
+                .timeout(UPLOAD_TIMEOUT)
+                .body(file.bytes.clone());
+            for header in grant.grant.headers {
+                put = put.header(header.name, header.value);
+            }
+            let response = put
+                .send()
+                .await
+                .map_err(|error| SourceError::Transport(error.without_url().to_string()))?;
+            if !response.status().is_success() {
+                return Err(SourceError::Status(response.status().as_u16()));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl JobSource for HttpJobSource {
@@ -225,10 +336,15 @@ impl JobSource for HttpJobSource {
     }
 
     async fn report(&self, job: JobId, report: &Report) -> Result<(), SourceError> {
+        if let Err(error) = self.upload(job, &report.produced).await {
+            eprintln!("job {job}: uploading its files failed: {error}");
+        }
         let body = WireResult {
             status: status_name(report.status),
             exit_code: report.exit_code,
             output_tail: &report.output,
+            outputs: WireProduced::of(&report.produced.outputs),
+            caches: WireProduced::of(&report.produced.caches),
         };
         self.post(
             &format!("/v1/runner/jobs/{job}/result"),

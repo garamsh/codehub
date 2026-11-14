@@ -15,7 +15,7 @@ use axum::{Json, Router};
 
 use crate::config::RUNNER_LABEL;
 use crate::job_source::{Address, JobId, StopReason};
-use crate::run_job::{Posted, PostedEnd};
+use crate::run_job::{Posted, PostedEnd, PostedProduced};
 use crate::token::TokenSource;
 
 use super::*;
@@ -413,6 +413,9 @@ fn job(id: u64, command: &str) -> Job {
         repository: 42,
         changeset: Address::new([9; 32]),
         check: "unit".into(),
+        folder: String::new(),
+        outputs: Vec::new(),
+        caches: Vec::new(),
         command: command.into(),
         heartbeat_interval: Duration::from_secs(5),
         files: Vec::new(),
@@ -437,6 +440,7 @@ fn posts(code: i32, output: &str, phases: &[(&'static str, bool)]) -> Guest {
         posted: Posted {
             end: PostedEnd::Exited(code),
             output: output.to_owned(),
+            produced: PostedProduced::default(),
         },
         phases: phases.to_vec(),
     }

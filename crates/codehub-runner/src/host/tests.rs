@@ -36,6 +36,9 @@ fn job(command: &str) -> Job {
         repository: 42,
         changeset: Address::new([9; 32]),
         check: "unit".into(),
+        folder: String::new(),
+        outputs: Vec::new(),
+        caches: Vec::new(),
         command: command.into(),
         heartbeat_interval: Duration::from_secs(5),
         files: Vec::new(),
@@ -140,6 +143,64 @@ async fn the_command_runs_in_a_fresh_directory_with_the_job_in_its_environment()
         0,
         "the directory is removed"
     );
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn the_environment_carries_the_folder_beside_the_other_variables() {
+    let work = scratch();
+    let mut job = job("echo \"$CODEHUB_CHECK|$CODEHUB_FOLDER|$CODEHUB_ORGANISATION\"");
+    job.check = "web:unit".into();
+    job.folder = "web".into();
+    let execution = run(&executor(&work), &job).await.unwrap();
+    assert_eq!(execution.output, "web:unit|web|acme\n");
+    // Control: a check at the repository root has an empty folder, set and not absent.
+    let mut root = job.clone();
+    root.check = "unit".into();
+    root.folder = String::new();
+    root.command = "echo \"${CODEHUB_FOLDER-unset}|$CODEHUB_CHECK\"".into();
+    let execution = run(&executor(&work), &root).await.unwrap();
+    assert_eq!(execution.output, "|unit\n");
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn the_files_left_under_outputs_and_caches_are_collected_when_the_command_exits_0() {
+    let work = scratch();
+    let mut job = job(
+        "mkdir -p web/dist/sub web/.cache web/other; echo a > web/dist/sub/a; echo b > web/.cache/b; \
+         echo c > web/other/c; printf '#!/bin/sh\\n' > web/dist/run; chmod +x web/dist/run",
+    );
+    job.outputs = vec!["web/dist".parse().unwrap()];
+    job.caches = vec!["web/.cache".parse().unwrap()];
+    let execution = run(&executor(&work), &job).await.unwrap();
+    let names = |files: &[ProducedFile]| -> Vec<(String, bool)> {
+        files
+            .iter()
+            .map(|file| (file.path.to_string(), file.executable))
+            .collect()
+    };
+    assert_eq!(
+        names(&execution.produced.outputs),
+        [
+            ("web/dist/run".to_owned(), true),
+            ("web/dist/sub/a".to_owned(), false)
+        ],
+        "a file outside the declared paths (web/other/c) is not collected"
+    );
+    assert_eq!(
+        names(&execution.produced.caches),
+        [("web/.cache/b".to_owned(), false)]
+    );
+    let a = &execution.produced.outputs[1];
+    assert_eq!(
+        (a.bytes.as_slice(), a.address),
+        (&b"a\n"[..], address_of(b"a\n"))
+    );
+    // Control: the same command that exits otherwise collects nothing.
+    job.command.push_str("; exit 1");
+    let execution = run(&executor(&work), &job).await.unwrap();
+    assert_eq!(execution.produced, Produced::default());
     std::fs::remove_dir_all(&work).unwrap();
 }
 

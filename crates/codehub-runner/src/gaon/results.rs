@@ -16,8 +16,11 @@ use crate::host::OUTPUT_LIMIT;
 use crate::run_job::Posted;
 
 /// The most a posted result may weigh, in bytes: an output tail of control bytes, each of which
-/// JSON writes in 6, and room for the rest of the body.
-const BODY_LIMIT: usize = 6 * OUTPUT_LIMIT + 4 * 1024;
+/// JSON writes in 6, room for the files a job left, and room for the rest of the body.
+const BODY_LIMIT: usize = 6 * OUTPUT_LIMIT + 4 * 1024 + PRODUCED_LIMIT;
+
+/// The most the files a job left may take in a result, as base64, in bytes.
+const PRODUCED_LIMIT: usize = 64 * 1024 * 1024;
 
 struct Slot {
     digest: [u8; 32],
