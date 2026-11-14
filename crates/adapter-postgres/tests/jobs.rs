@@ -58,13 +58,13 @@ async fn queued(harness: &Harness, count: usize, timeout: u64) -> (Registration,
             organisation: "acme".parse().unwrap(),
             repository: repo.id,
             changeset,
-            check: CheckDefinition {
-                name: format!("check-{n}").parse().unwrap(),
-                command: Command::new("run").unwrap(),
-                labels: BTreeSet::new(),
-                blocking: true,
-                timeout: Timeout::new(timeout).unwrap(),
-            },
+            check: CheckDefinition::new(
+                format!("check-{n}").parse().unwrap(),
+                Command::new("run").unwrap(),
+                BTreeSet::new(),
+                true,
+                Timeout::new(timeout).unwrap(),
+            ),
         })
         .collect();
     harness.queue.queue(new).await.unwrap();

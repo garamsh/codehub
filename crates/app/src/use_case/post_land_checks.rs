@@ -6,15 +6,17 @@ use std::fmt;
 
 use crate::domain::address::Address;
 use crate::domain::changeset::{Change, Changeset};
-use crate::domain::check::CheckDefinition;
+use crate::domain::check::{CheckDefinition, needs_fault};
 use crate::domain::draft::Draft;
 use crate::domain::job::{Job, JobState, NewJob};
+use crate::domain::path::{Path, Prefix};
 use crate::domain::repository::RepositoryId;
 use crate::domain::revert::{self, AUTHOR, Revert};
+use crate::domain::tree::{Entry, Tree};
 use crate::port::driven::changeset_log::ChangesetLog;
 use crate::port::driven::changeset_log::ChangesetLogError;
 use crate::port::driven::check_definitions::CheckDefinitions;
-use crate::port::driven::derived_data::DerivedData;
+use crate::port::driven::derived_data::{DerivedData, DerivedDataError};
 use crate::port::driven::job_queue::JobQueue;
 use crate::port::driven::job_queue::JobQueueError;
 use crate::port::driven::object_store::ObjectStore;
@@ -259,23 +261,29 @@ where
 
         let file = adapters.definitions.file();
         let root = adapters.derived.root(repository, landed).await?;
-        let definitions = match file_at(adapters.derived, repository, Some(root), file).await? {
-            None => Vec::new(),
-            Some(found) => {
-                let bytes = adapters.objects.get(repository, found.content).await?;
-                match adapters.definitions.parse(&bytes) {
-                    Ok(definitions) => definitions,
-                    Err(error) => {
-                        let unreadable = job(CheckDefinition::unreadable(file));
-                        let failed = adapters
-                            .queue
-                            .record_failed(unreadable, error.to_string().into_bytes())
-                            .await?;
-                        return Ok(Some(failed));
-                    }
+        let mut definitions = Vec::new();
+        for (folder, content) in self.check_files(repository, root).await? {
+            let bytes = adapters.objects.get(repository, content).await?;
+            match adapters.definitions.parse(&folder, &bytes) {
+                Ok(read) => definitions.extend(read),
+                Err(error) => {
+                    let unreadable = job(CheckDefinition::unreadable(&folder, file));
+                    let failed = adapters
+                        .queue
+                        .record_failed(unreadable, error.to_string().into_bytes())
+                        .await?;
+                    return Ok(Some(failed));
                 }
             }
-        };
+        }
+        if let Some(fault) = needs_fault(&definitions) {
+            let unreadable = job(CheckDefinition::unreadable(&fault.check().folder, file));
+            let failed = adapters
+                .queue
+                .record_failed(unreadable, fault.to_string().into_bytes())
+                .await?;
+            return Ok(Some(failed));
+        }
 
         let blocking = definitions.iter().any(|check| check.blocking);
         adapters
@@ -286,6 +294,34 @@ where
             advance(adapters.log, repository, landed).await?;
         }
         Ok(None)
+    }
+
+    /// The folders of the tree rooted at `root` that hold a check definitions file, each with the
+    /// address of the file's content, a folder before the folders under it.
+    async fn check_files(
+        &self,
+        repository: RepositoryId,
+        root: Address,
+    ) -> Result<Vec<(Prefix, Address)>, DerivedDataError> {
+        let derived = self.adapters.derived;
+        let file = self.adapters.definitions.file();
+        let mut found = Vec::new();
+        let mut pending = vec![(Prefix::whole(), root)];
+        while let Some((folder, address)) = pending.pop() {
+            let tree = derived.tree(repository, address).await?;
+            for (name, entry) in &tree.entries {
+                if let Entry::Directory(subtree) = entry {
+                    let mut components = folder.components().to_vec();
+                    components.push(name.clone());
+                    pending.push((Prefix::new(components), *subtree));
+                }
+            }
+            if let Some(content) = file_in(derived, repository, &tree, file).await? {
+                found.push((folder, content));
+            }
+        }
+        found.sort_by(|(first, _), (second, _)| first.cmp(second));
+        Ok(found)
     }
 
     /// Where the blocking check `job` has failed or timed out, reverts its changeset on `main`:
@@ -399,5 +435,27 @@ where
             }
             Err(error) => Err(RevertError::Land(error)),
         }
+    }
+}
+
+/// The address of the content of the file at `path` below `tree`, if it holds one.
+async fn file_in<D: DerivedData>(
+    derived: &D,
+    repository: RepositoryId,
+    tree: &Tree,
+    path: &Path,
+) -> Result<Option<Address>, DerivedDataError> {
+    let Some((first, rest)) = path.components().split_first() else {
+        return Ok(None);
+    };
+    match tree.entries.get(first) {
+        Some(Entry::File(file)) if rest.is_empty() => Ok(Some(file.content)),
+        Some(Entry::Directory(subtree)) => match Path::new(rest.to_vec()) {
+            Ok(rest) => Ok(file_at(derived, repository, Some(*subtree), &rest)
+                .await?
+                .map(|file| file.content)),
+            Err(_) => Ok(None),
+        },
+        Some(Entry::File(_)) | None => Ok(None),
     }
 }

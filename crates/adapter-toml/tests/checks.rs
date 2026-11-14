@@ -65,3 +65,23 @@ async fn checks_are_visible_to_readers_and_cancelled_by_administrators() {
 async fn only_a_failed_blocking_check_keeps_a_changeset_from_last_green() {
     checks::only_a_failed_blocking_check_keeps_a_changeset_from_last_green::<Harness>().await;
 }
+
+#[tokio::test]
+async fn checks_files_in_every_folder_queue_their_checks() {
+    checks::checks_files_in_every_folder_queue_their_checks::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_queued_job_carries_the_needs_of_its_check() {
+    checks::a_queued_job_carries_the_needs_of_its_check::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_need_naming_no_check_gives_one_failed_blocking_job() {
+    checks::a_need_naming_no_check_gives_one_failed_blocking_job::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_cycle_of_needs_gives_one_failed_blocking_job() {
+    checks::a_cycle_of_needs_gives_one_failed_blocking_job::<Harness>().await;
+}

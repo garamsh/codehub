@@ -267,12 +267,14 @@ impl Api {
             .collect();
         let definitions = checks
             .iter()
-            .map(|(name, labels)| CheckDefinition {
-                name: name.parse().unwrap(),
-                command: Command::new("true").unwrap(),
-                labels: labels.iter().map(|label| label.parse().unwrap()).collect(),
-                blocking: true,
-                timeout: Timeout::new(60).unwrap(),
+            .map(|(name, labels)| {
+                CheckDefinition::new(
+                    name.parse().unwrap(),
+                    Command::new("true").unwrap(),
+                    labels.iter().map(|label| label.parse().unwrap()).collect(),
+                    true,
+                    Timeout::new(60).unwrap(),
+                )
             })
             .collect();
         self.stores.definitions.teach(&text, Ok(definitions));

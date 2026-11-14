@@ -1,4 +1,5 @@
-//! Reads a repository's check definitions from the TOML file `.codehub/checks.toml` (ADR 0035).
+//! Reads a folder's check definitions from the TOML file `.codehub/checks.toml` (ADR 0035,
+//! ADR 0049).
 //!
 //! The file lists each check as a `[[check]]` table:
 //!
@@ -9,14 +10,18 @@
 //! labels = ["linux"]       # optional: names a runner must offer
 //! blocking = true          # optional: true unless it says otherwise
 //! timeout = 600            # optional: seconds, 1 to 86400; 600 unless it says otherwise
+//! inputs = ["src/**"]      # optional: patterns, "//" for the root; the whole folder by default
+//! needs = ["lint", "//lib:build"]  # optional: checks that run first
+//! outputs = ["target/bin"] # optional: paths, relative to the folder, the check produces
+//! caches = ["target"]      # optional: paths, relative to the folder, used as a build cache
 //! ```
 
 use std::collections::BTreeSet;
 use std::ops::Range;
 
-use app::domain::check::{CheckDefinition, Command, Timeout};
+use app::domain::check::{CheckDefinition, Command, Need, Pattern, Timeout};
 use app::domain::name::{CheckName, Label};
-use app::domain::path::{Path, PathError};
+use app::domain::path::{Path, PathError, Prefix};
 use app::port::driven::check_definitions::{CheckDefinitions, CheckFileError};
 use toml::Spanned;
 use toml::de::{DeTable, DeValue};
@@ -49,9 +54,10 @@ fn line_of(text: &str, offset: usize) -> usize {
     })
 }
 
-/// Reads one `[[check]]` table; `at` is where it starts.
+/// Reads the `[[check]]` tables of the file of `folder`.
 struct Reader<'t> {
     text: &'t str,
+    folder: &'t Prefix,
 }
 
 impl Reader<'_> {
@@ -73,6 +79,29 @@ impl Reader<'_> {
             .ok_or_else(|| self.invalid(&value.span(), format!("{field} is a string")))
     }
 
+    /// The strings of the array `field`, each read by `parse`; `None` where `field` is absent.
+    fn list<T>(
+        &self,
+        fields: &DeTable<'_>,
+        field: &str,
+        parse: impl Fn(&str) -> Result<T, String>,
+    ) -> Result<Option<Vec<T>>, CheckFileError> {
+        let Some(value) = fields.get(field) else {
+            return Ok(None);
+        };
+        let items = value.get_ref().as_array().ok_or_else(|| {
+            self.invalid(&value.span(), format!("{field} is an array of strings"))
+        })?;
+        items
+            .iter()
+            .map(|item| {
+                parse(self.string(item, field)?)
+                    .map_err(|error| self.invalid(&item.span(), format!("{field}: {error}")))
+            })
+            .collect::<Result<_, _>>()
+            .map(Some)
+    }
+
     fn check(&self, table: &Spanned<DeValue<'_>>) -> Result<CheckDefinition, CheckFileError> {
         let span = table.span();
         let fields = table
@@ -82,7 +111,15 @@ impl Reader<'_> {
         for (key, _) in fields {
             if !matches!(
                 key.get_ref().as_ref(),
-                "name" | "command" | "labels" | "blocking" | "timeout"
+                "name"
+                    | "command"
+                    | "labels"
+                    | "blocking"
+                    | "timeout"
+                    | "inputs"
+                    | "needs"
+                    | "outputs"
+                    | "caches"
             ) {
                 return Err(self.invalid(&key.span(), format!("unknown field {}", key.get_ref())));
             }
@@ -139,12 +176,31 @@ impl Reader<'_> {
             }
         };
 
+        let inputs = self
+            .list(fields, "inputs", |text| {
+                text.parse::<Pattern>().map_err(|error| error.to_string())
+            })?
+            .unwrap_or_else(|| vec![Pattern::whole_folder()]);
+        let needs = self
+            .list(fields, "needs", |text| {
+                text.parse::<Need>().map_err(|error| error.to_string())
+            })?
+            .unwrap_or_default();
+        let path = |text: &str| text.parse::<Path>().map_err(|error| error.to_string());
+        let outputs = self.list(fields, "outputs", path)?.unwrap_or_default();
+        let caches = self.list(fields, "caches", path)?.unwrap_or_default();
+
         Ok(CheckDefinition {
+            folder: self.folder.clone(),
             name,
             command,
             labels,
             blocking,
             timeout,
+            inputs,
+            needs,
+            outputs,
+            caches,
         })
     }
 }
@@ -154,7 +210,7 @@ impl CheckDefinitions for TomlCheckDefinitions {
         &self.file
     }
 
-    fn parse(&self, bytes: &[u8]) -> Result<Vec<CheckDefinition>, CheckFileError> {
+    fn parse(&self, folder: &Prefix, bytes: &[u8]) -> Result<Vec<CheckDefinition>, CheckFileError> {
         let text = std::str::from_utf8(bytes).map_err(|error| CheckFileError::Syntax {
             line: bytes.get(..error.valid_up_to()).map_or(1, |valid| {
                 valid.iter().filter(|byte| **byte == b'\n').count() + 1
@@ -165,7 +221,7 @@ impl CheckDefinitions for TomlCheckDefinitions {
             line: error.span().map_or(1, |span| line_of(text, span.start)),
             description: error.message().to_owned(),
         })?;
-        let reader = Reader { text };
+        let reader = Reader { text, folder };
         let root = document.get_ref();
         if let Some((key, _)) = root
             .iter()
@@ -202,7 +258,17 @@ mod tests {
     use super::*;
 
     fn parse(text: &str) -> Result<Vec<CheckDefinition>, CheckFileError> {
-        TomlCheckDefinitions::new().unwrap().parse(text.as_bytes())
+        parse_in(&Prefix::whole(), text)
+    }
+
+    fn parse_in(folder: &Prefix, text: &str) -> Result<Vec<CheckDefinition>, CheckFileError> {
+        TomlCheckDefinitions::new()
+            .unwrap()
+            .parse(folder, text.as_bytes())
+    }
+
+    fn check_with(field: &str) -> String {
+        format!("[[check]]\nname = \"unit\"\ncommand = \"a\"\n{field}\n")
     }
 
     #[test]
@@ -305,11 +371,94 @@ mod tests {
         );
         let error = TomlCheckDefinitions::new()
             .unwrap()
-            .parse(b"[[check]]\n\xff")
+            .parse(&Prefix::whole(), b"[[check]]\n\xff")
             .unwrap_err();
         assert!(
             matches!(error, CheckFileError::Syntax { line: 2, .. }),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn reads_inputs_needs_outputs_and_caches() {
+        let checks = parse(&check_with(
+            "inputs = [\"src/**\", \"//Cargo.lock\"]\nneeds = [\"lint\", \"//lib:build\", \"//:unit\"]\n\
+             outputs = [\"target/bin\"]\ncaches = [\"target\", \".cache/deps\"]",
+        ))
+        .unwrap();
+        let unit = &checks[0];
+        let inputs: Vec<String> = unit.inputs.iter().map(ToString::to_string).collect();
+        assert_eq!(inputs, ["src/**", "//Cargo.lock"]);
+        let needs: Vec<String> = unit.needs.iter().map(ToString::to_string).collect();
+        assert_eq!(needs, ["lint", "//lib:build", "//:unit"]);
+        let outputs: Vec<String> = unit.outputs.iter().map(ToString::to_string).collect();
+        assert_eq!(outputs, ["target/bin"]);
+        let caches: Vec<String> = unit.caches.iter().map(ToString::to_string).collect();
+        assert_eq!(caches, ["target", ".cache/deps"]);
+    }
+
+    #[test]
+    fn the_inputs_default_to_the_folder_and_the_rest_to_nothing() {
+        let unit = parse(&check_with("")).unwrap().remove(0);
+        assert_eq!(unit.inputs, [Pattern::whole_folder()]);
+        assert!(unit.needs.is_empty());
+        assert!(unit.outputs.is_empty());
+        assert!(unit.caches.is_empty());
+    }
+
+    #[test]
+    fn a_need_without_slashes_names_a_check_of_the_same_folder() {
+        let unit = parse(&check_with("needs = [\"lint\"]")).unwrap().remove(0);
+        assert_eq!(unit.needs, [Need::Sibling("lint".parse().unwrap())]);
+    }
+
+    #[test]
+    fn the_folder_of_a_check_is_the_one_the_file_is_read_for() {
+        let text = check_with("");
+        let root = parse_in(&Prefix::whole(), &text).unwrap().remove(0);
+        assert_eq!(root.folder, Prefix::whole());
+        assert_eq!(root.id().to_string(), "unit");
+        let folder = Prefix::from("svc/api".parse::<Path>().unwrap());
+        let nested = parse_in(&folder, &text).unwrap().remove(0);
+        assert_eq!(nested.folder, folder);
+        assert_eq!(nested.id().to_string(), "svc/api:unit");
+        assert_eq!(nested.name.as_str(), "unit");
+    }
+
+    #[test]
+    fn rejects_a_malformed_pattern_need_or_path_naming_the_field() {
+        for (field, text) in [
+            ("inputs", "inputs = [\"\"]"),
+            ("inputs", "inputs = [\"a//b\"]"),
+            ("inputs", "inputs = [\"../x\"]"),
+            ("inputs", "inputs = [\"a**\"]"),
+            ("inputs", "inputs = [1]"),
+            ("inputs", "inputs = \"src\""),
+            ("needs", "needs = [\"//lib\"]"),
+            ("needs", "needs = [\"Lint\"]"),
+            ("needs", "needs = [\"//lib:\"]"),
+            ("outputs", "outputs = [\"a/../b\"]"),
+            ("outputs", "outputs = [\"\"]"),
+            ("caches", "caches = [\"/abs\"]"),
+        ] {
+            let error = parse(&check_with(text)).unwrap_err();
+            assert!(
+                matches!(error, CheckFileError::Invalid { line: 4, .. }),
+                "{text}: {error:?}"
+            );
+            assert!(error.to_string().contains(field), "{text}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_pattern_need_and_path_that_are_well_formed_are_not_refused() {
+        for text in [
+            "inputs = [\"**\", \"a/**/b.rs\", \"//x/*\"]",
+            "needs = [\"//:unit\", \"//a/b:c\"]",
+            "outputs = [\"a/b\"]",
+            "caches = [\"a\"]",
+        ] {
+            assert!(parse(&check_with(text)).is_ok(), "{text}");
+        }
     }
 }

@@ -242,12 +242,14 @@ impl Server {
             .collect();
         let definitions = checks
             .iter()
-            .map(|(name, blocking)| CheckDefinition {
-                name: name.parse().unwrap(),
-                command: Command::new("true").unwrap(),
-                labels: std::collections::BTreeSet::new(),
-                blocking: *blocking,
-                timeout: Timeout::new(60).unwrap(),
+            .map(|(name, blocking)| {
+                CheckDefinition::new(
+                    name.parse().unwrap(),
+                    Command::new("true").unwrap(),
+                    std::collections::BTreeSet::new(),
+                    *blocking,
+                    Timeout::new(60).unwrap(),
+                )
             })
             .collect();
         self.stores.definitions.teach(&text, Ok(definitions));

@@ -61,26 +61,68 @@ pub(crate) fn labels(texts: &[String]) -> Result<BTreeSet<Label>, String> {
         .collect()
 }
 
+/// The columns of a stored check.
+pub(crate) struct CheckColumns<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) command: &'a str,
+    pub(crate) labels: &'a [String],
+    pub(crate) blocking: bool,
+    pub(crate) timeout_seconds: i64,
+    pub(crate) folder: &'a [u8],
+    pub(crate) inputs: &'a [String],
+    pub(crate) needs: &'a [String],
+    pub(crate) outputs: &'a [Vec<u8>],
+    pub(crate) caches: &'a [Vec<u8>],
+}
+
 /// The check stored as its columns.
-pub(crate) fn check(
-    name: &str,
-    command: &str,
-    label_texts: &[String],
-    blocking: bool,
-    timeout_seconds: i64,
-) -> Result<CheckDefinition, String> {
-    let timeout = u64::try_from(timeout_seconds)
-        .map_err(|_| format!("a stored timeout {timeout_seconds} is negative"))
+pub(crate) fn check(columns: &CheckColumns<'_>) -> Result<CheckDefinition, String> {
+    let timeout = u64::try_from(columns.timeout_seconds)
+        .map_err(|_| format!("a stored timeout {} is negative", columns.timeout_seconds))
         .and_then(|seconds| Timeout::new(seconds).map_err(|error| error.to_string()))?;
     Ok(CheckDefinition {
-        name: name
+        folder: prefix(columns.folder)?,
+        name: columns
+            .name
             .parse()
             .map_err(|error| format!("a stored check name is invalid: {error}"))?,
-        command: Command::new(command).map_err(|error| error.to_string())?,
-        labels: labels(label_texts)?,
-        blocking,
+        command: Command::new(columns.command).map_err(|error| error.to_string())?,
+        labels: labels(columns.labels)?,
+        blocking: columns.blocking,
         timeout,
+        inputs: parsed(columns.inputs, "input")?,
+        needs: parsed(columns.needs, "need")?,
+        outputs: columns
+            .outputs
+            .iter()
+            .map(|bytes| path(bytes))
+            .collect::<Result<_, _>>()?,
+        caches: columns
+            .caches
+            .iter()
+            .map(|bytes| path(bytes))
+            .collect::<Result<_, _>>()?,
     })
+}
+
+/// The `text[]` of a check's inputs or needs, as the check file gives them.
+pub(crate) fn texts<T: ToString>(values: &[T]) -> Vec<String> {
+    values.iter().map(ToString::to_string).collect()
+}
+
+/// The `bytea[]` of a check's outputs or caches.
+pub(crate) fn path_columns(paths: &[Path]) -> Vec<Vec<u8>> {
+    paths.iter().map(path_column).collect()
+}
+
+fn parsed<T: std::str::FromStr>(texts: &[String], subject: &str) -> Result<Vec<T>, String> {
+    texts
+        .iter()
+        .map(|text| {
+            text.parse()
+                .map_err(|_| format!("a stored check {subject} is invalid: {text:?}"))
+        })
+        .collect()
 }
 
 /// The `state` column of `state`.
