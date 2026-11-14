@@ -85,3 +85,43 @@ async fn a_need_naming_no_check_gives_one_failed_blocking_job() {
 async fn a_cycle_of_needs_gives_one_failed_blocking_job() {
     checks::a_cycle_of_needs_gives_one_failed_blocking_job::<Harness>().await;
 }
+
+#[tokio::test]
+async fn a_landing_that_changes_one_folder_queues_only_its_checks() {
+    checks::a_landing_that_changes_one_folder_queues_only_its_checks::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_check_whose_key_passed_is_not_queued_again() {
+    checks::a_check_whose_key_passed_is_not_queued_again::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_failed_run_is_not_cached() {
+    checks::a_failed_run_is_not_cached::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_check_is_keyed_over_the_keys_of_the_checks_it_needs() {
+    checks::a_check_is_keyed_over_the_keys_of_the_checks_it_needs::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_check_is_queued_once_every_check_it_needs_has_passed() {
+    checks::a_check_is_queued_once_every_check_it_needs_has_passed::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_check_whose_need_failed_is_skipped_and_never_queued() {
+    checks::a_check_whose_need_failed_is_skipped_and_never_queued::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_skipped_blocking_check_keeps_last_green_back_and_reverts_nothing() {
+    checks::a_skipped_blocking_check_keeps_last_green_back_and_reverts_nothing::<Harness>().await;
+}
+
+#[tokio::test]
+async fn cancelling_a_check_skips_the_checks_that_need_it() {
+    checks::cancelling_a_check_skips_the_checks_that_need_it::<Harness>().await;
+}

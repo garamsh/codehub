@@ -3394,7 +3394,8 @@
             "minimum": 0
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "The check's id: its name, preceded by its folder and a colon where it is not at the root."
           },
           "blocking": {
             "type": "boolean"
@@ -3407,13 +3408,17 @@
           },
           "state": {
             "type": "string",
+            "description": "`waiting` for the checks it needs to pass, `cached` where its key had already passed and it was not run, `skipped` where a check it needs did not pass. A skipped check has not passed.",
             "enum": [
+              "waiting",
               "queued",
               "running",
               "passed",
               "failed",
               "timed_out",
-              "cancelled"
+              "cancelled",
+              "skipped",
+              "cached"
             ]
           },
           "exit_code": {

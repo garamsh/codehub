@@ -281,12 +281,15 @@ fn has_the_fields_of_the_runner_and_check_schemas() {
 fn has_the_states_and_revert_outcomes_of_the_check_schemas() {
     let schemas = schemas();
     let states = [
+        CheckState::Waiting,
         CheckState::Queued,
         CheckState::Running,
         CheckState::Passed,
         CheckState::Failed,
         CheckState::TimedOut,
         CheckState::Cancelled,
+        CheckState::Skipped,
+        CheckState::Cached,
     ];
     let state = &schemas["Check"]["properties"]["state"];
     assert_eq!(allowed(state), written(&states));

@@ -128,12 +128,15 @@ fn parsed<T: std::str::FromStr>(texts: &[String], subject: &str) -> Result<Vec<T
 /// The `state` column of `state`.
 pub(crate) const fn state_column(state: JobState) -> &'static str {
     match state {
+        JobState::Waiting => "waiting",
         JobState::Queued => "queued",
         JobState::Running { .. } => "running",
         JobState::Passed => "passed",
         JobState::Failed => "failed",
         JobState::TimedOut => "timed_out",
         JobState::Cancelled => "cancelled",
+        JobState::Skipped => "skipped",
+        JobState::Cached => "cached",
     }
 }
 
@@ -144,6 +147,7 @@ pub(crate) fn state(
     deadline: Option<i64>,
 ) -> Result<JobState, String> {
     match text {
+        "waiting" => Ok(JobState::Waiting),
         "queued" => Ok(JobState::Queued),
         "running" => lease_expires_at
             .zip(deadline)
@@ -156,6 +160,8 @@ pub(crate) fn state(
         "failed" => Ok(JobState::Failed),
         "timed_out" => Ok(JobState::TimedOut),
         "cancelled" => Ok(JobState::Cancelled),
+        "skipped" => Ok(JobState::Skipped),
+        "cached" => Ok(JobState::Cached),
         other => Err(format!("a stored job state is unknown: {other:?}")),
     }
 }
@@ -332,23 +338,29 @@ mod tests {
             deadline: 600,
         };
         for held in [
+            JobState::Waiting,
             JobState::Queued,
             running,
             JobState::Passed,
             JobState::Failed,
             JobState::TimedOut,
             JobState::Cancelled,
+            JobState::Skipped,
+            JobState::Cached,
         ] {
             let (lease, deadline) = match held {
                 JobState::Running {
                     lease_expires_at,
                     deadline,
                 } => (Some(lease_expires_at), Some(deadline)),
-                JobState::Queued
+                JobState::Waiting
+                | JobState::Queued
                 | JobState::Passed
                 | JobState::Failed
                 | JobState::TimedOut
-                | JobState::Cancelled => (None, None),
+                | JobState::Cancelled
+                | JobState::Skipped
+                | JobState::Cached => (None, None),
             };
             assert_eq!(state(state_column(held), lease, deadline), Ok(held));
         }

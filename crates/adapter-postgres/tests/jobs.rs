@@ -8,8 +8,8 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use app::domain::changeset::Changeset;
-use app::domain::check::{CheckDefinition, Command, Timeout};
-use app::domain::job::{Heartbeat, Job, JobState, NewJob, StopReason};
+use app::domain::check::{CheckDefinition, CheckKey, Command, Timeout};
+use app::domain::job::{Heartbeat, Job, JobState, NewJob, Resolution, StopReason};
 use app::domain::name::Label;
 use app::domain::runner::{NewRegistration, Registration};
 use app::port::driven::changeset_log::ChangesetLog;
@@ -68,6 +68,23 @@ async fn queued(harness: &Harness, count: usize, timeout: u64) -> (Registration,
         })
         .collect();
     harness.queue.queue(new).await.unwrap();
+    // A queued job waits until it is resolved; these have no needs, so each is queued as it is.
+    let waiting = harness
+        .queue
+        .of_changeset(repo.id, changeset)
+        .await
+        .unwrap();
+    for job in &waiting {
+        assert_eq!(job.state, JobState::Waiting);
+        let key = CheckKey::new(&job.check, &[], &[]);
+        assert!(
+            harness
+                .queue
+                .resolve(job.id, Resolution::Queue { key })
+                .await
+                .unwrap()
+        );
+    }
     let held = harness
         .queue
         .of_changeset(repo.id, changeset)

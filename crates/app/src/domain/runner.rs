@@ -93,6 +93,8 @@ mod tests {
                 Timeout::default_timeout(),
             ),
             state: JobState::Queued,
+            key: None,
+            output_tree: None,
             runner: None,
             exit_code: None,
             output: Vec::new(),

@@ -6,7 +6,8 @@ pub mod common;
 use adapter_memory::MemoryJobQueue;
 use app::domain::address::Address;
 use app::domain::changeset::Changeset;
-use app::domain::job::{Heartbeat, Job, JobId, JobResult, NewJob, Outcome};
+use app::domain::check::CheckKey;
+use app::domain::job::{Heartbeat, Job, JobId, JobResult, NewJob, Outcome, Resolution};
 use app::domain::name::OrganisationName;
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
@@ -81,6 +82,18 @@ impl JobQueue for RecordRefusingQueue<'_> {
         self.0.queue(jobs).await
     }
 
+    async fn resolve(&self, job: JobId, resolution: Resolution) -> Result<bool, JobQueueError> {
+        self.0.resolve(job, resolution).await
+    }
+
+    async fn passed_with_key(
+        &self,
+        repository: RepositoryId,
+        key: CheckKey,
+    ) -> Result<Option<Address>, JobQueueError> {
+        self.0.passed_with_key(repository, key).await
+    }
+
     async fn record_failed(&self, job: NewJob, output: Vec<u8>) -> Result<Job, JobQueueError> {
         self.0.record_failed(job, output).await
     }
@@ -109,8 +122,9 @@ impl JobQueue for RecordRefusingQueue<'_> {
         job: JobId,
         runners: &[RegistrationId],
         result: JobResult,
+        output_tree: Address,
     ) -> Result<Job, JobQueueError> {
-        self.0.complete(job, runners, result).await
+        self.0.complete(job, runners, result, output_tree).await
     }
 
     async fn cancel(

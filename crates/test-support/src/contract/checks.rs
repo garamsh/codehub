@@ -1,10 +1,13 @@
 //! Checks queued on landing, run by runners, and what they do to `last-green`.
 
 use crate::contract::runner_deployment::{
-    LEASE, RunnerDeployment, Spec, check, land, land_checks, land_checks_in, organisation, runner,
+    LEASE, RunnerDeployment, Spec, check, land, land_checks, land_checks_in, land_checks_with,
+    organisation, runner,
 };
 use app::domain::address::Address;
-use app::domain::job::{Heartbeat, Job, JobResult, JobState, Outcome, StopReason};
+use app::domain::job::{
+    Heartbeat, Job, JobResult, JobState, Outcome, StopReason, empty_output_tree,
+};
 use app::domain::path::{Component, Prefix};
 use app::domain::principal::Caller;
 use app::port::driven::changeset_log::{ChangesetLog, Ref};
@@ -601,7 +604,11 @@ async fn a_needs_fault_is_one_failed_blocking_job<H: RunnerDeployment>(
     let fine = land_checks_in(&repo, &ada, "control", control).await;
     assert_eq!(queued_ids(&harness, &ada, &repo, fine).await, control_ids);
     let fine_jobs = jobs(&harness, &ada, &repo, fine, 0).await;
-    assert!(fine_jobs.iter().all(|job| job.state == JobState::Queued));
+    assert!(
+        fine_jobs
+            .iter()
+            .all(|job| matches!(job.state, JobState::Queued | JobState::Waiting))
+    );
 
     let landed = land_checks_in(&repo, &ada, "broken", broken).await;
     let queued = jobs(&harness, &ada, &repo, landed, 0).await;
@@ -650,4 +657,301 @@ pub async fn a_cycle_of_needs_gives_one_failed_blocking_job<H: RunnerDeployment>
         "",
     )
     .await;
+}
+
+/// The job of the check `id` among `jobs`.
+///
+/// # Panics
+///
+/// Where there is none.
+fn job_of<'a>(jobs: &'a [Job], id: &str) -> &'a Job {
+    jobs.iter()
+        .find(|job| job.check.id().to_string() == id)
+        .unwrap()
+}
+
+/// A landing that changes only one folder queues the checks of that folder and records those of
+/// the other as passed from the cache, with the output tree of the run that passed; changing the
+/// other folder queues its checks instead.
+pub async fn a_landing_that_changes_one_folder_queues_only_its_checks<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let folders: &[(&str, &[Spec])] = &[("a", &[check("unit")]), ("b", &[check("unit")])];
+    let first = land_checks_with(
+        &repo,
+        &ada,
+        "first",
+        folders,
+        &[("a/src", "1\n"), ("b/src", "1\n")],
+    )
+    .await;
+    run_all(&harness, &bot, &[], 0).await;
+    assert_eq!(last_green(&harness, &ada, &repo).await, Some(first));
+
+    let second = land(&repo, &ada, "edit-a", &[("a/src", "2\n")])
+        .await
+        .unwrap();
+    let after = jobs(&harness, &ada, &repo, second, 1).await;
+    let queued = job_of(&after, "a:unit");
+    assert_eq!(queued.state, JobState::Queued);
+    let cached = job_of(&after, "b:unit");
+    assert_eq!(cached.state, JobState::Cached);
+    assert_eq!(cached.output_tree, Some(empty_output_tree()));
+    assert!(cached.key.is_some());
+    assert_eq!(cached.runner, None);
+    // Only the folder that changed is handed to a runner, and `last-green` waits for it.
+    assert_eq!(last_green(&harness, &ada, &repo).await, Some(first));
+    let claimed = harness.jobs().claim(&bot, 2).await.unwrap().unwrap();
+    assert_eq!(claimed.job.id, queued.id);
+    assert!(harness.jobs().claim(&bot, 2).await.unwrap().is_none());
+    harness
+        .jobs()
+        .report(&bot, queued.id, passed(), 3)
+        .await
+        .unwrap();
+    assert_eq!(last_green(&harness, &ada, &repo).await, Some(second));
+
+    // The control: changing the other folder queues its checks.
+    let third = land(&repo, &ada, "edit-b", &[("b/src", "2\n")])
+        .await
+        .unwrap();
+    let after = jobs(&harness, &ada, &repo, third, 4).await;
+    assert_eq!(job_of(&after, "b:unit").state, JobState::Queued);
+    assert_eq!(job_of(&after, "a:unit").state, JobState::Cached);
+}
+
+/// A check whose key passed is not queued again, however many landings leave its inputs alone: it
+/// is passed from the cache and its changeset is `last-green` at once. A check in another
+/// repository is not answered from this one's cache.
+pub async fn a_check_whose_key_passed_is_not_queued_again<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let other = harness.repository(&ada, "other").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let folders: &[(&str, &[Spec])] = &[("lib", &[check("unit")])];
+    let files = [("lib/a", "1\n"), ("docs/x", "1\n")];
+    land_checks_with(&repo, &ada, "first", folders, &files).await;
+    run_all(&harness, &bot, &[], 0).await;
+
+    let second = land(&repo, &ada, "edit-docs", &[("docs/x", "2\n")])
+        .await
+        .unwrap();
+    let after = jobs(&harness, &ada, &repo, second, 1).await;
+    assert_eq!(job_of(&after, "lib:unit").state, JobState::Cached);
+    assert!(harness.jobs().claim(&bot, 1).await.unwrap().is_none());
+    assert_eq!(last_green(&harness, &ada, &repo).await, Some(second));
+
+    // The control: changing a file its inputs match queues it.
+    let third = land(&repo, &ada, "edit-lib", &[("lib/a", "2\n")])
+        .await
+        .unwrap();
+    let after = jobs(&harness, &ada, &repo, third, 2).await;
+    assert_eq!(job_of(&after, "lib:unit").state, JobState::Queued);
+
+    // The cache is the repository's own.
+    let elsewhere = land_checks_with(&other, &ada, "first", folders, &files).await;
+    let after = jobs(&harness, &ada, &other, elsewhere, 3).await;
+    assert_eq!(job_of(&after, "lib:unit").state, JobState::Queued);
+}
+
+/// A run that did not pass is not cached: the next landing queues the same key again, and once a
+/// run has passed the one after it is passed from the cache.
+pub async fn a_failed_run_is_not_cached<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let folders: &[(&str, &[Spec])] = &[("lib", &[check("lint").non_blocking()])];
+    let files = [("lib/a", "1\n"), ("docs/x", "1\n")];
+    land_checks_with(&repo, &ada, "first", folders, &files).await;
+    run_all(&harness, &bot, &["lint"], 0).await;
+
+    let second = land(&repo, &ada, "edit-docs", &[("docs/x", "2\n")])
+        .await
+        .unwrap();
+    let after = jobs(&harness, &ada, &repo, second, 1).await;
+    assert_eq!(job_of(&after, "lib:lint").state, JobState::Queued);
+    run_all(&harness, &bot, &[], 2).await;
+
+    let third = land(&repo, &ada, "edit-docs-again", &[("docs/x", "3\n")])
+        .await
+        .unwrap();
+    let after = jobs(&harness, &ada, &repo, third, 3).await;
+    assert_eq!(job_of(&after, "lib:lint").state, JobState::Cached);
+}
+
+/// A check is keyed over the checks it needs: where a check it needs runs again because its inputs
+/// changed, the check runs again too, though none of its own inputs changed.
+pub async fn a_check_is_keyed_over_the_keys_of_the_checks_it_needs<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let folders: &[(&str, &[Spec])] = &[
+        ("a", &[check("unit")]),
+        ("b", &[check("unit").needing(&["//a:unit"])]),
+    ];
+    let files = [("a/src", "1\n"), ("b/src", "1\n"), ("docs/x", "1\n")];
+    land_checks_with(&repo, &ada, "first", folders, &files).await;
+    run_all(&harness, &bot, &[], 0).await;
+
+    let second = land(&repo, &ada, "edit-a", &[("a/src", "2\n")])
+        .await
+        .unwrap();
+    let after = jobs(&harness, &ada, &repo, second, 1).await;
+    assert_eq!(job_of(&after, "a:unit").state, JobState::Queued);
+    assert_eq!(job_of(&after, "b:unit").state, JobState::Waiting);
+    run_all(&harness, &bot, &[], 2).await;
+    let after = jobs(&harness, &ada, &repo, second, 3).await;
+    assert_eq!(job_of(&after, "b:unit").state, JobState::Passed);
+
+    let third = land(&repo, &ada, "edit-docs", &[("docs/x", "2\n")])
+        .await
+        .unwrap();
+    let after = jobs(&harness, &ada, &repo, third, 4).await;
+    assert_eq!(job_of(&after, "a:unit").state, JobState::Cached);
+    assert_eq!(job_of(&after, "b:unit").state, JobState::Cached);
+    assert_eq!(last_green(&harness, &ada, &repo).await, Some(third));
+}
+
+/// A check that needs two others is queued only once both have passed, and no runner is handed it
+/// before.
+pub async fn a_check_is_queued_once_every_check_it_needs_has_passed<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let landed = land_checks(
+        &repo,
+        &ada,
+        "order",
+        &[check("a"), check("c"), check("b").needing(&["a", "c"])],
+    )
+    .await;
+    let queued = jobs(&harness, &ada, &repo, landed, 0).await;
+    assert_eq!(job_of(&queued, "a").state, JobState::Queued);
+    assert_eq!(job_of(&queued, "c").state, JobState::Queued);
+    assert_eq!(job_of(&queued, "b").state, JobState::Waiting);
+    let (a, b, c) = (
+        job_of(&queued, "a").id,
+        job_of(&queued, "b").id,
+        job_of(&queued, "c").id,
+    );
+
+    let first = harness.jobs().claim(&bot, 1).await.unwrap().unwrap();
+    let second = harness.jobs().claim(&bot, 1).await.unwrap().unwrap();
+    assert_eq!([first.job.id, second.job.id], [a, c]);
+    assert!(harness.jobs().claim(&bot, 1).await.unwrap().is_none());
+
+    harness.jobs().report(&bot, a, passed(), 2).await.unwrap();
+    let after = jobs(&harness, &ada, &repo, landed, 2).await;
+    assert_eq!(job_of(&after, "b").state, JobState::Waiting);
+    assert!(harness.jobs().claim(&bot, 2).await.unwrap().is_none());
+
+    harness.jobs().report(&bot, c, passed(), 3).await.unwrap();
+    let after = jobs(&harness, &ada, &repo, landed, 3).await;
+    assert_eq!(job_of(&after, "b").state, JobState::Queued);
+    let third = harness.jobs().claim(&bot, 3).await.unwrap().unwrap();
+    assert_eq!(third.job.id, b);
+    assert_eq!(last_green(&harness, &ada, &repo).await, None);
+    harness.jobs().report(&bot, b, passed(), 4).await.unwrap();
+    assert_eq!(last_green(&harness, &ada, &repo).await, Some(landed));
+}
+
+/// A check one of whose needs failed is skipped and never handed to a runner.
+pub async fn a_check_whose_need_failed_is_skipped_and_never_queued<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let landed = land_checks(
+        &repo,
+        &ada,
+        "order",
+        &[check("a"), check("c"), check("b").needing(&["a", "c"])],
+    )
+    .await;
+    let queued = jobs(&harness, &ada, &repo, landed, 0).await;
+    let b = job_of(&queued, "b").id;
+
+    let first = harness.jobs().claim(&bot, 1).await.unwrap().unwrap();
+    assert_eq!(first.job.check.name.as_str(), "a");
+    harness
+        .jobs()
+        .report(&bot, first.job.id, failed(), 2)
+        .await
+        .unwrap();
+    let after = jobs(&harness, &ada, &repo, landed, 2).await;
+    assert_eq!(job_of(&after, "b").state, JobState::Skipped);
+    assert_eq!(job_of(&after, "b").key, None);
+
+    // Nothing is ever handed out under the skipped job, nor does it pass later.
+    while let Some(claimed) = harness.jobs().claim(&bot, 3).await.unwrap() {
+        assert_ne!(claimed.job.id, b);
+        harness
+            .jobs()
+            .report(&bot, claimed.job.id, passed(), 3)
+            .await
+            .unwrap();
+    }
+    let after = jobs(&harness, &ada, &repo, landed, 4).await;
+    assert_eq!(job_of(&after, "b").state, JobState::Skipped);
+}
+
+/// A skipped blocking check has not passed, so `last-green` does not move past its changeset, and
+/// it reverts nothing: the check that was needed failed without blocking.
+pub async fn a_skipped_blocking_check_keeps_last_green_back_and_reverts_nothing<
+    H: RunnerDeployment,
+>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let landed = land_checks(
+        &repo,
+        &ada,
+        "skipped",
+        &[
+            check("lint").non_blocking(),
+            check("unit").needing(&["lint"]),
+        ],
+    )
+    .await;
+
+    run_all(&harness, &bot, &["lint"], 1).await;
+
+    let after = jobs(&harness, &ada, &repo, landed, 2).await;
+    assert_eq!(job_of(&after, "lint").state, JobState::Failed);
+    let unit = job_of(&after, "unit");
+    assert_eq!(unit.state, JobState::Skipped);
+    assert!(unit.check.blocking);
+    assert!(after.iter().all(|job| job.revert.is_none()));
+    assert_eq!(repo.main().await, Some(landed));
+    assert_eq!(last_green(&harness, &ada, &repo).await, None);
+}
+
+/// Cancelling a check skips the checks that need it.
+pub async fn cancelling_a_check_skips_the_checks_that_need_it<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let landed = land_checks(
+        &repo,
+        &ada,
+        "cancel",
+        &[check("a"), check("b").needing(&["a"])],
+    )
+    .await;
+    let queued = jobs(&harness, &ada, &repo, landed, 0).await;
+    let a = job_of(&queued, "a").id;
+
+    harness.checks().cancel(&ada, repo.id, a).await.unwrap();
+
+    let after = jobs(&harness, &ada, &repo, landed, 1).await;
+    assert_eq!(job_of(&after, "a").state, JobState::Cancelled);
+    assert_eq!(job_of(&after, "b").state, JobState::Skipped);
+    assert_eq!(last_green(&harness, &ada, &repo).await, None);
 }

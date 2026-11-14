@@ -360,6 +360,22 @@ pub async fn land_checks_in<H: RunnerDeployment>(
     name: &str,
     folders: &[(&str, &[Spec])],
 ) -> Address {
+    land_checks_with(repo, caller, name, folders, &[]).await
+}
+
+/// Lands a changeset that defines, in each folder of `folders`, the checks `specs` and stages
+/// `other` files beside them, and returns it.
+///
+/// # Panics
+///
+/// Where the landing fails.
+pub async fn land_checks_with<H: RunnerDeployment>(
+    repo: &Repo<'_, H>,
+    caller: &Caller,
+    name: &str,
+    folders: &[(&str, &[Spec])],
+    other: &[(&str, &str)],
+) -> Address {
     let file = repo.harness.definitions().file().to_string();
     let mut files = Vec::new();
     for (folder, specs) in folders {
@@ -375,6 +391,7 @@ pub async fn land_checks_in<H: RunnerDeployment>(
     let files: Vec<(&str, &str)> = files
         .iter()
         .map(|(path, text)| (path.as_str(), text.as_str()))
+        .chain(other.iter().copied())
         .collect();
     land(repo, caller, name, &files).await.unwrap()
 }

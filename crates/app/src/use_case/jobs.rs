@@ -2,7 +2,7 @@
 //! data and the changeset log it is given.
 
 use crate::domain::address::Address;
-use crate::domain::job::{Heartbeat, JobId, JobResult, output_tail};
+use crate::domain::job::{Heartbeat, JobId, JobResult, empty_output_tree, output_tail};
 use crate::domain::path::{Component, Path};
 use crate::domain::principal::{Caller, Principal};
 use crate::domain::repository::RepositoryId;
@@ -197,7 +197,7 @@ where
         };
         let ended = self
             .queue
-            .complete(job, &ids(&registrations), result)
+            .complete(job, &ids(&registrations), result, empty_output_tree())
             .await?;
         Ok(self.checks.settle(&ended, now).await?)
     }

@@ -509,13 +509,19 @@ pub async fn a_failing_check_of_a_revert_changeset_reverts_nothing<H: RunnerDepl
     let repo = harness.repository(&ada, "acme").await;
     let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
     let base = land_checks(&repo, &ada, "base", &[check("unit")]).await;
-    report(&harness, &bot, passed(), 0).await;
+    // The base's check is cancelled, so it has not passed and the revert's check is not cached.
+    let first = job_of(&repo, &ada, base, "unit").await;
+    harness
+        .checks()
+        .cancel(&ada, repo.id, first.id)
+        .await
+        .unwrap();
     let bad = land_with_checks(&repo, &ada, "bad", &[check("unit")], &[("a", "changed\n")]).await;
 
     report(&harness, &bot, failed(), 1).await;
     let reverted = repo.main().await.unwrap();
     assert_ne!(reverted, bad);
-    assert_eq!(last_green(&repo).await, Some(base));
+    assert_eq!(last_green(&repo).await, None);
     // The revert restored the definitions, so its own check is queued.
     let queued = job_of(&repo, &ada, reverted, "unit").await;
     assert_eq!(queued.state, JobState::Queued);
@@ -523,7 +529,7 @@ pub async fn a_failing_check_of_a_revert_changeset_reverts_nothing<H: RunnerDepl
     report(&harness, &bot, failed(), 2).await;
 
     assert_eq!(repo.main().await, Some(reverted));
-    assert_eq!(last_green(&repo).await, Some(base));
+    assert_eq!(last_green(&repo).await, None);
     let ended = job_of(&repo, &ada, reverted, "unit").await;
     assert_eq!(ended.state, JobState::Failed);
     assert_eq!(ended.revert, None);
@@ -759,8 +765,11 @@ async fn assert_timed_out_and_reverted<H: RunnerDeployment>(
 }
 
 /// The checks of a revert are queued like any landing's, and `last-green` stays where it was
-/// until they pass.
-pub async fn a_reverts_checks_are_queued_and_last_green_waits_for_them<H: RunnerDeployment>() {
+/// until they pass. A revert restores a tree whose checks passed once, so they are passed from the
+/// cache and `last-green` moves to the revert at once.
+pub async fn a_reverts_checks_are_passed_from_the_cache_when_its_tree_passed_before<
+    H: RunnerDeployment,
+>() {
     let harness = H::start().await;
     let ada = harness.caller("ada").await;
     let repo = harness.repository(&ada, "acme").await;
@@ -774,14 +783,10 @@ pub async fn a_reverts_checks_are_queued_and_last_green_waits_for_them<H: Runner
 
     let reverted = repo.main().await.unwrap();
     assert_ne!(reverted, bad);
-    let queued = jobs(&repo, &ada, reverted).await;
-    assert_eq!(queued.len(), 1);
-    assert_eq!(queued[0].check.name.as_str(), "unit");
-    assert_eq!(queued[0].state, JobState::Queued);
-    assert_eq!(last_green(&repo).await, Some(base));
-
-    report(&harness, &bot, passed(), 2).await;
-
+    let cached = jobs(&repo, &ada, reverted).await;
+    assert_eq!(cached.len(), 1);
+    assert_eq!(cached[0].check.name.as_str(), "unit");
+    assert_eq!(cached[0].state, JobState::Cached);
     assert_eq!(last_green(&repo).await, Some(reverted));
 }
 

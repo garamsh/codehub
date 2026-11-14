@@ -256,6 +256,8 @@ pub struct Runners {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckState {
+    /// Waiting for the checks it needs to pass.
+    Waiting,
     /// Waiting for a runner.
     Queued,
     /// Claimed by a runner.
@@ -268,6 +270,10 @@ pub enum CheckState {
     TimedOut,
     /// Ended by cancellation.
     Cancelled,
+    /// Never run: a check it needs did not pass. It has not passed.
+    Skipped,
+    /// Not run: its key had already passed, and it takes that result.
+    Cached,
 }
 
 impl CheckState {
@@ -275,21 +281,52 @@ impl CheckState {
     #[must_use]
     pub const fn ended(self) -> bool {
         match self {
-            Self::Queued | Self::Running => false,
-            Self::Passed | Self::Failed | Self::TimedOut | Self::Cancelled => true,
+            Self::Waiting | Self::Queued | Self::Running => false,
+            Self::Passed
+            | Self::Failed
+            | Self::TimedOut
+            | Self::Cancelled
+            | Self::Skipped
+            | Self::Cached => true,
         }
+    }
+
+    /// Whether the check passed, by a run or from the cache.
+    #[must_use]
+    pub const fn passed(self) -> bool {
+        matches!(self, Self::Passed | Self::Cached)
     }
 
     /// The state as the API and `ch` write it.
     #[must_use]
     pub const fn text(self) -> &'static str {
         match self {
+            Self::Waiting => "waiting",
             Self::Queued => "queued",
             Self::Running => "running",
             Self::Passed => "passed",
             Self::Failed => "failed",
             Self::TimedOut => "timed_out",
             Self::Cancelled => "cancelled",
+            Self::Skipped => "skipped",
+            Self::Cached => "cached",
+        }
+    }
+
+    /// The state as `ch checks` prints it: as [`CheckState::text`], but for a cached result,
+    /// which reads as a pass.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Cached => "passed (cached)",
+            Self::Waiting
+            | Self::Queued
+            | Self::Running
+            | Self::Passed
+            | Self::Failed
+            | Self::TimedOut
+            | Self::Cancelled
+            | Self::Skipped => self.text(),
         }
     }
 }
