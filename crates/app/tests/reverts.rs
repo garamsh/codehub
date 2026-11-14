@@ -84,8 +84,9 @@ async fn a_heartbeat_at_a_later_time_leaves_a_timed_out_blocking_job_to_the_reve
 }
 
 #[tokio::test]
-async fn a_reverts_checks_are_queued_and_last_green_waits_for_them() {
-    reverts::a_reverts_checks_are_queued_and_last_green_waits_for_them::<Harness>().await;
+async fn a_reverts_checks_are_passed_from_the_cache_when_its_tree_passed_before() {
+    reverts::a_reverts_checks_are_passed_from_the_cache_when_its_tree_passed_before::<Harness>()
+        .await;
 }
 
 #[tokio::test]

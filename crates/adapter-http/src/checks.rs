@@ -20,12 +20,15 @@ use crate::source_control::now;
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StateBody {
+    Waiting,
     Queued,
     Running,
     Passed,
     Failed,
     TimedOut,
     Cancelled,
+    Skipped,
+    Cached,
 }
 
 #[derive(Serialize)]
@@ -78,6 +81,7 @@ pub struct RefBody {
 impl From<Job> for ListedBody {
     fn from(job: Job) -> Self {
         let (state, lease_expires_at, deadline) = match job.state {
+            JobState::Waiting => (StateBody::Waiting, None, None),
             JobState::Queued => (StateBody::Queued, None, None),
             JobState::Running {
                 lease_expires_at,
@@ -87,10 +91,12 @@ impl From<Job> for ListedBody {
             JobState::Failed => (StateBody::Failed, None, None),
             JobState::TimedOut => (StateBody::TimedOut, None, None),
             JobState::Cancelled => (StateBody::Cancelled, None, None),
+            JobState::Skipped => (StateBody::Skipped, None, None),
+            JobState::Cached => (StateBody::Cached, None, None),
         };
         Self {
             id: job.id.value(),
-            name: job.check.name.to_string(),
+            name: job.check.id().to_string(),
             blocking: job.check.blocking,
             labels: job.check.labels.iter().map(ToString::to_string).collect(),
             state,

@@ -6,9 +6,9 @@ use std::fmt;
 
 use crate::domain::address::Address;
 use crate::domain::changeset::{Change, Changeset};
-use crate::domain::check::{CheckDefinition, needs_fault};
+use crate::domain::check::{CheckDefinition, CheckKey, needs_fault};
 use crate::domain::draft::Draft;
-use crate::domain::job::{Job, JobState, NewJob};
+use crate::domain::job::{Job, JobState, NewJob, Resolution, empty_output_tree};
 use crate::domain::path::{Path, Prefix};
 use crate::domain::repository::RepositoryId;
 use crate::domain::revert::{self, AUTHOR, Revert};
@@ -64,6 +64,8 @@ pub enum SettleError {
     Queue(JobQueueError),
     /// The changeset log failed.
     Log(ChangesetLogError),
+    /// Derived data failed.
+    Derived(DerivedDataError),
     /// A blocking check ended in failure and its changeset was not reverted.
     Revert(RevertError),
 }
@@ -73,6 +75,7 @@ impl fmt::Display for SettleError {
         match self {
             Self::Queue(error) => write!(f, "{error}"),
             Self::Log(error) => write!(f, "{error}"),
+            Self::Derived(error) => write!(f, "{error}"),
             Self::Revert(error) => write!(f, "{error}"),
         }
     }
@@ -83,6 +86,7 @@ impl std::error::Error for SettleError {
         match self {
             Self::Queue(error) => Some(error),
             Self::Log(error) => Some(error),
+            Self::Derived(error) => Some(error),
             Self::Revert(error) => Some(error),
         }
     }
@@ -100,6 +104,22 @@ impl From<ChangesetLogError> for SettleError {
     }
 }
 
+impl From<DerivedDataError> for SettleError {
+    fn from(error: DerivedDataError) -> Self {
+        Self::Derived(error)
+    }
+}
+
+impl From<ProgressError> for SettleError {
+    fn from(error: ProgressError) -> Self {
+        match error {
+            ProgressError::Queue(error) => Self::Queue(error),
+            ProgressError::Derived(error) => Self::Derived(error),
+            ProgressError::Log(error) => Self::Log(error),
+        }
+    }
+}
+
 impl From<RevertError> for SettleError {
     fn from(error: RevertError) -> Self {
         Self::Revert(error)
@@ -111,7 +131,77 @@ impl From<SettleError> for JobsError {
         match error {
             SettleError::Queue(error) => Self::Queue(error),
             SettleError::Log(error) => Self::Log(error),
+            SettleError::Derived(error) => Self::Derived(error),
             SettleError::Revert(error) => Self::Revert(error),
+        }
+    }
+}
+
+/// Why the waiting checks of a changeset were not resolved.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ProgressError {
+    /// The job queue failed.
+    Queue(JobQueueError),
+    /// Derived data failed.
+    Derived(DerivedDataError),
+    /// The changeset log failed.
+    Log(ChangesetLogError),
+}
+
+impl fmt::Display for ProgressError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Queue(error) => write!(f, "{error}"),
+            Self::Derived(error) => write!(f, "{error}"),
+            Self::Log(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for ProgressError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Queue(error) => Some(error),
+            Self::Derived(error) => Some(error),
+            Self::Log(error) => Some(error),
+        }
+    }
+}
+
+impl From<JobQueueError> for ProgressError {
+    fn from(error: JobQueueError) -> Self {
+        Self::Queue(error)
+    }
+}
+
+impl From<DerivedDataError> for ProgressError {
+    fn from(error: DerivedDataError) -> Self {
+        Self::Derived(error)
+    }
+}
+
+impl From<ChangesetLogError> for ProgressError {
+    fn from(error: ChangesetLogError) -> Self {
+        Self::Log(error)
+    }
+}
+
+impl From<ProgressError> for QueueChecksError {
+    fn from(error: ProgressError) -> Self {
+        match error {
+            ProgressError::Queue(error) => Self::Queue(error),
+            ProgressError::Derived(error) => Self::Derived(error),
+            ProgressError::Log(error) => Self::Log(error),
+        }
+    }
+}
+
+impl From<ProgressError> for RevertError {
+    fn from(error: ProgressError) -> Self {
+        match error {
+            ProgressError::Queue(error) => Self::Queue(error),
+            ProgressError::Derived(error) => Self::Derived(error),
+            ProgressError::Log(error) => Self::Log(error),
         }
     }
 }
@@ -158,8 +248,9 @@ where
     Q: JobQueue + Sync,
     C: CheckDefinitions + Sync,
 {
-    /// Queues the checks `landed` defines in `repository`, or moves `last-green` to it where none
-    /// blocks. Where its definitions cannot be read, the failure is recorded as a failed blocking
+    /// Records the checks `landed` defines in `repository` and queues those that need nothing,
+    /// unless their key passed already, or moves `last-green` to it where none blocks. Where its
+    /// definitions cannot be read, the failure is recorded as a failed blocking
     /// job and `landed` is reverted, with `timestamp` as the revert's time.
     ///
     /// # Errors
@@ -194,14 +285,16 @@ where
     Q: JobQueue + Sync,
     C: CheckDefinitions + Sync,
 {
-    /// Acts on time having passed to `now`: expires the queue's jobs and, for each blocking job
-    /// that timed out, reverts its changeset with `now` as the revert's time.
+    /// Acts on time having passed to `now`: expires the queue's jobs and, for each job that timed
+    /// out, resolves the checks of its changeset that wait for it and, where it blocks, reverts the
+    /// changeset with `now` as the revert's time.
     ///
     /// # Errors
     ///
     /// The failure of the job queue, or of a revert.
     pub async fn expire(&self, now: i64) -> Result<(), RevertError> {
         for job in self.adapters.queue.expire(now).await? {
+            self.resume(job.repository, job.changeset).await?;
             if job.check.blocking {
                 self.revert_on_blocking_failure(&job, now).await?;
             }
@@ -209,37 +302,157 @@ where
         Ok(())
     }
 
-    /// What `ended`, a job that has just ended, means for its changeset: a blocking failure
-    /// reverts the changeset with `now` as the revert's time, and a pass that leaves every
-    /// blocking check of the changeset passed advances `last-green`.
+    /// What `ended`, a job that has just ended, means for its changeset: the checks that wait for
+    /// it are queued, passed from the cache or skipped, a blocking failure reverts the changeset
+    /// with `now` as the revert's time, and `last-green` advances where every blocking check of the
+    /// changeset has passed.
     ///
     /// # Errors
     ///
-    /// The failure of the job queue or of the changeset log, or of a revert.
+    /// The failure of the job queue, derived data or the changeset log, or of a revert.
     pub async fn settle(&self, ended: &Job, now: i64) -> Result<(), SettleError> {
+        self.resume(ended.repository, ended.changeset).await?;
         match ended.state {
             JobState::Failed | JobState::TimedOut => {
                 if ended.check.blocking {
                     self.revert_on_blocking_failure(ended, now).await?;
                 }
             }
-            JobState::Passed => {
-                let jobs = self
-                    .adapters
-                    .queue
-                    .of_changeset(ended.repository, ended.changeset)
-                    .await?;
-                if blocking_checks_passed(&jobs) {
-                    advance(self.adapters.log, ended.repository, ended.changeset).await?;
-                }
-            }
-            JobState::Queued | JobState::Running { .. } | JobState::Cancelled => {}
+            JobState::Waiting
+            | JobState::Queued
+            | JobState::Running { .. }
+            | JobState::Passed
+            | JobState::Cancelled
+            | JobState::Skipped
+            | JobState::Cached => {}
         }
         Ok(())
     }
 
-    /// Queues the checks `landed` defines, or moves `last-green` to it where none blocks. Returns
-    /// the failed job recorded where the definitions could not be read, which the caller is to
+    /// Settles every waiting check of `changeset` in `repository` whose needs have ended, and
+    /// repeats while that settles more, then moves `last-green` to `changeset` where every blocking
+    /// check has passed.
+    ///
+    /// A check whose needs have all passed is keyed: where its key passed in the repository it is
+    /// recorded as passed from the cache, with the output tree of the run that passed; otherwise it
+    /// is queued. A check any of whose needs failed, timed out, was cancelled or was skipped is
+    /// recorded as skipped. A check with no needs is settled where it was recorded, which is how
+    /// the checks without needs are queued together.
+    ///
+    /// # Errors
+    ///
+    /// The failure of the job queue, derived data or the changeset log.
+    pub async fn resume(
+        &self,
+        repository: RepositoryId,
+        changeset: Address,
+    ) -> Result<(), RevertError> {
+        self.progress(repository, changeset).await?;
+        Ok(())
+    }
+
+    async fn progress(
+        &self,
+        repository: RepositoryId,
+        changeset: Address,
+    ) -> Result<(), ProgressError> {
+        let adapters = &self.adapters;
+        let mut files = None;
+        loop {
+            let jobs = adapters.queue.of_changeset(repository, changeset).await?;
+            let mut settled = false;
+            for job in jobs.iter().filter(|job| job.state == JobState::Waiting) {
+                let Some(resolution) = self.resolution(job, &jobs, &mut files, changeset).await?
+                else {
+                    continue;
+                };
+                settled |= adapters.queue.resolve(job.id, resolution).await?;
+            }
+            if !settled {
+                if blocking_checks_passed(&jobs) {
+                    advance(adapters.log, repository, changeset).await?;
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    /// What becomes of the waiting `job` among `jobs`, the jobs of its changeset; `None` where a
+    /// check it needs has not ended. `files` holds the files of the changeset's tree once they
+    /// have been read.
+    async fn resolution(
+        &self,
+        job: &Job,
+        jobs: &[Job],
+        files: &mut Option<Vec<(Path, Address)>>,
+        changeset: Address,
+    ) -> Result<Option<Resolution>, ProgressError> {
+        let adapters = &self.adapters;
+        let empty = empty_output_tree();
+        let mut needed = Vec::new();
+        for id in job.check.needed() {
+            let found = jobs.iter().find(|other| other.check.id() == id);
+            match found {
+                Some(other) if !other.state.is_finished() => return Ok(None),
+                Some(other) if other.state.is_passed() => {
+                    if let Some(key) = other.key {
+                        needed.push((key, other.output_tree.unwrap_or(empty)));
+                        continue;
+                    }
+                    return Ok(Some(Resolution::Skip));
+                }
+                Some(_) | None => return Ok(Some(Resolution::Skip)),
+            }
+        }
+        let tree = match files {
+            Some(files) => files,
+            None => {
+                let root = adapters.derived.root(job.repository, changeset).await?;
+                files.insert(self.input_files(job.repository, root).await?)
+            }
+        };
+        let inputs: Vec<(Path, Address)> = tree
+            .iter()
+            .filter(|(path, _)| job.check.reads(path))
+            .cloned()
+            .collect();
+        let key = CheckKey::new(&job.check, &inputs, &needed);
+        Ok(Some(
+            match adapters.queue.passed_with_key(job.repository, key).await? {
+                Some(output_tree) => Resolution::Cache { key, output_tree },
+                None => Resolution::Queue { key },
+            },
+        ))
+    }
+
+    /// The path and content address of every file of the tree rooted at `root`, by path.
+    async fn input_files(
+        &self,
+        repository: RepositoryId,
+        root: Address,
+    ) -> Result<Vec<(Path, Address)>, DerivedDataError> {
+        let derived = self.adapters.derived;
+        let mut files = Vec::new();
+        let mut pending = vec![(Vec::new(), root)];
+        while let Some((directory, address)) = pending.pop() {
+            for (name, entry) in derived.tree(repository, address).await?.entries {
+                let mut components = directory.clone();
+                components.push(name);
+                match entry {
+                    Entry::Directory(subtree) => pending.push((components, subtree)),
+                    Entry::File(file) => {
+                        let path = Path::new(components)
+                            .map_err(|error| DerivedDataError::Backend(error.to_string()))?;
+                        files.push((path, file.content));
+                    }
+                }
+            }
+        }
+        files.sort();
+        Ok(files)
+    }
+
+    /// Records the checks `landed` defines as waiting and resolves them. Returns the failed job recorded where the definitions could not be read, which the caller is to
     /// revert for; `None` otherwise.
     async fn queue(
         &self,
@@ -285,14 +498,11 @@ where
             return Ok(Some(failed));
         }
 
-        let blocking = definitions.iter().any(|check| check.blocking);
         adapters
             .queue
             .queue(definitions.into_iter().map(job).collect())
             .await?;
-        if !blocking {
-            advance(adapters.log, repository, landed).await?;
-        }
+        self.progress(repository, landed).await?;
         Ok(None)
     }
 

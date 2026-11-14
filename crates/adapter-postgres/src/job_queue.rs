@@ -1,5 +1,8 @@
 use app::domain::address::Address;
-use app::domain::job::{Heartbeat, Job, JobId, JobResult, JobState, NewJob, StopReason};
+use app::domain::check::CheckKey;
+use app::domain::job::{
+    Heartbeat, Job, JobId, JobResult, JobState, NewJob, Resolution, StopReason,
+};
 use app::domain::name::OrganisationName;
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
@@ -16,7 +19,7 @@ macro_rules! job_columns {
         "id, organisation, repository, changeset, check_name, command, check_labels, blocking, \
          timeout_seconds, folder, inputs, needs, outputs, caches, state, runner, \
          lease_expires_at, deadline, exit_code, output, revert_landed, revert_conflicts, \
-         revert_failed"
+         revert_failed, check_key, output_tree"
     };
 }
 
@@ -69,6 +72,8 @@ struct JobRow {
     revert_landed: Option<Vec<u8>>,
     revert_conflicts: Option<Vec<Vec<u8>>>,
     revert_failed: Option<String>,
+    check_key: Option<Vec<u8>>,
+    output_tree: Option<Vec<u8>>,
 }
 
 impl JobRow {
@@ -92,6 +97,16 @@ impl JobRow {
             })
             .map_err(backend)?,
             state: conversion::state(&self.state, self.lease_expires_at, self.deadline)
+                .map_err(backend)?,
+            key: self
+                .check_key
+                .map(|bytes| conversion::address(bytes).map(CheckKey::from_address))
+                .transpose()
+                .map_err(backend)?,
+            output_tree: self
+                .output_tree
+                .map(conversion::address)
+                .transpose()
                 .map_err(backend)?,
             runner: self
                 .runner
@@ -200,11 +215,75 @@ impl JobQueue for PostgresJobQueue {
         let mut transaction = self.pool.begin().await.map_err(backend)?;
         let mut ids = Vec::with_capacity(new.len());
         for job in new {
-            let row = insert(&mut transaction, job, JobState::Queued, Vec::new()).await?;
+            let row = insert(&mut transaction, job, JobState::Waiting, Vec::new()).await?;
             ids.push(conversion::job(row.id).map_err(backend)?);
         }
         transaction.commit().await.map_err(backend)?;
         Ok(ids)
+    }
+
+    async fn resolve(&self, job: JobId, resolution: Resolution) -> Result<bool, JobQueueError> {
+        let id = number(job)?;
+        let (state, key, output_tree) = match resolution {
+            Resolution::Queue { key } => (
+                JobState::Queued,
+                Some(key.address().digest().to_vec()),
+                None,
+            ),
+            Resolution::Cache { key, output_tree } => (
+                JobState::Cached,
+                Some(key.address().digest().to_vec()),
+                Some(output_tree.digest().to_vec()),
+            ),
+            Resolution::Skip => (JobState::Skipped, None, None),
+        };
+        let resolved = sqlx::query(
+            "update jobs set state = $2, check_key = $3, output_tree = $4, updated_at = now() \
+             where id = $1 and state = 'waiting'",
+        )
+        .bind(id)
+        .bind(conversion::state_column(state))
+        .bind(key)
+        .bind(output_tree)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?
+        .rows_affected();
+        if resolved == 1 {
+            return Ok(true);
+        }
+        let exists =
+            sqlx::query_scalar::<_, bool>("select exists (select 1 from jobs where id = $1)")
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(backend)?;
+        if exists {
+            Ok(false)
+        } else {
+            Err(JobQueueError::NotFound(job))
+        }
+    }
+
+    async fn passed_with_key(
+        &self,
+        repository: RepositoryId,
+        key: CheckKey,
+    ) -> Result<Option<Address>, JobQueueError> {
+        sqlx::query_scalar::<_, Option<Vec<u8>>>(
+            "select output_tree from jobs \
+             where repository = $1 and check_key = $2 and state = 'passed' \
+             order by id limit 1",
+        )
+        .bind(conversion::repository_column(repository).map_err(backend)?)
+        .bind(key.address().digest().as_slice())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?
+        .flatten()
+        .map(conversion::address)
+        .transpose()
+        .map_err(backend)
     }
 
     async fn record_failed(&self, job: NewJob, output: Vec<u8>) -> Result<Job, JobQueueError> {
@@ -307,10 +386,11 @@ impl JobQueue for PostgresJobQueue {
         job: JobId,
         runners: &[RegistrationId],
         result: JobResult,
+        output_tree: Address,
     ) -> Result<Job, JobQueueError> {
         sqlx::query_as::<_, JobRow>(concat!(
-            "update jobs set state = $3, exit_code = $4, output = $5, lease_expires_at = null, \
-             deadline = null, updated_at = now() \
+            "update jobs set state = $3, exit_code = $4, output = $5, output_tree = $6, \
+             lease_expires_at = null, deadline = null, updated_at = now() \
              where id = $1 and state = 'running' and runner = any($2) \
              returning ",
             job_columns!()
@@ -320,6 +400,7 @@ impl JobQueue for PostgresJobQueue {
         .bind(conversion::state_column(result.outcome.state()))
         .bind(result.exit_code)
         .bind(result.output)
+        .bind(output_tree.digest().as_slice())
         .fetch_optional(&self.pool)
         .await
         .map_err(backend)?
@@ -337,7 +418,7 @@ impl JobQueue for PostgresJobQueue {
         let cancelled = sqlx::query_as::<_, JobRow>(concat!(
             "update jobs set state = 'cancelled', lease_expires_at = null, deadline = null, \
              updated_at = now() \
-             where id = $1 and organisation = $2 and state in ('queued', 'running') \
+             where id = $1 and organisation = $2 and state in ('waiting', 'queued', 'running') \
              returning ",
             job_columns!()
         ))

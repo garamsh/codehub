@@ -7,7 +7,8 @@
 use std::fmt;
 
 use crate::domain::address::Address;
-use crate::domain::job::{Heartbeat, Job, JobId, JobResult, NewJob};
+use crate::domain::check::CheckKey;
+use crate::domain::job::{Heartbeat, Job, JobId, JobResult, NewJob, Resolution};
 use crate::domain::name::OrganisationName;
 use crate::domain::repository::RepositoryId;
 use crate::domain::revert::Revert;
@@ -15,8 +16,8 @@ use crate::domain::runner::{Registration, RegistrationId};
 
 /// Holds the jobs.
 pub trait JobQueue {
-    /// Queues `jobs` and returns their identifiers in the order given. Identifiers grow with the
-    /// order queued.
+    /// Records `jobs` as waiting, for [`JobQueue::resolve`] to queue, and returns their identifiers
+    /// in the order given. Identifiers grow with the order recorded. A waiting job is not claimed.
     ///
     /// # Errors
     ///
@@ -25,6 +26,32 @@ pub trait JobQueue {
         &self,
         jobs: Vec<NewJob>,
     ) -> impl Future<Output = Result<Vec<JobId>, JobQueueError>> + Send;
+
+    /// Settles the waiting `job` as `resolution` says: queued for a runner under its key, passed
+    /// from the cache with the output tree of the run that passed, or skipped. Returns whether it
+    /// did; `false` where `job` is no longer waiting, which leaves it as it is.
+    ///
+    /// # Errors
+    ///
+    /// [`JobQueueError::NotFound`] where there is no such job.
+    fn resolve(
+        &self,
+        job: JobId,
+        resolution: Resolution,
+    ) -> impl Future<Output = Result<bool, JobQueueError>> + Send;
+
+    /// The output tree of a run in `repository` that passed with `key`; `None` where none did.
+    /// Only a run that passed answers: a failed, timed-out or cancelled run is never cached, and
+    /// neither is a result taken from the cache, which stands for the run it took it from.
+    ///
+    /// # Errors
+    ///
+    /// [`JobQueueError::Backend`] where the queue fails.
+    fn passed_with_key(
+        &self,
+        repository: RepositoryId,
+        key: CheckKey,
+    ) -> impl Future<Output = Result<Option<Address>, JobQueueError>> + Send;
 
     /// Records `job` as failed without running it, with `output` as what it says, and returns it
     /// as recorded.
@@ -71,7 +98,7 @@ pub trait JobQueue {
     ) -> impl Future<Output = Result<Heartbeat, JobQueueError>> + Send;
 
     /// Ends `job` as `result` says, where it runs under one of `runners`, and returns it as it
-    /// now stands.
+    /// now stands. `output_tree` is recorded with it.
     ///
     /// # Errors
     ///
@@ -81,9 +108,10 @@ pub trait JobQueue {
         job: JobId,
         runners: &[RegistrationId],
         result: JobResult,
+        output_tree: Address,
     ) -> impl Future<Output = Result<Job, JobQueueError>> + Send;
 
-    /// Cancels the queued or running `job` of `organisation` and returns it as it now stands.
+    /// Cancels the waiting, queued or running `job` of `organisation` and returns it as it now stands.
     ///
     /// # Errors
     ///

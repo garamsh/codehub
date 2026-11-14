@@ -144,6 +144,11 @@ where
             &Resource::Organisation(organisation.clone()),
         )
         .await?;
-        Ok(self.queue.cancel(&organisation, job).await?)
+        let cancelled = self.queue.cancel(&organisation, job).await?;
+        self.checks
+            .resume(cancelled.repository, cancelled.changeset)
+            .await
+            .map_err(ChecksError::Revert)?;
+        Ok(cancelled)
     }
 }

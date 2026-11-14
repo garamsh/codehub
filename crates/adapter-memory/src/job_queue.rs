@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use app::domain::address::Address;
-use app::domain::job::{Heartbeat, Job, JobId, JobResult, JobState, NewJob, StopReason};
+use app::domain::check::CheckKey;
+use app::domain::job::{
+    Heartbeat, Job, JobId, JobResult, JobState, NewJob, Resolution, StopReason,
+};
 use app::domain::name::OrganisationName;
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
@@ -28,6 +31,8 @@ impl Jobs {
             changeset: new.changeset,
             check: new.check,
             state,
+            key: None,
+            output_tree: None,
             runner: None,
             exit_code: None,
             output,
@@ -53,8 +58,48 @@ impl JobQueue for MemoryJobQueue {
         let mut held = lock(&self.jobs);
         Ok(jobs
             .into_iter()
-            .map(|new| held.add(new, JobState::Queued, Vec::new()).id)
+            .map(|new| held.add(new, JobState::Waiting, Vec::new()).id)
             .collect())
+    }
+
+    async fn resolve(&self, job: JobId, resolution: Resolution) -> Result<bool, JobQueueError> {
+        let mut held = lock(&self.jobs);
+        let found = held
+            .held
+            .get_mut(&job)
+            .ok_or(JobQueueError::NotFound(job))?;
+        if found.state != JobState::Waiting {
+            return Ok(false);
+        }
+        match resolution {
+            Resolution::Queue { key } => {
+                found.state = JobState::Queued;
+                found.key = Some(key);
+            }
+            Resolution::Cache { key, output_tree } => {
+                found.state = JobState::Cached;
+                found.key = Some(key);
+                found.output_tree = Some(output_tree);
+            }
+            Resolution::Skip => found.state = JobState::Skipped,
+        }
+        Ok(true)
+    }
+
+    async fn passed_with_key(
+        &self,
+        repository: RepositoryId,
+        key: CheckKey,
+    ) -> Result<Option<Address>, JobQueueError> {
+        Ok(lock(&self.jobs)
+            .held
+            .values()
+            .filter(|job| {
+                job.repository == repository
+                    && job.state == JobState::Passed
+                    && job.key == Some(key)
+            })
+            .find_map(|job| job.output_tree))
     }
 
     async fn record_failed(&self, job: NewJob, output: Vec<u8>) -> Result<Job, JobQueueError> {
@@ -114,9 +159,12 @@ impl JobQueue for MemoryJobQueue {
             }
             JobState::Cancelled => Ok(Heartbeat::Stop(StopReason::Cancelled)),
             JobState::TimedOut => Ok(Heartbeat::Stop(StopReason::TimedOut)),
-            JobState::Queued | JobState::Passed | JobState::Failed => {
-                Err(JobQueueError::NotFound(job))
-            }
+            JobState::Waiting
+            | JobState::Queued
+            | JobState::Passed
+            | JobState::Failed
+            | JobState::Skipped
+            | JobState::Cached => Err(JobQueueError::NotFound(job)),
         }
     }
 
@@ -125,6 +173,7 @@ impl JobQueue for MemoryJobQueue {
         job: JobId,
         runners: &[RegistrationId],
         result: JobResult,
+        output_tree: Address,
     ) -> Result<Job, JobQueueError> {
         let mut held = lock(&self.jobs);
         let found = held
@@ -136,6 +185,7 @@ impl JobQueue for MemoryJobQueue {
             })
             .ok_or(JobQueueError::NotFound(job))?;
         found.state = result.outcome.state();
+        found.output_tree = Some(output_tree);
         found.exit_code = result.exit_code;
         found.output = result.output;
         Ok(found.clone())

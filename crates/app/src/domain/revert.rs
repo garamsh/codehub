@@ -76,7 +76,13 @@ pub fn message(changeset: Address, check: &CheckName, state: JobState) -> Option
     let outcome = match state {
         JobState::Failed => "failed",
         JobState::TimedOut => "timed out",
-        JobState::Queued | JobState::Running { .. } | JobState::Passed | JobState::Cancelled => {
+        JobState::Waiting
+        | JobState::Queued
+        | JobState::Running { .. }
+        | JobState::Passed
+        | JobState::Cancelled
+        | JobState::Skipped
+        | JobState::Cached => {
             return None;
         }
     };
@@ -207,6 +213,7 @@ mod tests {
         let id = Address::of(b"c");
         let name: CheckName = "unit".parse().unwrap();
         for state in [
+            JobState::Waiting,
             JobState::Queued,
             JobState::Running {
                 lease_expires_at: 0,
@@ -214,6 +221,8 @@ mod tests {
             },
             JobState::Passed,
             JobState::Cancelled,
+            JobState::Skipped,
+            JobState::Cached,
         ] {
             assert_eq!(message(id, &name, state), None, "{state:?}");
         }

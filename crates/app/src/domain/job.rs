@@ -3,11 +3,12 @@
 use std::fmt;
 
 use crate::domain::address::Address;
-use crate::domain::check::CheckDefinition;
+use crate::domain::check::{CheckDefinition, CheckKey};
 use crate::domain::name::OrganisationName;
 use crate::domain::repository::RepositoryId;
 use crate::domain::revert::Revert;
 use crate::domain::runner::RegistrationId;
+use crate::domain::tree::Tree;
 
 /// The most output a job keeps, in bytes: the tail of what the runner reported.
 pub const OUTPUT_LIMIT: usize = 65_536;
@@ -39,6 +40,8 @@ impl fmt::Display for JobId {
 /// Where a job is in its life.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum JobState {
+    /// Waiting for the checks it needs to pass, so that it can be keyed; not yet for a runner.
+    Waiting,
     /// Waiting for a runner.
     Queued,
     /// A runner holds it.
@@ -58,6 +61,11 @@ pub enum JobState {
     TimedOut,
     /// An administrator cancelled the job.
     Cancelled,
+    /// A check it needs did not pass, so it was never queued. It has not passed.
+    Skipped,
+    /// Its key had already passed, so it was not queued and takes the result of the run that
+    /// passed.
+    Cached,
 }
 
 impl JobState {
@@ -65,10 +73,40 @@ impl JobState {
     #[must_use]
     pub const fn is_finished(self) -> bool {
         match self {
-            Self::Queued | Self::Running { .. } => false,
-            Self::Passed | Self::Failed | Self::TimedOut | Self::Cancelled => true,
+            Self::Waiting | Self::Queued | Self::Running { .. } => false,
+            Self::Passed
+            | Self::Failed
+            | Self::TimedOut
+            | Self::Cancelled
+            | Self::Skipped
+            | Self::Cached => true,
         }
     }
+
+    /// Whether the check passed, by a run or from the cache.
+    #[must_use]
+    pub const fn is_passed(self) -> bool {
+        matches!(self, Self::Passed | Self::Cached)
+    }
+}
+
+/// What becomes of a waiting job once the checks it needs have ended.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Resolution {
+    /// Queue it for a runner, under `key`.
+    Queue {
+        /// The key of the check.
+        key: CheckKey,
+    },
+    /// Record it as passed from the cache: `key` already passed, with `output_tree`.
+    Cache {
+        /// The key of the check.
+        key: CheckKey,
+        /// The output tree of the run that passed.
+        output_tree: Address,
+    },
+    /// Record it as skipped: a check it needs did not pass.
+    Skip,
 }
 
 /// What a job says before the queue has given it an identifier.
@@ -99,6 +137,11 @@ pub struct Job {
     pub check: CheckDefinition,
     /// Where the job is.
     pub state: JobState,
+    /// What the result depends on; set once the checks the job needs have passed, and `None` for
+    /// a job that was skipped or recorded as failed before it could be keyed.
+    pub key: Option<CheckKey>,
+    /// The tree the run recorded as its output; set where the job passed or took a cached result.
+    pub output_tree: Option<Address>,
     /// The registration that took the job; set from the claim on, and cleared where the lease
     /// lapses and the job returns to the queue.
     pub runner: Option<RegistrationId>,
@@ -166,6 +209,16 @@ pub enum Heartbeat {
     Stop(StopReason),
 }
 
+/// The output tree of a run that records none: the empty tree, which a run records until runs
+/// produce outputs.
+#[must_use]
+pub fn empty_output_tree() -> Address {
+    // An empty tree always has an encoding, so the fallback is never taken.
+    Tree::default()
+        .address()
+        .unwrap_or_else(|_| Address::of(&[]))
+}
+
 /// The last [`OUTPUT_LIMIT`] bytes of `output`.
 #[must_use]
 pub fn output_tail(output: &[u8]) -> Vec<u8> {
@@ -190,6 +243,7 @@ mod tests {
 
     #[test]
     fn only_the_ended_states_are_finished() {
+        assert!(!JobState::Waiting.is_finished());
         assert!(!JobState::Queued.is_finished());
         assert!(
             !JobState::Running {
@@ -202,5 +256,16 @@ mod tests {
         assert!(JobState::Failed.is_finished());
         assert!(JobState::TimedOut.is_finished());
         assert!(JobState::Cancelled.is_finished());
+        assert!(JobState::Skipped.is_finished());
+        assert!(JobState::Cached.is_finished());
+    }
+
+    #[test]
+    fn only_a_run_that_passed_or_a_cached_result_is_passed() {
+        assert!(JobState::Passed.is_passed());
+        assert!(JobState::Cached.is_passed());
+        assert!(!JobState::Skipped.is_passed());
+        assert!(!JobState::Failed.is_passed());
+        assert!(!JobState::Waiting.is_passed());
     }
 }

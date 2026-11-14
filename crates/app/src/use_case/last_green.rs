@@ -2,15 +2,16 @@
 //! passed (ADR 0035).
 
 use crate::domain::address::Address;
-use crate::domain::job::{Job, JobState};
+use crate::domain::job::Job;
 use crate::domain::repository::RepositoryId;
 use crate::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
 
-/// Whether every blocking job of `jobs` has passed; true where there is none.
+/// Whether every blocking job of `jobs` has passed, by a run or from the cache; true where there
+/// is none. A skipped job has not passed.
 pub(crate) fn blocking_checks_passed(jobs: &[Job]) -> bool {
     jobs.iter()
         .filter(|job| job.check.blocking)
-        .all(|job| job.state == JobState::Passed)
+        .all(|job| job.state.is_passed())
 }
 
 /// Points `last-green` of `repository` at `candidate`, unless it already points at `candidate`

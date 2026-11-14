@@ -20,8 +20,8 @@ use crate::login;
 use crate::state::{RepositoryRef, State, StateFile};
 use crate::view::View;
 use crate::wire::{
-    Access, Check, CheckState, Grant, Kind, Member, NewRunner, Principal, Revert, Role, Runner,
-    StagedFile, Upload,
+    Access, Check, Grant, Kind, Member, NewRunner, Principal, Revert, Role, Runner, StagedFile,
+    Upload,
 };
 
 mod workspace;
@@ -575,7 +575,7 @@ fn print_checks(
             out,
             "{} {blocking} {} {exit}",
             check.name,
-            check.state.text()
+            check.state.label()
         )?;
     }
     for line in reverts(checks) {
@@ -646,9 +646,7 @@ async fn checks(
             arguments.timeout
         )));
     }
-    let failed = names(&checks, |check| {
-        check.blocking && check.state != CheckState::Passed
-    });
+    let failed = names(&checks, |check| check.blocking && !check.state.passed());
     if arguments.wait && !failed.is_empty() {
         return Err(Failure::ChecksNotPassed(format!(
             "blocking checks did not pass: {failed}"

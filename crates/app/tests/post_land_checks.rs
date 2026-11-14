@@ -6,7 +6,10 @@ pub mod common;
 
 use adapter_memory::MemoryJobQueue;
 use app::domain::address::Address;
-use app::domain::job::{Heartbeat, Job, JobId, JobResult, NewJob, Outcome};
+use app::domain::check::CheckKey;
+use app::domain::job::{
+    Heartbeat, Job, JobId, JobResult, NewJob, Outcome, Resolution, empty_output_tree,
+};
 use app::domain::name::OrganisationName;
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
@@ -39,6 +42,18 @@ impl JobQueue for RefusingQueue<'_> {
         Err(JobQueueError::Backend(QUEUE_DOWN.to_owned()))
     }
 
+    async fn resolve(&self, job: JobId, resolution: Resolution) -> Result<bool, JobQueueError> {
+        self.0.resolve(job, resolution).await
+    }
+
+    async fn passed_with_key(
+        &self,
+        repository: RepositoryId,
+        key: CheckKey,
+    ) -> Result<Option<Address>, JobQueueError> {
+        self.0.passed_with_key(repository, key).await
+    }
+
     async fn record_failed(&self, job: NewJob, output: Vec<u8>) -> Result<Job, JobQueueError> {
         self.0.record_failed(job, output).await
     }
@@ -67,8 +82,9 @@ impl JobQueue for RefusingQueue<'_> {
         job: JobId,
         runners: &[RegistrationId],
         result: JobResult,
+        output_tree: Address,
     ) -> Result<Job, JobQueueError> {
-        self.0.complete(job, runners, result).await
+        self.0.complete(job, runners, result, output_tree).await
     }
 
     async fn cancel(
@@ -269,7 +285,12 @@ async fn settling_a_failed_blocking_job_reverts_its_changeset() {
     let held = claimed(&harness).await;
     let ended = harness
         .queue
-        .complete(held.job.id, &held.runners, result(Outcome::Failed))
+        .complete(
+            held.job.id,
+            &held.runners,
+            result(Outcome::Failed),
+            empty_output_tree(),
+        )
         .await
         .unwrap();
     let checks = PostLandChecks::new(
@@ -302,7 +323,12 @@ async fn settling_the_last_passing_blocking_job_moves_last_green() {
     assert_ne!(before, Some(held.bad));
     let ended = harness
         .queue
-        .complete(held.job.id, &held.runners, result(Outcome::Passed))
+        .complete(
+            held.job.id,
+            &held.runners,
+            result(Outcome::Passed),
+            empty_output_tree(),
+        )
         .await
         .unwrap();
     let checks = PostLandChecks::new(
@@ -347,7 +373,12 @@ async fn a_revert_whose_checks_cannot_be_queued_has_landed_and_names_the_queue()
     let held = claimed(&harness).await;
     let ended = harness
         .queue
-        .complete(held.job.id, &held.runners, result(Outcome::Failed))
+        .complete(
+            held.job.id,
+            &held.runners,
+            result(Outcome::Failed),
+            empty_output_tree(),
+        )
         .await
         .unwrap();
     let refusing = RefusingQueue(&harness.queue);

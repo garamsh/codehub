@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
+use crate::domain::address::Address;
 use crate::domain::name::{CheckName, Label};
 use crate::domain::path::{Component, Path, Prefix};
 
@@ -132,6 +133,54 @@ impl Pattern {
     pub fn as_str(&self) -> &str {
         &self.text
     }
+
+    /// Whether the pattern selects `path`, for a check of `folder`. A component of the pattern
+    /// matches a component of the path whole, `*` standing for any run of bytes within one
+    /// component, and a component `**` standing for any number of components, none included.
+    #[must_use]
+    pub fn selects(&self, folder: &Prefix, path: &Path) -> bool {
+        let base = if self.from_root {
+            &[]
+        } else {
+            folder.components()
+        };
+        let Some(below) = path.components().strip_prefix(base) else {
+            return false;
+        };
+        let names: Vec<&[u8]> = below.iter().map(Component::as_bytes).collect();
+        let parts: Vec<&str> = self.text.split('/').collect();
+        parts_match(&parts, &names)
+    }
+}
+
+/// Whether the pattern components `parts` match the path components `names`.
+fn parts_match(parts: &[&str], names: &[&[u8]]) -> bool {
+    let Some((part, rest)) = parts.split_first() else {
+        return names.is_empty();
+    };
+    if *part == "**" {
+        return (0..=names.len()).any(|skip| {
+            names
+                .get(skip..)
+                .is_some_and(|tail| parts_match(rest, tail))
+        });
+    }
+    names
+        .split_first()
+        .is_some_and(|(name, tail)| wildcard(part.as_bytes(), name) && parts_match(rest, tail))
+}
+
+/// Whether `name` matches `pattern`, in which `*` stands for any run of bytes.
+fn wildcard(pattern: &[u8], name: &[u8]) -> bool {
+    match pattern.split_first() {
+        None => name.is_empty(),
+        Some((b'*', rest)) => {
+            (0..=name.len()).any(|skip| name.get(skip..).is_some_and(|tail| wildcard(rest, tail)))
+        }
+        Some((byte, rest)) => name
+            .split_first()
+            .is_some_and(|(first, tail)| first == byte && wildcard(rest, tail)),
+    }
 }
 
 impl FromStr for Pattern {
@@ -247,6 +296,96 @@ impl fmt::Display for CheckId {
     }
 }
 
+/// What a check's result depends on: a digest of its definition, the files its inputs select and
+/// the keys and output trees of the checks it needs (ADR 0049). A check whose key passed need not
+/// run again.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct CheckKey(Address);
+
+impl CheckKey {
+    /// The key whose digest is `address`.
+    #[must_use]
+    pub const fn from_address(address: Address) -> Self {
+        Self(address)
+    }
+
+    /// The key's digest.
+    #[must_use]
+    pub const fn address(&self) -> Address {
+        self.0
+    }
+
+    /// The key of `definition` given `inputs`, the path and content address of each file its
+    /// patterns select in the landed tree, and `needed`, the key and output tree of each check it
+    /// needs, in the order of the definition's `needs`. Neither list is reordered, so `inputs` is
+    /// given sorted by path. The definition's caches are not part of the key: a cache makes a run
+    /// faster and must not change its result.
+    #[must_use]
+    pub fn new(
+        definition: &CheckDefinition,
+        inputs: &[(Path, Address)],
+        needed: &[(CheckKey, Address)],
+    ) -> Self {
+        let mut bytes = KeyBytes(Vec::new());
+        bytes.text(&definition.id().to_string());
+        bytes.text(definition.command.as_str());
+        bytes.count(definition.labels.len());
+        for label in &definition.labels {
+            bytes.text(&label.to_string());
+        }
+        bytes.text(if definition.blocking {
+            "blocking"
+        } else {
+            "free"
+        });
+        bytes.text(&definition.timeout.seconds().to_string());
+        bytes.count(definition.inputs.len());
+        for pattern in &definition.inputs {
+            bytes.text(&pattern.to_string());
+        }
+        bytes.count(definition.needs.len());
+        for need in definition.needed() {
+            bytes.text(&need.to_string());
+        }
+        bytes.count(definition.outputs.len());
+        for output in &definition.outputs {
+            bytes.text(&output.to_string());
+        }
+        bytes.count(inputs.len());
+        for (path, content) in inputs {
+            bytes.text(&path.to_string());
+            bytes.0.extend_from_slice(content.digest());
+        }
+        bytes.count(needed.len());
+        for (key, output) in needed {
+            bytes.0.extend_from_slice(key.0.digest());
+            bytes.0.extend_from_slice(output.digest());
+        }
+        Self(Address::of(&bytes.0))
+    }
+}
+
+impl fmt::Display for CheckKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+/// The bytes a key is the digest of, each variable-length field preceded by its length.
+struct KeyBytes(Vec<u8>);
+
+impl KeyBytes {
+    fn count(&mut self, count: usize) {
+        self.0
+            .extend_from_slice(&u64::try_from(count).unwrap_or(u64::MAX).to_be_bytes());
+    }
+
+    fn text(&mut self, text: &str) {
+        self.count(text.len());
+        self.0.extend_from_slice(text.as_bytes());
+    }
+}
+
 /// One check a repository defines.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CheckDefinition {
@@ -304,6 +443,14 @@ impl CheckDefinition {
             folder: self.folder.clone(),
             name: self.name.clone(),
         }
+    }
+
+    /// Whether the check reads the file at `path`: one of its input patterns selects it.
+    #[must_use]
+    pub fn reads(&self, path: &Path) -> bool {
+        self.inputs
+            .iter()
+            .any(|pattern| pattern.selects(&self.folder, path))
     }
 
     /// The checks this one needs, each named by folder and name.
@@ -459,6 +606,62 @@ mod tests {
         }
         check.needs = needs.iter().map(|need| need.parse().unwrap()).collect();
         check
+    }
+
+    fn file(path: &str) -> (Path, Address) {
+        (path.parse().unwrap(), Address::of(path.as_bytes()))
+    }
+
+    #[test]
+    fn a_pattern_selects_the_files_it_names_below_the_folder_or_the_root() {
+        let folder = Prefix::from("svc".parse::<Path>().unwrap());
+        let path = |text: &str| text.parse::<Path>().unwrap();
+        let all: Pattern = "**".parse().unwrap();
+        assert!(all.selects(&folder, &path("svc/a/b")));
+        assert!(!all.selects(&folder, &path("other/a")));
+        let rust: Pattern = "src/**/*.rs".parse().unwrap();
+        assert!(rust.selects(&folder, &path("svc/src/lib.rs")));
+        assert!(rust.selects(&folder, &path("svc/src/a/b/lib.rs")));
+        assert!(!rust.selects(&folder, &path("svc/src/lib.toml")));
+        assert!(!rust.selects(&folder, &path("svc/tests/lib.rs")));
+        let lock: Pattern = "//Cargo.lock".parse().unwrap();
+        assert!(lock.selects(&folder, &path("Cargo.lock")));
+        assert!(!lock.selects(&folder, &path("svc/Cargo.lock")));
+    }
+
+    #[test]
+    fn a_key_is_stable_and_follows_what_the_result_depends_on() {
+        let check = named("", "unit", &[]);
+        let inputs = [file("a"), file("b")];
+        let key = CheckKey::new(&check, &inputs, &[]);
+        assert_eq!(key, CheckKey::new(&check, &inputs, &[]));
+
+        let mut other = named("", "unit", &[]);
+        other.blocking = false;
+        assert_ne!(key, CheckKey::new(&other, &inputs, &[]));
+        assert_ne!(key, CheckKey::new(&named("", "lint", &[]), &inputs, &[]));
+        assert_ne!(key, CheckKey::new(&check, &[file("a")], &[]));
+        let changed = [file("a"), (inputs[1].0.clone(), Address::of(b"new"))];
+        assert_ne!(key, CheckKey::new(&check, &changed, &[]));
+
+        let needs = named("", "ship", &["unit"]);
+        let before = CheckKey::new(&needs, &[], &[(key, Address::of(b"one"))]);
+        assert_ne!(
+            before,
+            CheckKey::new(&needs, &[], &[(key, Address::of(b"two"))])
+        );
+        assert_ne!(before, CheckKey::new(&needs, &[], &[]));
+    }
+
+    #[test]
+    fn a_cache_does_not_change_the_key() {
+        let plain = named("", "unit", &[]);
+        let mut cached = named("", "unit", &[]);
+        cached.caches = vec!["target".parse().unwrap()];
+        assert_eq!(
+            CheckKey::new(&plain, &[], &[]),
+            CheckKey::new(&cached, &[], &[])
+        );
     }
 
     #[test]
