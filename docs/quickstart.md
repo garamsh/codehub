@@ -294,7 +294,7 @@ exit 0
 
 ### Run checks on a runner
 
-The output below was produced on 2026-11-13 from the commit `76660678f22722c791083986a3b82208c5561ff8` plus this file's change, except step 6, produced on 2026-11-14 from the commit `f9abfe442af850708bf1211a4b0b24052cf88a69` plus this change; changeset identifiers contain a timestamp, so yours differ, and every other line is the same. Cerbos reads `dev/cerbos/policies` when it starts, so a `make services` started before the policy granted `administer_runners` answers `ch: the action is not allowed` to step 1 until the services are started again.
+The output below was produced on 2026-11-13 from the commit `76660678f22722c791083986a3b82208c5561ff8` plus this file's change, except step 6, produced on 2026-11-14 from the commit `972693a32fd6f8e3eb0f4e55878a295b4b8d35d7` plus this change; changeset identifiers contain a timestamp, so yours differ, and every other line is the same. Cerbos reads `dev/cerbos/policies` when it starts, so a `make services` started before the policy granted `administer_runners` answers `ch: the action is not allowed` to step 1 until the services are started again.
 
 A runner is a principal registered to claim the jobs of an organisation's checks; `codehub-runner` claims them and runs each command on this machine. This section runs in federated mode, with the second terminal's `ch` configured as above and `acme/app` selected, against `codehub` started with either of the identity settings above. The runner authenticates with a token file, the same way `ch` does: bob's token from the password grant of the client `codehub-test`, because that client and bob's password are already in `dev/check-env.sh` and compose, so no client has to be created in Keycloak to get one. The other way, a token endpoint with the client-credentials grant (`--token-endpoint`, `--client-id`, `--client-secret-env`), needs a Keycloak client with a service account, which `dev/keycloak/codehub-realm.json` does not have.
 
@@ -356,7 +356,28 @@ A runner is a principal registered to claim the jobs of an organisation's checks
    lint blocking passed 0
    ```
 
-6. `ch checks plan` prints what a draft would run if it landed, without running anything. A check is `cached` when a passed run with the same key exists, and `run` with its reasons otherwise. Here `unit` takes `inputs = ["src/**"]` and `lint` has `needs = ["unit"]`; the draft `work` changes `src/main.rs`, the draft `docs` changes only `docs/hello.txt`:
+6. `ch checks plan` prints what a draft would run if it landed, without running anything. A check is `cached` when a passed run with the same key exists, and `run` with its reasons otherwise. Here `unit` takes `inputs = ["src/**"]` and `lint` has `needs = ["unit"]`; the draft `work` changes `src/main.rs`, the draft `docs` changes only `docs/hello.txt`. Land that `unit` and `lint` first, replacing the file of step 3, and wait for them to pass:
+
+   ```sh
+   cat > "$tmp/checks.toml" <<'EOF'
+   [[check]]
+   name = "unit"
+   command = "echo unit ok"
+   inputs = ["src/**"]
+
+   [[check]]
+   name = "lint"
+   command = "test -f docs/hello.txt"
+   needs = ["unit"]
+   EOF
+   echo 'fn main() {}' > "$tmp/main.rs"
+   echo 'fn main() { run(); }' > "$tmp/edited.rs"
+   echo 'hello again' > "$tmp/again.txt"
+   ch put .codehub/checks.toml "$tmp/checks.toml"
+   ch put src/main.rs "$tmp/main.rs"
+   ch land -m 'add inputs and needs'
+   ch checks --wait
+   ```
 
    ```console
    $ ch put src/main.rs "$tmp/edited.rs" --draft work
