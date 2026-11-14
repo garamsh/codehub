@@ -14,23 +14,23 @@ use app::port::driven::runner_registry::RunnerRegistry;
 use app::port::driving::runners::Runners;
 use app::port::driving::source_control::{SourceControl, SourceControlError};
 use app::use_case::administration::Administration;
-use app::use_case::assembly::Assembly;
-use app::use_case::checked_source_control::CheckedSourceControl;
+use app::use_case::assembly::{Assembly, ShippedSourceControl};
 use app::use_case::checks::ChecksService;
 use app::use_case::jobs::JobsService;
 use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::runners::RunnersService;
 
-use super::{Deployment, MAX_UPLOAD_SIZE, Repo, Service, draft};
+use super::{Deployment, MAX_UPLOAD_SIZE, Repo, draft};
 
 /// Source control that queues the checks of what it lands, over a deployment's adapters.
-pub type Checked<'a, H> = CheckedSourceControl<
+pub type Checked<'a, H> = ShippedSourceControl<
     'a,
-    Service<'a, H>,
     MemoryObjectStore,
-    <H as Deployment>::Derived,
     <H as Deployment>::Log,
+    <H as Deployment>::Derived,
+    <H as Deployment>::Drafts,
     <H as Deployment>::Directory,
+    <H as Deployment>::Authorisation,
     <H as RunnerDeployment>::Queue,
     <H as RunnerDeployment>::Definitions,
 >;

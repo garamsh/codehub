@@ -18,9 +18,11 @@ use app::port::driven::runner_registry::RunnerRegistry;
 use app::port::driving::jobs::Jobs;
 use app::port::driving::revert::{QueueChecksError, RevertError};
 use app::port::driving::source_control::{LandError, Landing, SourceControl, SourceControlError};
-use app::use_case::checked_source_control::{CheckedAdapters, CheckedSourceControl};
 use app::use_case::landing_attempts::LandingAttempts;
-use app::use_case::post_land_checks::{AfterLandingError, PostLandChecks, SettleError};
+use app::use_case::post_land_checks::{
+    AfterLandingError, PostLandChecks, PostLandChecksAdapters, SettleError,
+};
+use app::use_case::source_control::AfterLanding;
 use common::Harness;
 use test_support::contract::runner_deployment::{
     LEASE, RunnerDeployment, check, definitions, land, organisation, runner, text,
@@ -102,7 +104,7 @@ impl JobQueue for RefusingQueue<'_> {
 fn adapters<'a, Q>(
     harness: &'a Harness,
     queue: &'a Q,
-) -> CheckedAdapters<
+) -> PostLandChecksAdapters<
     'a,
     adapter_memory::MemoryObjectStore,
     adapter_memory::MemoryDerivedData,
@@ -111,7 +113,7 @@ fn adapters<'a, Q>(
     Q,
     adapter_memory::MemoryCheckDefinitions,
 > {
-    CheckedAdapters {
+    PostLandChecksAdapters {
         objects: harness.objects(),
         derived: harness.derived(),
         log: harness.log(),
@@ -229,11 +231,12 @@ async fn a_landing_whose_checks_cannot_be_queued_still_landed_and_says_so() {
     let name = draft("checks");
     repo.stage(&ada, &name, &[(&file, &body)]).await;
     let refusing = RefusingQueue(&harness.queue);
-    let checked = CheckedSourceControl::new(
-        harness.source_control(),
-        adapters(&harness, &refusing),
-        LandingAttempts::default(),
-    );
+    let checked = harness
+        .source_control()
+        .with_after_landing(PostLandChecks::new(
+            adapters(&harness, &refusing),
+            LandingAttempts::default(),
+        ));
 
     let landing = Landing {
         message: "checks".to_owned(),

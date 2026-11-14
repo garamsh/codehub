@@ -4,7 +4,6 @@ pub mod access;
 pub mod administration;
 pub mod assembly;
 pub mod authentication;
-pub mod checked_source_control;
 pub mod checks;
 pub mod history;
 pub mod jobs;

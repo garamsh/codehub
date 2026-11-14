@@ -3,11 +3,11 @@
 
 use crate::use_case::administration::Administration;
 use crate::use_case::authentication::AuthenticationService;
-use crate::use_case::checked_source_control::{CheckedAdapters, CheckedSourceControl};
 use crate::use_case::checks::{ChecksAdapters, ChecksService};
 use crate::use_case::jobs::{JobsAdapters, JobsService};
 use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::members::{MembersAdapters, MembersService};
+use crate::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
 use crate::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
 use crate::use_case::runners::{RunnersAdapters, RunnersService};
 use crate::use_case::source_control::{SourceControlAdapters, SourceControlService};
@@ -54,7 +54,7 @@ pub struct Assembly<'a, O, L, D, S, R, A, M, Q, G, C, X, V, I> {
 
 /// The source control the application ships: the landing of checks queued after each landing.
 pub type ShippedSourceControl<'a, O, L, D, S, R, A, Q, C> =
-    CheckedSourceControl<'a, SourceControlService<'a, O, L, D, S, R, A>, O, D, L, R, Q, C>;
+    SourceControlService<'a, O, L, D, S, R, A, PostLandChecks<'a, O, D, L, R, Q, C>>;
 
 impl<'a, O, L, D, S, R, A, M, Q, G, C, X, V, I>
     Assembly<'a, O, L, D, S, R, A, M, Q, G, C, X, V, I>
@@ -92,20 +92,20 @@ impl<'a, O, L, D, S, R, A, M, Q, G, C, X, V, I>
 
     /// The source-control port, which queues the checks of each landing.
     pub fn source_control(&self) -> ShippedSourceControl<'a, O, L, D, S, R, A, Q, C> {
-        CheckedSourceControl::new(
-            SourceControlService::new(
-                SourceControlAdapters {
-                    objects: self.objects,
-                    log: self.log,
-                    derived: self.derived,
-                    drafts: self.drafts,
-                    directory: self.directory,
-                    authorisation: self.authorisation,
-                },
-                self.max_upload_size,
-            )
-            .with_landing_attempts(self.attempts),
-            CheckedAdapters {
+        SourceControlService::new(
+            SourceControlAdapters {
+                objects: self.objects,
+                log: self.log,
+                derived: self.derived,
+                drafts: self.drafts,
+                directory: self.directory,
+                authorisation: self.authorisation,
+            },
+            self.max_upload_size,
+        )
+        .with_landing_attempts(self.attempts)
+        .with_after_landing(PostLandChecks::new(
+            PostLandChecksAdapters {
                 objects: self.objects,
                 derived: self.derived,
                 log: self.log,
@@ -114,7 +114,7 @@ impl<'a, O, L, D, S, R, A, M, Q, G, C, X, V, I>
                 definitions: self.definitions,
             },
             self.attempts,
-        )
+        ))
     }
 
     /// The runners port.
