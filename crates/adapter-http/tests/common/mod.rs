@@ -52,8 +52,15 @@ pub struct Api {
 
 /// The router over `stores`, with members administered as `administration` says.
 pub fn router(stores: &'static Stores, administration: Administration) -> Router {
+    let assembly = stores.assembly(&stores.identity, administration, MAX_UPLOAD_SIZE);
     adapter_http::api_router(
-        &stores.assembly(&stores.identity, administration, MAX_UPLOAD_SIZE),
+        assembly.authentication(),
+        assembly.repositories(),
+        assembly.members(),
+        assembly.source_control(),
+        assembly.runners(),
+        assembly.jobs(),
+        assembly.checks(),
         settings(),
         (),
     )

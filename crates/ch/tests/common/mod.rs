@@ -113,8 +113,15 @@ async fn bind<I: IdentityVerification + Send + Sync + 'static>(
     stores: &'static Stores,
     identity: &'static I,
 ) -> Server {
+    let assembly = stores.assembly(identity, Administration::BuiltIn, MAX_UPLOAD_SIZE);
     let router = adapter_http::api_router(
-        &stores.assembly(identity, Administration::BuiltIn, MAX_UPLOAD_SIZE),
+        assembly.authentication(),
+        assembly.repositories(),
+        assembly.members(),
+        assembly.source_control(),
+        assembly.runners(),
+        assembly.jobs(),
+        assembly.checks(),
         RunnerSettings {
             hold: HOLD,
             retry_interval: Duration::from_millis(50),

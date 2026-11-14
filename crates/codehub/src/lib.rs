@@ -390,7 +390,13 @@ pub async fn run(config: Config) -> Result<(), Error> {
         lease: i64::from(config.runner_lease.get()),
     };
     let router = adapter_http::api_router(
-        &assembly,
+        assembly.authentication(),
+        assembly.repositories(),
+        assembly.members(),
+        assembly.source_control(),
+        assembly.runners(),
+        assembly.jobs(),
+        assembly.checks(),
         RunnerSettings {
             hold: Duration::from_secs(config.runner_claim_hold),
             retry_interval: CLAIM_RETRY_INTERVAL,

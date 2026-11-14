@@ -24,13 +24,6 @@ use app::port::driving::members::Members;
 use app::port::driving::repositories::Repositories;
 use app::port::driving::runners::Runners;
 use app::port::driving::source_control::SourceControl;
-use app::use_case::assembly::{Assembly, ShippedSourceControl};
-use app::use_case::authentication::AuthenticationService;
-use app::use_case::checks::ChecksService;
-use app::use_case::jobs::JobsService;
-use app::use_case::members::MembersService;
-use app::use_case::repositories::RepositoriesService;
-use app::use_case::runners::RunnersService;
 use axum::Router;
 use axum::http::header;
 use axum::response::IntoResponse;
@@ -388,44 +381,51 @@ impl Readiness for () {
     }
 }
 
-/// The router serving the whole API over the driving ports of `assembly`: every route of
-/// [`ROUTES`], [`RUNNER_ROUTES`] and [`HEALTH_ROUTES`], and a fallback for a request no route
-/// matches. `settings` says how a runner's claim is held, and `readiness` is asked on every
-/// request to `/readyz`.
+/// The router serving the whole API over these driving ports: every route of [`ROUTES`],
+/// [`RUNNER_ROUTES`] and [`HEALTH_ROUTES`], and a fallback for a request no route matches.
+/// `settings` says how a runner's claim is held, and `readiness` is asked on every request to
+/// `/readyz`.
 ///
-/// The router owns the ports for as long as it lives, so the driven ports `assembly` borrows live
-/// for `'static`, leaked by the caller for instance.
+/// Authentication and repositories serve both the source-control and the runner routes, so each
+/// is cloned for the second. The router owns the ports for as long as it lives, so they are
+/// `'static`.
 #[expect(
-    clippy::type_complexity,
-    reason = "the assembly is generic over each of the thirteen driven ports it holds"
+    clippy::too_many_arguments,
+    reason = "one argument for each driving port the API serves, plus its two settings"
 )]
-pub fn api_router<O, L, D, S, R, A, M, Q, G, C, X, V, I, P>(
-    assembly: &Assembly<'static, O, L, D, S, R, A, M, Q, G, C, X, V, I>,
+pub fn api_router<A, R, M, S, N, J, C, P>(
+    authentication: A,
+    repositories: R,
+    members: M,
+    source_control: S,
+    runners: N,
+    jobs: J,
+    checks: C,
     settings: RunnerSettings,
     readiness: P,
 ) -> Router
 where
+    A: Authentication + Clone + Send + Sync + 'static,
+    R: Repositories + Clone + Send + Sync + 'static,
+    M: Members + Send + Sync + 'static,
+    S: SourceControl + Send + Sync + 'static,
+    N: Runners + Send + Sync + 'static,
+    J: Jobs + Send + Sync + 'static,
+    C: Checks + Send + Sync + 'static,
     P: Readiness,
-    AuthenticationService<'static, I>: Authentication + Send + Sync + 'static,
-    RepositoriesService<'static, R, A, M, X, V>: Repositories + Send + Sync + 'static,
-    MembersService<'static, R, A, M>: Members + Send + Sync + 'static,
-    ShippedSourceControl<'static, O, L, D, S, R, A, Q, C>: SourceControl + Send + Sync + 'static,
-    RunnersService<'static, G, R, A>: Runners + Send + Sync + 'static,
-    JobsService<'static, G, Q, O, D, L, R, C>: Jobs + Send + Sync + 'static,
-    ChecksService<'static, Q, L, R, A, O, D, C>: Checks + Send + Sync + 'static,
 {
     source_router(
-        assembly.authentication(),
-        assembly.repositories(),
-        assembly.members(),
-        assembly.source_control(),
+        authentication.clone(),
+        repositories.clone(),
+        members,
+        source_control,
     )
     .merge(runner_router(
-        assembly.authentication(),
-        assembly.repositories(),
-        assembly.runners(),
-        assembly.jobs(),
-        assembly.checks(),
+        authentication,
+        repositories,
+        runners,
+        jobs,
+        checks,
         settings,
     ))
     .merge(health_router(readiness))
