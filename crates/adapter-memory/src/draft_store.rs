@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use app::domain::address::Address;
-use app::domain::changeset::Change;
 use app::domain::draft::{Draft, DraftId, Edit};
 use app::domain::path::Path;
 use app::domain::repository::RepositoryId;
@@ -17,26 +16,6 @@ pub struct MemoryDraftStore {
 }
 
 impl DraftStore for MemoryDraftStore {
-    async fn stage(
-        &self,
-        repository: RepositoryId,
-        draft: &DraftId,
-        base: Option<Address>,
-        path: Path,
-        change: Change,
-    ) -> Result<(), DraftStoreError> {
-        lock(&self.drafts)
-            .entry((repository, draft.clone()))
-            .or_insert_with(|| Draft {
-                base,
-                description: String::new(),
-                changes: BTreeMap::new(),
-            })
-            .changes
-            .insert(path, change);
-        Ok(())
-    }
-
     async fn open(
         &self,
         repository: RepositoryId,

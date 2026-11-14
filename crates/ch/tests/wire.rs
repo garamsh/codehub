@@ -152,6 +152,7 @@ fn has_the_fields_of_every_schema() {
             kind: Kind::Regular,
             content: address(),
             previous: vec![],
+            message: "m".into(),
         },
         &schemas["Version"],
         "Version",

@@ -16,7 +16,7 @@ How versions of a repository's content are stored, changed, landed and queried.
   - **File-version nodes** — deferred, one per changed file, pointing at the previous version node of the same path.
   - **Blame** — deferred, derived from the file-version nodes; not implemented.
   - **Skip lists** — over the changeset graph, answering ancestry queries; not implemented.
-- **A path's history follows each node's first previous node:** from the path's file-version node in a changeset back through the first entry of each node's previous list, newest first. The other entries of a merge's previous list are kept and not walked.
+- **A path's history follows each node's first previous node:** from the path's file-version node in a changeset back through the first entry of each node's previous list, newest first, each version carrying its changeset's landing message. The other entries of a merge's previous list are kept and not walked.
 - **A repository has named refs** (ADR 0012):
   - `main` — what agents base their work on, and what landing advances;
   - release refs;
@@ -141,7 +141,7 @@ The ports below follow from the decisions, named for the conversation and in the
 - **Draft store** — put and get draft changesets with their description, held outside the log until they land (ADR 0012, ADR 0048). Served by PostgreSQL (ADR 0022).
 - **Check dispatch** — ask for the post-land checks to run and receive their results. Served by the job queue port (`docs/architecture/runner.md`).
 - **Check definitions** — read the checks a changeset declares from the bytes of `.codehub/checks.toml`. Served by a TOML adapter, and an in-memory adapter for tests (ADR 0035).
-- Driving adapters are the server API behind `ch` (`docs/architecture/interfaces.md`). They reach the application through four driving ports: **source control** (open, read, describe, snapshot, restore and diff a workspace, stage a change into a draft, grant an upload, land a draft on `main`, read a file, list a changeset's files and read a path's history), **repositories** (create organisations and repositories), **members** (add and remove members and grants) and **authentication** (verify the credential presented with a request).
+- Driving adapters are the server API behind `ch` (`docs/architecture/interfaces.md`). They reach the application through four driving ports: **source control** (open, read, describe, snapshot, restore and diff a workspace, stage a change into a draft (served as opening the draft if absent and recording one edit), grant an upload, land a draft on `main`, read a file, list a changeset's files and read a path's history with each version's landing message), **repositories** (create organisations and repositories), **members** (add and remove members and grants) and **authentication** (verify the credential presented with a request).
 
 ## Rationale
 

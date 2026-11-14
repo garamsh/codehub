@@ -118,6 +118,7 @@ pub struct VersionBody {
     kind: KindBody,
     content: String,
     previous: Vec<String>,
+    message: String,
 }
 
 #[derive(Serialize)]
@@ -262,6 +263,7 @@ pub async fn history<P: Services>(
                 kind: node.file.kind.into(),
                 content: node.file.content.to_string(),
                 previous: node.previous.iter().map(ToString::to_string).collect(),
+                message: node.message,
             })
             .collect(),
     }))

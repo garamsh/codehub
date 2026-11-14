@@ -11,8 +11,8 @@ use crate::domain::derivation::DerivationError;
 use crate::domain::diff::{ContentDiff, KindChange};
 use crate::domain::draft::{ChangeStatus, Edit};
 use crate::domain::encoding::EncodeError;
-use crate::domain::file::FileKind;
-use crate::domain::file_version::{FileVersionError, FileVersionNode};
+use crate::domain::file::{File, FileKind};
+use crate::domain::file_version::FileVersionError;
 use crate::domain::merge::FileConflict;
 use crate::domain::name::DraftName;
 use crate::domain::path::{Path, Prefix};
@@ -50,7 +50,8 @@ pub trait SourceControl {
     /// # Errors
     ///
     /// [`SourceControlError::Access`] where `caller` may not write `path`, and
-    /// [`SourceControlError::Stage`], naming why the change was not staged.
+    /// [`SourceControlError::Workspace`], naming why the change was not staged; a file whose
+    /// content was not uploaded is [`WorkspaceError::ObjectMissing`].
     fn stage(
         &self,
         caller: &Caller,
@@ -199,7 +200,7 @@ pub trait SourceControl {
     ) -> impl Future<Output = Result<FileContent, SourceControlError>> + Send;
 
     /// The versions of `path` as of the changeset `at`, or as of `main` where `at` is `None`,
-    /// newest first.
+    /// newest first, each with its changeset's landing message.
     ///
     /// # Errors
     ///
@@ -211,7 +212,7 @@ pub trait SourceControl {
         repository: RepositoryId,
         at: Option<Address>,
         path: &Path,
-    ) -> impl Future<Output = Result<Vec<FileVersionNode>, SourceControlError>> + Send;
+    ) -> impl Future<Output = Result<Vec<Version>, SourceControlError>> + Send;
 }
 
 /// Why source control did not do what it was asked.
@@ -221,8 +222,6 @@ pub enum SourceControlError {
     Access(AccessError),
     /// No upload grant was issued.
     Upload(UploadError),
-    /// The change was not staged.
-    Stage(StageError),
     /// The draft did not land.
     Land(LandError),
     /// The file could not be read.
@@ -240,7 +239,6 @@ impl fmt::Display for SourceControlError {
         match self {
             Self::Access(error) => write!(f, "{error}"),
             Self::Upload(error) => write!(f, "upload failed: {error}"),
-            Self::Stage(error) => write!(f, "staging failed: {error}"),
             Self::Land(error) => write!(f, "landing failed: {error}"),
             Self::ReadFile(error) => write!(f, "reading failed: {error}"),
             Self::History(error) => write!(f, "history failed: {error}"),
@@ -255,7 +253,6 @@ impl std::error::Error for SourceControlError {
         match self {
             Self::Access(error) => Some(error),
             Self::Upload(error) => Some(error),
-            Self::Stage(error) => Some(error),
             Self::Land(error) => Some(error),
             Self::ReadFile(error) => Some(error),
             Self::History(error) => Some(error),
@@ -274,12 +271,6 @@ impl From<AccessError> for SourceControlError {
 impl From<UploadError> for SourceControlError {
     fn from(error: UploadError) -> Self {
         Self::Upload(error)
-    }
-}
-
-impl From<StageError> for SourceControlError {
-    fn from(error: StageError) -> Self {
-        Self::Stage(error)
     }
 }
 
@@ -320,6 +311,23 @@ pub struct Landing {
     pub message: String,
     /// When, in seconds since 1970-01-01T00:00:00Z.
     pub timestamp: i64,
+}
+
+/// One version of a file: what the changeset that introduced it did to the path, and why it
+/// landed.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Version {
+    /// The changeset that introduced this version.
+    pub changeset: Address,
+    /// The path the file is at.
+    pub path: Path,
+    /// The file.
+    pub file: File,
+    /// The nodes of the same path in the parent changesets, in parent order; empty where no
+    /// parent has the path.
+    pub previous: Vec<Address>,
+    /// The changeset's landing message.
+    pub message: String,
 }
 
 /// A file as `main` holds it.
@@ -521,50 +529,6 @@ impl From<ChangesetLogError> for HistoryError {
 impl From<DerivedDataError> for HistoryError {
     fn from(error: DerivedDataError) -> Self {
         Self::Derived(error)
-    }
-}
-
-/// Why a change was not staged.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum StageError {
-    /// The object store holds no object with this address; it was never uploaded.
-    ObjectMissing(Address),
-    /// The object store failed.
-    Objects(ObjectStoreError),
-    /// The changeset log failed.
-    Log(ChangesetLogError),
-    /// The draft store failed.
-    Drafts(DraftStoreError),
-}
-
-impl fmt::Display for StageError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ObjectMissing(address) => write!(f, "object {address} was not uploaded"),
-            Self::Objects(error) => write!(f, "{error}"),
-            Self::Log(error) => write!(f, "{error}"),
-            Self::Drafts(error) => write!(f, "{error}"),
-        }
-    }
-}
-
-impl std::error::Error for StageError {}
-
-impl From<ObjectStoreError> for StageError {
-    fn from(error: ObjectStoreError) -> Self {
-        Self::Objects(error)
-    }
-}
-
-impl From<ChangesetLogError> for StageError {
-    fn from(error: ChangesetLogError) -> Self {
-        Self::Log(error)
-    }
-}
-
-impl From<DraftStoreError> for StageError {
-    fn from(error: DraftStoreError) -> Self {
-        Self::Drafts(error)
     }
 }
 

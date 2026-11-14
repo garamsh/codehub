@@ -5,28 +5,12 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::domain::address::Address;
-use crate::domain::changeset::Change;
 use crate::domain::draft::{Draft, DraftId, Edit};
 use crate::domain::path::Path;
 use crate::domain::repository::RepositoryId;
 
 /// Holds each repository's drafts, each under its [`DraftId`].
 pub trait DraftStore {
-    /// Records `change` at `path` in the draft, replacing an earlier change to the path. A draft
-    /// not yet held is created with `base` as its base; a draft already held keeps its own.
-    ///
-    /// # Errors
-    ///
-    /// The store's [`DraftStoreError`].
-    fn stage(
-        &self,
-        repository: RepositoryId,
-        draft: &DraftId,
-        base: Option<Address>,
-        path: Path,
-        change: Change,
-    ) -> impl Future<Output = Result<(), DraftStoreError>> + Send;
-
     /// The draft held under `draft`, created with `base` as its base and no changes where none is
     /// held; a draft already held is returned as it is, keeping its own base.
     ///

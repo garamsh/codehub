@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use crate::domain::address::Address;
 use crate::domain::changeset::Change;
 use crate::domain::draft::{Draft, DraftId, Edit};
-use crate::domain::file_version::FileVersionNode;
 use crate::domain::name::{DraftName, OrganisationName, RepositoryName};
 use crate::domain::path::{Path, Prefix};
 use crate::domain::principal::Caller;
@@ -22,7 +21,7 @@ use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driving::access::AccessError;
 use crate::port::driving::source_control::{
     FileContent, LandError, Landing, ListFilesError, ListedFile, PathDiff, SourceControl,
-    SourceControlError, Workspace, WorkspaceError,
+    SourceControlError, Version, Workspace, WorkspaceError,
 };
 use crate::use_case::access::{readable_repository, require, require_paths};
 use crate::use_case::history::history;
@@ -31,7 +30,6 @@ use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::landing_gates::LandingGates;
 use crate::use_case::list_files::files_under;
 use crate::use_case::read_file::read_file;
-use crate::use_case::stage::stage;
 use crate::use_case::upload::request_upload;
 use crate::use_case::workspace::{changed, diffs, require_uploaded, workspace};
 
@@ -232,20 +230,23 @@ where
     ) -> Result<(), SourceControlError> {
         self.require_path(caller, repository, Access::Write, &path)
             .await?;
-        let draft = DraftId {
-            principal: caller.principal().clone(),
-            name: draft.clone(),
-        };
-        Ok(stage(
-            self.objects,
-            self.log,
-            self.drafts,
-            repository,
-            &draft,
-            path,
-            change,
-        )
-        .await?)
+        let edits = BTreeMap::from([(path, Edit::Record(change))]);
+        require_uploaded(self.objects, repository, &edits).await?;
+        let draft = draft_id(caller, draft);
+        let base = self
+            .log
+            .read_ref(repository, Ref::Main)
+            .await
+            .map_err(WorkspaceError::from)?;
+        self.drafts
+            .open(repository, &draft, base)
+            .await
+            .map_err(WorkspaceError::from)?;
+        self.drafts
+            .record(repository, &draft, edits)
+            .await
+            .map_err(WorkspaceError::from)?;
+        Ok(())
     }
 
     async fn open_workspace(
@@ -448,10 +449,7 @@ where
         landing: Landing,
     ) -> Result<Address, SourceControlError> {
         let (organisation, name) = self.names(caller, repository).await?;
-        let draft = DraftId {
-            principal: caller.principal().clone(),
-            name: draft.clone(),
-        };
+        let draft = draft_id(caller, draft);
         let staged = self
             .drafts
             .get(repository, &draft)
@@ -513,7 +511,7 @@ where
         repository: RepositoryId,
         at: Option<Address>,
         path: &Path,
-    ) -> Result<Vec<FileVersionNode>, SourceControlError> {
+    ) -> Result<Vec<Version>, SourceControlError> {
         self.require_path(caller, repository, Access::Read, path)
             .await?;
         Ok(history(self.log, self.derived, repository, at, path).await?)
