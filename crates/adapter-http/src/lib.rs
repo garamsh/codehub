@@ -278,6 +278,7 @@ routes! {
     "/v1/orgs/{org}/repos/{repo}/changesets/{id}/checks" => get(checks::list::<P>);
     "/v1/orgs/{org}/repos/{repo}/jobs/{id}/cancel" => post(checks::cancel::<P>);
     "/v1/orgs/{org}/repos/{repo}/refs/{name}" => get(checks::reference::<P>);
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/checks/plan" => get(checks::plan::<P>);
 }
 
 routes! {

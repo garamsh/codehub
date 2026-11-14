@@ -2,23 +2,27 @@
 //! and the authorisation decision it is given.
 
 use crate::domain::address::Address;
+use crate::domain::draft::DraftId;
 use crate::domain::job::{Job, JobId};
+use crate::domain::name::DraftName;
 use crate::domain::principal::Caller;
 use crate::domain::repository::RepositoryId;
 use crate::port::driven::authorisation_decision::{Action, AuthorisationDecision, Resource};
 use crate::port::driven::changeset_log::{ChangesetLog, Ref};
 use crate::port::driven::check_definitions::CheckDefinitions;
 use crate::port::driven::derived_data::DerivedData;
+use crate::port::driven::draft_store::DraftStore;
 use crate::port::driven::job_queue::JobQueue;
 use crate::port::driven::object_store::ObjectStore;
 use crate::port::driven::repository_directory::RepositoryDirectory;
-use crate::port::driving::checks::{Checks, ChecksError};
+use crate::port::driving::checks::{Checks, ChecksError, Plan};
 use crate::use_case::access::{readable_repository, require};
 use crate::use_case::landing_attempts::LandingAttempts;
+use crate::use_case::plan::{PlanPorts, plan};
 use crate::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
 
 /// The driven ports the checks are built over.
-pub struct ChecksAdapters<'a, Q, L, R, A, O, D, C> {
+pub struct ChecksAdapters<'a, Q, L, R, A, O, D, C, S> {
     /// Holds the jobs.
     pub queue: &'a Q,
     /// Stores changesets and `last-green`.
@@ -33,22 +37,28 @@ pub struct ChecksAdapters<'a, Q, L, R, A, O, D, C> {
     pub derived: &'a D,
     /// Reads the check definitions.
     pub definitions: &'a C,
+    /// Stores drafts.
+    pub drafts: &'a S,
 }
 
 /// A repository's checks over the driven ports the composition site passes to it. A blocking job
 /// that times out where the checks are read has its changeset reverted.
-pub struct ChecksService<'a, Q, L, R, A, O, D, C> {
+pub struct ChecksService<'a, Q, L, R, A, O, D, C, S> {
     queue: &'a Q,
     log: &'a L,
     directory: &'a R,
     authorisation: &'a A,
+    objects: &'a O,
+    derived: &'a D,
+    definitions: &'a C,
+    drafts: &'a S,
     checks: PostLandChecks<'a, O, D, L, R, Q, C>,
 }
 
-impl<'a, Q, L, R, A, O, D, C> ChecksService<'a, Q, L, R, A, O, D, C> {
+impl<'a, Q, L, R, A, O, D, C, S> ChecksService<'a, Q, L, R, A, O, D, C, S> {
     /// Checks over `adapters`, each revert tried at most `attempts` times.
     pub const fn new(
-        adapters: ChecksAdapters<'a, Q, L, R, A, O, D, C>,
+        adapters: ChecksAdapters<'a, Q, L, R, A, O, D, C, S>,
         attempts: LandingAttempts,
     ) -> Self {
         let ChecksAdapters {
@@ -59,12 +69,17 @@ impl<'a, Q, L, R, A, O, D, C> ChecksService<'a, Q, L, R, A, O, D, C> {
             objects,
             derived,
             definitions,
+            drafts,
         } = adapters;
         Self {
             queue,
             log,
             directory,
             authorisation,
+            objects,
+            derived,
+            definitions,
+            drafts,
             checks: PostLandChecks::new(
                 PostLandChecksAdapters {
                     objects,
@@ -80,7 +95,7 @@ impl<'a, Q, L, R, A, O, D, C> ChecksService<'a, Q, L, R, A, O, D, C> {
     }
 }
 
-impl<Q, L, R, A, O, D, C> Checks for ChecksService<'_, Q, L, R, A, O, D, C>
+impl<Q, L, R, A, O, D, C, S> Checks for ChecksService<'_, Q, L, R, A, O, D, C, S>
 where
     Q: JobQueue + Sync,
     L: ChangesetLog + Sync,
@@ -89,6 +104,7 @@ where
     O: ObjectStore + Sync,
     D: DerivedData + Sync,
     C: CheckDefinitions + Sync,
+    S: DraftStore + Sync,
 {
     async fn jobs_of(
         &self,
@@ -150,5 +166,33 @@ where
             .await
             .map_err(ChecksError::Revert)?;
         Ok(cancelled)
+    }
+
+    async fn plan(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        draft: &DraftName,
+    ) -> Result<Plan, ChecksError> {
+        readable_repository(
+            self.directory,
+            self.authorisation,
+            caller.principal(),
+            repository,
+        )
+        .await?;
+        let draft = DraftId {
+            principal: caller.principal().clone(),
+            name: draft.clone(),
+        };
+        let ports = PlanPorts {
+            queue: self.queue,
+            log: self.log,
+            objects: self.objects,
+            derived: self.derived,
+            definitions: self.definitions,
+            drafts: self.drafts,
+        };
+        Ok(plan(&ports, repository, &draft).await?)
     }
 }

@@ -13,6 +13,7 @@ pub mod landing_gates;
 pub mod last_green;
 pub mod list_files;
 pub mod members;
+pub mod plan;
 pub mod post_land_checks;
 pub mod read_file;
 pub mod relay;

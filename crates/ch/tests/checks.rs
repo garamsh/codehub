@@ -7,6 +7,8 @@ pub mod common;
 use std::time::Duration;
 
 use app::domain::address::Address;
+use app::domain::check::{CheckDefinition, Command, Need, Timeout};
+use app::domain::path::{Path, Prefix};
 use common::{Server, User, put, repository, serve};
 use serde_json::{Value, json};
 
@@ -236,5 +238,131 @@ async fn waits_and_exits_4_naming_the_jobs_that_had_not_ended_at_the_timeout() {
         run.out().contains("lint blocking queued -"),
         "{}",
         run.out()
+    );
+}
+
+/// A blocking check `name` that runs `true`, and needs `needs` where it names one.
+#[cfg(test)]
+fn definition(name: &str, needs: Option<(&str, &str)>) -> CheckDefinition {
+    let mut check = CheckDefinition::new(
+        name.parse().unwrap(),
+        Command::new("true").unwrap(),
+        std::collections::BTreeSet::new(),
+        true,
+        Timeout::new(60).unwrap(),
+    );
+    if let Some((folder, need)) = needs {
+        check.needs = vec![Need::Elsewhere {
+            folder: Prefix::from(folder.parse::<Path>().unwrap()),
+            name: need.parse().unwrap(),
+        }];
+    }
+    check
+}
+
+/// A server whose repository `<org>/app` of `ada` has landed `a/x`, `b/y` and `c/z`, each folder
+/// with a check file: `a:build`, `b:build`, and `c:package`, which needs `//a:build`. Every job has
+/// passed, so each key has a passed run.
+#[cfg(test)]
+async fn three_folders(server: &Server, ada: &User) {
+    repository(ada).await;
+    for (folder, file, check) in [
+        ("a", "a-checks", definition("build", None)),
+        ("b", "b-checks", definition("build", None)),
+        ("c", "c-checks", definition("package", Some(("a", "build")))),
+    ] {
+        server.teach_checks(file, vec![check]);
+        put(
+            ada,
+            "default",
+            &format!("{folder}/.codehub/checks.toml"),
+            file,
+        )
+        .await;
+        put(ada, "default", &format!("{folder}/{folder}.txt"), "one\n").await;
+    }
+    ada.ok(&["land", "-m", "base"]).await;
+    ada.ok(&["runner", "register", "runner", "--issuer", Server::ISSUER])
+        .await;
+    let runner = server.token("runner");
+    for _ in 0..3 {
+        server.finish_job(&runner, "passed", Some(0)).await;
+    }
+}
+
+#[tokio::test]
+async fn plans_what_a_draft_would_run_and_what_it_would_take_from_the_cache() {
+    let server = serve().await;
+    let ada = server.user("ada");
+    three_folders(&server, &ada).await;
+
+    // The control: a draft that touches no folder's files takes every check from the cache.
+    put(&ada, "idle", "README", "hello\n").await;
+    assert_eq!(
+        ada.ok(&["checks", "plan", "--draft", "idle"]).await,
+        "a:build blocking cached\n  inputs: **\n\
+         b:build blocking cached\n  inputs: **\n\
+         c:package blocking cached\n  inputs: **\n"
+    );
+
+    put(&ada, "work", "a/a.txt", "two\n").await;
+    assert_eq!(
+        ada.ok(&["checks", "plan", "--draft", "work"]).await,
+        "a:build blocking run (inputs changed)\n  inputs: **\n\
+         b:build blocking cached\n  inputs: **\n\
+         c:package blocking run (needs a:build to run)\n  inputs: **\n"
+    );
+}
+
+#[tokio::test]
+async fn prints_the_plan_as_json_with_a_reason_per_run() {
+    let server = serve().await;
+    let ada = server.user("ada");
+    three_folders(&server, &ada).await;
+    put(&ada, "work", "c/c.txt", "two\n").await;
+
+    let plan: Value = serde_json::from_str(
+        &ada.ok(&["--json", "checks", "plan", "--draft", "work"])
+            .await,
+    )
+    .unwrap();
+    let outcomes: Vec<(&str, &str)> = plan["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|check| {
+            (
+                check["name"].as_str().unwrap(),
+                check["outcome"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("a:build", "cached"),
+            ("b:build", "cached"),
+            ("c:package", "run")
+        ]
+    );
+    assert_eq!(
+        plan["checks"][2]["reasons"],
+        json!([{"reason": "inputs_changed"}])
+    );
+}
+
+#[tokio::test]
+async fn refuses_to_plan_a_draft_whose_check_file_cannot_be_read() {
+    let server = serve().await;
+    let ada = server.user("ada");
+    three_folders(&server, &ada).await;
+    put(&ada, "work", "a/.codehub/checks.toml", "not taught").await;
+
+    let run = ada.ch(&["checks", "plan", "--draft", "work"]).await;
+    assert_ne!(run.code, Some(0));
+    assert!(
+        run.stderr.contains("a/.codehub/checks.toml"),
+        "{}",
+        run.stderr
     );
 }

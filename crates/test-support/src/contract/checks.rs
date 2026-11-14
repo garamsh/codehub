@@ -1,5 +1,6 @@
 //! Checks queued on landing, run by runners, and what they do to `last-green`.
 
+use crate::contract::draft;
 use crate::contract::runner_deployment::{
     LEASE, RunnerDeployment, Spec, check, land, land_checks, land_checks_in, land_checks_with,
     organisation, runner,
@@ -16,9 +17,12 @@ use app::port::driven::check_definitions::CheckFileError;
 use app::port::driven::job_queue::{JobQueue, JobQueueError};
 use app::port::driven::membership::{Access, Role};
 use app::port::driven::runner_registry::RunnerRegistry;
-use app::port::driving::checks::{Checks, ChecksError};
+use app::port::driving::checks::{
+    Checks, ChecksError, PlanError, PlanOutcome, PlannedCheck, RunReason,
+};
 use app::port::driving::jobs::Jobs;
 use app::port::driving::members::Members;
+use app::port::driving::source_control::LandError;
 use app::use_case::administration::Administration;
 use app::use_case::members::{MembersAdapters, MembersService};
 
@@ -954,4 +958,115 @@ pub async fn cancelling_a_check_skips_the_checks_that_need_it<H: RunnerDeploymen
     assert_eq!(job_of(&after, "a").state, JobState::Cancelled);
     assert_eq!(job_of(&after, "b").state, JobState::Skipped);
     assert_eq!(last_green(&harness, &ada, &repo).await, None);
+}
+
+/// The planned check named `id` among `checks`.
+///
+/// # Panics
+///
+/// Where there is none.
+fn planned<'a>(checks: &'a [PlannedCheck], id: &str) -> &'a PlannedCheck {
+    checks
+        .iter()
+        .find(|check| check.check.to_string() == id)
+        .unwrap()
+}
+
+/// A plan names a check whose folder the draft changes as a run for its inputs, one whose folder
+/// it leaves alone as cached, and one that needs the first as a run for that need; it queues and
+/// lands nothing. A draft that touches no folder's files takes every check from the cache.
+pub async fn a_plan_runs_what_the_draft_changes_and_takes_the_rest_from_the_cache<
+    H: RunnerDeployment,
+>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let folders: &[(&str, &[Spec])] = &[
+        ("a", &[check("unit")]),
+        ("b", &[check("unit")]),
+        ("c", &[check("package").needing(&["//a:unit"])]),
+    ];
+    let first = land_checks_with(
+        &repo,
+        &ada,
+        "first",
+        folders,
+        &[("a/src", "1\n"), ("b/src", "1\n"), ("c/src", "1\n")],
+    )
+    .await;
+    run_all(&harness, &bot, &[], 0).await;
+
+    // The control: a draft that changes no folder's files caches every check.
+    let idle = draft("idle");
+    repo.stage(&ada, &idle, &[("README", "hello\n")]).await;
+    let plan = harness.checks().plan(&ada, repo.id, &idle).await.unwrap();
+    let ids: Vec<String> = plan.checks.iter().map(|c| c.check.to_string()).collect();
+    assert_eq!(ids, ["a:unit", "b:unit", "c:package"]);
+    assert!(plan.checks.iter().all(|c| c.outcome == PlanOutcome::Cached));
+
+    let work = draft("work");
+    repo.stage(&ada, &work, &[("a/src", "2\n")]).await;
+    let plan = harness.checks().plan(&ada, repo.id, &work).await.unwrap();
+    assert_eq!(
+        planned(&plan.checks, "a:unit").outcome,
+        PlanOutcome::Run(vec![RunReason::InputsChanged])
+    );
+    assert_eq!(planned(&plan.checks, "b:unit").outcome, PlanOutcome::Cached);
+    let package = planned(&plan.checks, "c:package");
+    let a_unit = planned(&plan.checks, "a:unit").check.clone();
+    assert_eq!(
+        package.outcome,
+        PlanOutcome::Run(vec![RunReason::NeedRuns(a_unit)])
+    );
+    assert!(package.blocking);
+
+    // Planning queued and landed nothing.
+    assert!(harness.jobs().claim(&bot, 1).await.unwrap().is_none());
+    assert_eq!(repo.main().await, Some(first));
+}
+
+/// A check whose key has no passed run is planned as a run with no reason but that, and a draft
+/// whose files conflict with `main`, or whose check file cannot be read, has no plan.
+pub async fn a_plan_names_a_check_that_never_passed_and_refuses_a_draft_it_cannot_read<
+    H: RunnerDeployment,
+>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let folders: &[(&str, &[Spec])] = &[("a", &[check("unit")])];
+    land_checks_with(&repo, &ada, "first", folders, &[("a/src", "1\n")]).await;
+
+    // No run has passed, though the landing queued one.
+    let idle = draft("idle");
+    repo.stage(&ada, &idle, &[("README", "hello\n")]).await;
+    let plan = harness.checks().plan(&ada, repo.id, &idle).await.unwrap();
+    assert_eq!(
+        planned(&plan.checks, "a:unit").outcome,
+        PlanOutcome::Run(vec![RunReason::NoPassedRun])
+    );
+
+    // A draft that conflicts with what `main` changed since its base is refused.
+    let late = draft("late");
+    repo.stage(&ada, &late, &[("a/src", "2\n")]).await;
+    land(&repo, &ada, "other", &[("a/src", "3\n")])
+        .await
+        .unwrap();
+    let refused = harness.checks().plan(&ada, repo.id, &late).await;
+    assert!(matches!(
+        refused,
+        Err(ChecksError::Plan(PlanError::Rebase(LandError::Conflicts(
+            _
+        ))))
+    ));
+
+    // A check file the definitions cannot read is refused, naming it.
+    let broken = draft("broken");
+    let file = format!("a/{}", harness.definitions().file());
+    repo.stage(&ada, &broken, &[(&file, "not taught")]).await;
+    let refused = harness.checks().plan(&ada, repo.id, &broken).await;
+    assert!(matches!(
+        refused,
+        Err(ChecksError::Plan(PlanError::Definitions { file: named, .. })) if named == file
+    ));
 }

@@ -679,3 +679,49 @@ async fn a_runner_of_another_organisation_is_refused() {
     assert!(status.success(), "{stderr}");
     assert_eq!(checks(alice, &landed).await["checks"][0]["state"], "passed");
 }
+
+#[tokio::test]
+async fn a_plan_runs_the_checks_a_draft_changes_and_takes_the_rest_from_the_cache() {
+    let world = World::new().await;
+    let alice = &world.alice;
+    let bob = world.identity("bob").await;
+    world.register(alice, &bob, &[]).await;
+    land(
+        alice,
+        &[
+            ("a/.codehub/checks.toml", &definition("unit", "true", "")),
+            ("a/src", "1\n"),
+            ("b/.codehub/checks.toml", &definition("unit", "true", "")),
+            ("b/src", "1\n"),
+            (
+                "c/.codehub/checks.toml",
+                &definition("package", "true", "needs = [\"//a:unit\"]"),
+            ),
+            ("c/src", "1\n"),
+        ],
+    )
+    .await;
+    for _ in 0..3 {
+        let (status, stderr) = world.run_once(&bob).finish().await;
+        assert!(status.success(), "{stderr}");
+    }
+
+    // The control: a draft that touches no folder's files takes every check from the cache.
+    alice.stage("idle", "README", "hello\n").await;
+    let idle = alice.ok(&["checks", "plan", "--draft", "idle"]).await;
+    assert_eq!(
+        idle,
+        "a:unit blocking cached\n  inputs: **\n\
+         b:unit blocking cached\n  inputs: **\n\
+         c:package blocking cached\n  inputs: **\n"
+    );
+
+    alice.stage("work", "a/src", "2\n").await;
+    let plan = alice.ok(&["checks", "plan", "--draft", "work"]).await;
+    assert_eq!(
+        plan,
+        "a:unit blocking run (inputs changed)\n  inputs: **\n\
+         b:unit blocking cached\n  inputs: **\n\
+         c:package blocking run (needs a:unit to run)\n  inputs: **\n"
+    );
+}

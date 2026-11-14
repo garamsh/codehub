@@ -116,7 +116,7 @@ where
 
 /// The landing's delta against `main`: unchanged where no path overlaps what `main` changed since
 /// `base`, and merged where paths overlap.
-async fn rebase<O: ObjectStore, L: ChangesetLog, D: DerivedData>(
+pub(crate) async fn rebase<O: ObjectStore, L: ChangesetLog, D: DerivedData>(
     objects: &O,
     log: &L,
     derived: &D,

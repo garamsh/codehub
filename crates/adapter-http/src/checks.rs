@@ -1,12 +1,14 @@
-//! The checks of a repository: the jobs of a changeset, cancelling a job, and the refs checks move.
+//! The checks of a repository: the jobs of a changeset, cancelling a job, the refs checks move, and
+//! the plan of a draft.
 
 use std::sync::Arc;
 
 use app::domain::address::Address;
 use app::domain::job::{Job, JobId, JobState};
+use app::domain::name::DraftName;
 use app::domain::revert::Revert;
 use app::port::driven::changeset_log::Ref;
-use app::port::driving::checks::Checks;
+use app::port::driving::checks::{Checks, Plan, PlanOutcome, RunReason};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -70,6 +72,73 @@ pub struct ListedBody {
 #[derive(Serialize)]
 pub struct ChecksBody {
     checks: Vec<ListedBody>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub enum ReasonBody {
+    InputsChanged,
+    #[serde(rename = "needs_run")]
+    NeedRuns {
+        check: String,
+    },
+    NoPassedRun,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanOutcomeBody {
+    Run,
+    Cached,
+}
+
+#[derive(Serialize)]
+pub struct PlannedBody {
+    name: String,
+    blocking: bool,
+    inputs: Vec<String>,
+    outcome: PlanOutcomeBody,
+    reasons: Vec<ReasonBody>,
+}
+
+#[derive(Serialize)]
+pub struct PlanBody {
+    checks: Vec<PlannedBody>,
+}
+
+impl From<Plan> for PlanBody {
+    fn from(plan: Plan) -> Self {
+        let checks = plan
+            .checks
+            .into_iter()
+            .map(|planned| {
+                let (outcome, reasons) = match planned.outcome {
+                    PlanOutcome::Cached => (PlanOutcomeBody::Cached, Vec::new()),
+                    PlanOutcome::Run(reasons) => (
+                        PlanOutcomeBody::Run,
+                        reasons
+                            .into_iter()
+                            .map(|reason| match reason {
+                                RunReason::InputsChanged => ReasonBody::InputsChanged,
+                                RunReason::NeedRuns(check) => ReasonBody::NeedRuns {
+                                    check: check.to_string(),
+                                },
+                                RunReason::NoPassedRun => ReasonBody::NoPassedRun,
+                            })
+                            .collect(),
+                    ),
+                };
+                PlannedBody {
+                    name: planned.check.to_string(),
+                    blocking: planned.blocking,
+                    inputs: planned.inputs.iter().map(ToString::to_string).collect(),
+                    outcome,
+                    reasons,
+                }
+            })
+            .collect();
+        Self { checks }
+    }
 }
 
 #[derive(Serialize)]
@@ -158,4 +227,15 @@ pub async fn reference<P: RunnerServices>(
         name,
         changeset: changeset.to_string(),
     }))
+}
+
+pub async fn plan<P: RunnerServices>(
+    State(ports): State<Arc<P>>,
+    Authenticated(caller): Authenticated,
+    Params((organisation, repository, draft)): Params<(String, String, String)>,
+) -> Result<Json<PlanBody>, Problem> {
+    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let draft: DraftName = parse("draft name", &draft)?;
+    let plan = ports.checks().plan(&caller, repository, &draft).await?;
+    Ok(Json(plan.into()))
 }

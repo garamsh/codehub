@@ -12,7 +12,7 @@ use app::port::driven::repository_directory::DirectoryError;
 use app::port::driven::runner_registry::RunnerRegistryError;
 use app::port::driving::access::AccessError;
 use app::port::driving::authentication::AuthenticationError;
-use app::port::driving::checks::ChecksError;
+use app::port::driving::checks::{ChecksError, PlanError};
 use app::port::driving::jobs::JobsError;
 use app::port::driving::members::MembersError;
 use app::port::driving::repositories::RepositoriesError;
@@ -425,6 +425,24 @@ impl From<ChecksError> for Problem {
             ChecksError::Queue(error) => error.into(),
             ChecksError::Log(error) => error.into(),
             ChecksError::Revert(_) => Self::internal(),
+            ChecksError::Plan(error) => error.into(),
+        }
+    }
+}
+
+impl From<PlanError> for Problem {
+    fn from(error: PlanError) -> Self {
+        match error {
+            PlanError::Rebase(error) => error.into(),
+            PlanError::Drafts(error) => error.into(),
+            PlanError::Derived(error) => error.into(),
+            PlanError::Objects(error) => error.into(),
+            PlanError::Queue(error) => error.into(),
+            PlanError::Log(error) => error.into(),
+            PlanError::Definitions { file, reason } => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("{file}: {reason}"),
+            ),
         }
     }
 }

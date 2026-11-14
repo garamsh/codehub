@@ -384,6 +384,61 @@ pub struct Checks {
     pub checks: Vec<Check>,
 }
 
+/// What landing a draft would do about each check, in `needs` order.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Plan {
+    /// The checks; a check comes after every check it needs.
+    pub checks: Vec<PlannedCheck>,
+}
+
+/// One check of a plan.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlannedCheck {
+    /// The check's name, with its folder where it is not at the root.
+    pub name: String,
+    /// Whether a failure would revert the landing.
+    pub blocking: bool,
+    /// The patterns that select the files the check reads.
+    pub inputs: Vec<String>,
+    /// Whether the check would run or take a passed result.
+    pub outcome: PlanOutcome,
+    /// Why the check would run; empty where it is cached.
+    pub reasons: Vec<PlanReason>,
+}
+
+/// What would become of a check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanOutcome {
+    /// The check would run.
+    Run,
+    /// A run of the check's key has passed, and it takes that result.
+    Cached,
+}
+
+/// Why a check would run.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlanReason {
+    /// The kind of reason.
+    pub reason: ReasonKind,
+    /// The needed check that runs, for [`ReasonKind::NeedRuns`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
+}
+
+/// The kinds of reason a check would run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasonKind {
+    /// The draft changes a file the check reads.
+    InputsChanged,
+    /// A check it needs would run.
+    #[serde(rename = "needs_run")]
+    NeedRuns,
+    /// No run of its key has passed.
+    NoPassedRun,
+}
+
 /// A ref and the changeset it points at.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Ref {

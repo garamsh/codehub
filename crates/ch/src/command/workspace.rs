@@ -13,7 +13,7 @@ use crate::cli::Open;
 use crate::failure::Failure;
 use crate::view::{Entry, Phase, Rules, View, file_path, write_file};
 use crate::wire::{
-    ChangedPath, DiffContent, Kind, Snapshot, SnapshotChange, TransferGrant, Upload,
+    ChangedPath, DiffContent, Kind, Plan, Snapshot, SnapshotChange, TransferGrant, Upload,
 };
 
 /// The bytes `grant` lets `ch` download.
@@ -140,6 +140,15 @@ async fn begin(context: &Context) -> Result<(Session, View), Failure> {
     let session = Session::open(context).await?;
     snapshot(context, &session.api(context), &mut view).await?;
     Ok((session, view))
+}
+
+/// The plan of the open view's draft, after the view's edits are sent.
+pub(super) async fn plan(context: &Context, view: View) -> Result<Plan, Failure> {
+    let mut view = view.ensure_open()?;
+    let session = Session::open(context).await?;
+    let api = session.api(context);
+    snapshot(context, &api, &mut view).await?;
+    api.plan(&view.repository, &view.draft).await
 }
 
 /// `status --json`: the workspace as the server answers it, without the download grants.
