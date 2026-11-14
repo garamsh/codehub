@@ -120,7 +120,7 @@ async fn returns_the_version_chain_from_log_and_the_content_from_read() {
     assert_eq!(
         alice.ok(&["log", "src/a.txt"]).await,
         format!(
-            "{second} {}\n{first} {}\n",
+            "{second} {} second\n{first} {} first\n",
             address("two\n"),
             address("one\n")
         )

@@ -215,6 +215,12 @@ pub(crate) fn address(bytes: &[u8]) -> String {
 }
 
 async fn put(context: &Context, arguments: &Put) -> Result<(), Failure> {
+    if let Some(view) = View::find(&std::env::current_dir()?)? {
+        return Err(Failure::Usage(format!(
+            "put is for a caller without a view, and this is inside the view at {}; edit its files and run `ch status`, `ch describe` and `ch land`",
+            view.root.display()
+        )));
+    }
     let session = Session::open(context).await?;
     let repository = session.repository()?;
     let api = session.api(context);
@@ -290,7 +296,8 @@ async fn log(
         return print_json(out, &history.versions);
     }
     for version in &history.versions {
-        writeln!(out, "{} {}", version.changeset, version.content)?;
+        let subject = version.message.lines().next().unwrap_or_default();
+        writeln!(out, "{} {} {subject}", version.changeset, version.content)?;
     }
     Ok(())
 }

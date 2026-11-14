@@ -130,6 +130,38 @@ async fn edits_a_view_with_the_file_system_and_lands_it() {
 }
 
 #[tokio::test]
+async fn refuses_put_inside_a_view_with_exit_2_and_puts_outside_it() {
+    let server = serve().await;
+    let ada = server.user("ada");
+    repository(&ada).await;
+    let view = Scratch::new();
+    open(&ada, &view).await;
+    let source = common::file(b"via put\n");
+
+    for arguments in [
+        vec!["put", "p.txt", source.as_str()],
+        vec!["put", "--delete", "p.txt"],
+    ] {
+        let refused = at(&ada, view.path(), &arguments).await;
+        assert_eq!(refused.code, Some(2), "{}", refused.stderr);
+        assert!(
+            refused.stderr.contains(view.path().to_str().unwrap()),
+            "{}",
+            refused.stderr
+        );
+    }
+    // The refusals wrote nothing to the workspace.
+    assert_eq!(ok_at(&ada, view.path(), &["status"]).await, "");
+
+    // The control: the same put outside the view succeeds and lands.
+    let outside = Scratch::new();
+    std::fs::create_dir(outside.path()).unwrap();
+    ok_at(&ada, outside.path(), &["put", "p.txt", source.as_str()]).await;
+    ok_at(&ada, outside.path(), &["land", "-m", "outside"]).await;
+    assert_eq!(ada.ok(&["read", "p.txt"]).await, "via put\n");
+}
+
+#[tokio::test]
 async fn lands_with_the_message_given_in_place_of_the_description() {
     let server = serve().await;
     let ada = server.user("ada");
