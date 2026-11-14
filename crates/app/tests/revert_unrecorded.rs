@@ -7,8 +7,11 @@ use adapter_memory::MemoryJobQueue;
 use app::domain::address::Address;
 use app::domain::changeset::Changeset;
 use app::domain::check::CheckKey;
-use app::domain::job::{Heartbeat, Job, JobId, JobResult, NewJob, Outcome, Resolution};
+use app::domain::job::{
+    CacheRef, Heartbeat, Job, JobId, JobResult, NewJob, Outcome, Produced, Resolution,
+};
 use app::domain::name::OrganisationName;
+use app::domain::path::{Path, Prefix};
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
 use app::domain::runner::{Registration, RegistrationId};
@@ -117,6 +120,10 @@ impl JobQueue for RecordRefusingQueue<'_> {
         self.0.heartbeat(job, runners, now, lease).await
     }
 
+    async fn running(&self, job: JobId, runners: &[RegistrationId]) -> Result<Job, JobQueueError> {
+        self.0.running(job, runners).await
+    }
+
     async fn complete(
         &self,
         job: JobId,
@@ -152,6 +159,28 @@ impl JobQueue for RecordRefusingQueue<'_> {
         changeset: Address,
     ) -> Result<Vec<Job>, JobQueueError> {
         self.0.of_changeset(repository, changeset).await
+    }
+
+    async fn cache_ref(
+        &self,
+        repository: RepositoryId,
+        folder: &Prefix,
+        path: &Path,
+    ) -> Result<Option<CacheRef>, JobQueueError> {
+        self.0.cache_ref(repository, folder, path).await
+    }
+
+    async fn advance_cache_ref(
+        &self,
+        repository: RepositoryId,
+        folder: &Prefix,
+        path: &Path,
+        from: Option<Address>,
+        to: CacheRef,
+    ) -> Result<bool, JobQueueError> {
+        self.0
+            .advance_cache_ref(repository, folder, path, from, to)
+            .await
     }
 
     async fn expire(&self, now: i64) -> Result<Vec<Job>, JobQueueError> {
@@ -195,7 +224,10 @@ async fn a_failed_revert_that_cannot_be_recorded_returns_both_failures() {
         output: Vec::new(),
     };
 
-    let error = service.report(&bot, job, result, 5).await.unwrap_err();
+    let error = service
+        .report(&bot, job, result, Produced::default(), 5)
+        .await
+        .unwrap_err();
 
     let JobsError::Revert(RevertError::Unrecorded { error, recording }) = &error else {
         panic!("expected Unrecorded, got {error:?}");

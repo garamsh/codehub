@@ -879,7 +879,7 @@ async fn claims_a_job_with_a_grant_for_each_file() {
     assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
     assert_eq!(claimed.body["organisation"], "acme");
     assert_eq!(claimed.body["changeset"], changeset);
-    assert_eq!(claimed.body["check"]["name"], "lint");
+    assert_eq!(claimed.body["check"]["id"], "lint");
     assert_eq!(claimed.body["check"]["command"], "true");
     assert_eq!(claimed.body["check"]["timeout"], 60);
     assert_eq!(claimed.body["heartbeat_interval"], 10);
@@ -932,7 +932,7 @@ async fn hands_a_job_queued_during_the_hold_to_the_waiting_claim() {
     };
     let (claimed, ()) = tokio::join!(waiting, queue);
     assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
-    assert_eq!(claimed.body["check"]["name"], "late");
+    assert_eq!(claimed.body["check"]["id"], "late");
 }
 
 #[tokio::test]
@@ -1151,7 +1151,7 @@ async fn reports_each_outcome_as_its_own_state() {
     ] {
         // The earlier jobs are finished, so the claim hands out this one.
         let claimed = claim(&api, &runner).await;
-        assert_eq!(claimed.body["check"]["name"], name, "{}", claimed.body);
+        assert_eq!(claimed.body["check"]["id"], name, "{}", claimed.body);
         let id = claimed.body["id"].as_u64().unwrap();
         let body = if exit_code.is_null() {
             json!({"status": status, "output_tail": ""})

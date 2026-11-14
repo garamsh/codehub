@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use adapter_memory::{MemoryIdentityVerification, MemoryObjectStore};
 use app::domain::address::Address;
-use app::domain::check::{CheckDefinition, Command, Need, Timeout};
+use app::domain::check::{CheckDefinition, Command, Need, Pattern, Timeout};
 use app::domain::name::{Label, OrganisationName};
 use app::domain::principal::Caller;
 use app::port::driven::check_definitions::{CheckDefinitions, CheckFileError};
@@ -162,6 +162,12 @@ pub struct Spec {
     pub timeout: u64,
     /// The checks it needs, as a check file writes them.
     pub needs: &'static [&'static str],
+    /// The input patterns it reads, as a check file writes them; none reads the whole folder.
+    pub inputs: &'static [&'static str],
+    /// The paths, relative to its folder, it produces.
+    pub outputs: &'static [&'static str],
+    /// The paths, relative to its folder, it uses as a cache.
+    pub caches: &'static [&'static str],
 }
 
 /// A blocking check named `name` that requires no label and has the default timeout.
@@ -173,6 +179,9 @@ pub const fn check(name: &'static str) -> Spec {
         blocking: true,
         timeout: 600,
         needs: &[],
+        inputs: &[],
+        outputs: &[],
+        caches: &[],
     }
 }
 
@@ -198,6 +207,24 @@ impl Spec {
         Self { needs, ..self }
     }
 
+    /// The same check reading `inputs`, as a check file writes them.
+    #[must_use]
+    pub const fn reading(self, inputs: &'static [&'static str]) -> Self {
+        Self { inputs, ..self }
+    }
+
+    /// The same check producing `outputs`, relative to its folder.
+    #[must_use]
+    pub const fn producing(self, outputs: &'static [&'static str]) -> Self {
+        Self { outputs, ..self }
+    }
+
+    /// The same check caching `caches`, relative to its folder.
+    #[must_use]
+    pub const fn caching(self, caches: &'static [&'static str]) -> Self {
+        Self { caches, ..self }
+    }
+
     /// The same check with a timeout of `timeout` seconds.
     #[must_use]
     pub const fn timing_out_after(self, timeout: u64) -> Self {
@@ -215,16 +242,25 @@ pub fn text(specs: &[Spec]) -> String {
             .iter()
             .map(|label| format!("{label:?}"))
             .collect();
-        let needs: Vec<String> = spec.needs.iter().map(|need| format!("{need:?}")).collect();
+        let list = |items: &[&str]| -> String {
+            let items: Vec<String> = items.iter().map(|item| format!("{item:?}")).collect();
+            items.join(", ")
+        };
         text.push_str(&format!(
-            "[[check]]\nname = {:?}\ncommand = \"run {}\"\nlabels = [{}]\nblocking = {}\ntimeout = {}\nneeds = [{}]\n\n",
+            "[[check]]\nname = {:?}\ncommand = \"run {}\"\nlabels = [{}]\nblocking = {}\ntimeout = {}\nneeds = [{}]\noutputs = [{}]\ncaches = [{}]\n",
             spec.name,
             spec.name,
             labels.join(", "),
             spec.blocking,
             spec.timeout,
-            needs.join(", ")
+            list(spec.needs),
+            list(spec.outputs),
+            list(spec.caches),
         ));
+        if !spec.inputs.is_empty() {
+            text.push_str(&format!("inputs = [{}]\n", list(spec.inputs)));
+        }
+        text.push('\n');
     }
     text
 }
@@ -250,6 +286,23 @@ pub fn definitions(specs: &[Spec]) -> Vec<CheckDefinition> {
                 .needs
                 .iter()
                 .map(|need| need.parse::<Need>().unwrap())
+                .collect();
+            if !spec.inputs.is_empty() {
+                definition.inputs = spec
+                    .inputs
+                    .iter()
+                    .map(|input| input.parse::<Pattern>().unwrap())
+                    .collect();
+            }
+            definition.outputs = spec
+                .outputs
+                .iter()
+                .map(|path| path.parse().unwrap())
+                .collect();
+            definition.caches = spec
+                .caches
+                .iter()
+                .map(|path| path.parse().unwrap())
                 .collect();
             definition
         })

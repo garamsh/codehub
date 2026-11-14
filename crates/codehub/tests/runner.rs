@@ -188,7 +188,7 @@ async fn a_landing_queues_a_job_that_a_claim_returns() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(job["organisation"], "acme");
     assert_eq!(job["changeset"], changeset);
-    assert_eq!(job["check"]["name"], "unit");
+    assert_eq!(job["check"]["id"], "unit");
     assert_eq!(job["check"]["command"], "true");
     let files = job["files"].as_array().unwrap();
     let file = files

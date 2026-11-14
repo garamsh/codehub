@@ -136,3 +136,33 @@ async fn a_plan_names_a_check_that_never_passed_and_refuses_a_draft_it_cannot_re
     checks::a_plan_names_a_check_that_never_passed_and_refuses_a_draft_it_cannot_read::<Harness>()
         .await;
 }
+
+#[tokio::test]
+async fn a_job_is_granted_the_files_its_inputs_match_and_no_others() {
+    checks::a_job_is_granted_the_files_its_inputs_match_and_no_others::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_job_is_granted_the_outputs_of_the_checks_it_needs() {
+    checks::a_job_is_granted_the_outputs_of_the_checks_it_needs::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_check_is_rekeyed_when_the_output_of_a_check_it_needs_changes() {
+    checks::a_check_is_rekeyed_when_the_output_of_a_check_it_needs_changes::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_pass_with_files_the_store_lacks_is_a_failure() {
+    checks::a_pass_with_files_the_store_lacks_is_a_failure::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_cache_ref_advances_only_on_a_pass_at_a_later_landing() {
+    checks::a_cache_ref_advances_only_on_a_pass_at_a_later_landing::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_cache_ref_moves_only_from_the_changeset_it_records() {
+    checks::a_cache_ref_moves_only_from_the_changeset_it_records::<Harness>().await;
+}

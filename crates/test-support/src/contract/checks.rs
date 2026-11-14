@@ -6,21 +6,24 @@ use crate::contract::runner_deployment::{
     organisation, runner,
 };
 use app::domain::address::Address;
+use app::domain::file::{File, FileKind};
 use app::domain::job::{
-    Heartbeat, Job, JobResult, JobState, Outcome, StopReason, empty_output_tree,
+    CacheRef, Heartbeat, Job, JobResult, JobState, Outcome, Produced, ProducedFile, StopReason,
+    empty_output_tree,
 };
-use app::domain::path::{Component, Prefix};
+use app::domain::path::{Component, Path, Prefix};
 use app::domain::principal::Caller;
 use app::port::driven::changeset_log::{ChangesetLog, Ref};
 use app::port::driven::check_definitions::CheckDefinitions;
 use app::port::driven::check_definitions::CheckFileError;
 use app::port::driven::job_queue::{JobQueue, JobQueueError};
 use app::port::driven::membership::{Access, Role};
+use app::port::driven::object_store::ObjectStore;
 use app::port::driven::runner_registry::RunnerRegistry;
 use app::port::driving::checks::{
     Checks, ChecksError, PlanError, PlanOutcome, PlannedCheck, RunReason,
 };
-use app::port::driving::jobs::Jobs;
+use app::port::driving::jobs::{Claimed, Jobs, Upload};
 use app::port::driving::members::Members;
 use app::port::driving::source_control::LandError;
 use app::use_case::administration::Administration;
@@ -65,7 +68,7 @@ async fn run_all<H: RunnerDeployment>(harness: &H, bot: &Caller, failing: &[&str
         };
         harness
             .jobs()
-            .report(bot, claimed.job.id, result, now)
+            .report(bot, claimed.job.id, result, Produced::default(), now)
             .await
             .unwrap();
     }
@@ -176,7 +179,7 @@ pub async fn last_green_moves_once_every_blocking_check_passed<H: RunnerDeployme
     let first = harness.jobs().claim(&bot, 0).await.unwrap().unwrap();
     harness
         .jobs()
-        .report(&bot, first.job.id, passed(), 1)
+        .report(&bot, first.job.id, passed(), Produced::default(), 1)
         .await
         .unwrap();
     assert_eq!(last_green(&harness, &ada, &repo).await, None);
@@ -184,7 +187,7 @@ pub async fn last_green_moves_once_every_blocking_check_passed<H: RunnerDeployme
     let second = harness.jobs().claim(&bot, 2).await.unwrap().unwrap();
     harness
         .jobs()
-        .report(&bot, second.job.id, passed(), 3)
+        .report(&bot, second.job.id, passed(), Produced::default(), 3)
         .await
         .unwrap();
     assert_eq!(last_green(&harness, &ada, &repo).await, Some(landed));
@@ -238,13 +241,13 @@ pub async fn last_green_never_moves_backward<H: RunnerDeployment>() {
 
     harness
         .jobs()
-        .report(&bot, second.job.id, passed(), 1)
+        .report(&bot, second.job.id, passed(), Produced::default(), 1)
         .await
         .unwrap();
     assert_eq!(last_green(&harness, &ada, &repo).await, Some(newer));
     harness
         .jobs()
-        .report(&bot, first.job.id, passed(), 2)
+        .report(&bot, first.job.id, passed(), Produced::default(), 2)
         .await
         .unwrap();
     assert_eq!(last_green(&harness, &ada, &repo).await, Some(newer));
@@ -295,13 +298,13 @@ pub async fn a_job_whose_lease_lapses_is_queued_again<H: RunnerDeployment>() {
     assert!(
         harness
             .jobs()
-            .report(&one, job, passed(), 31)
+            .report(&one, job, passed(), Produced::default(), 31)
             .await
             .is_err()
     );
     harness
         .jobs()
-        .report(&two, job, passed(), 31)
+        .report(&two, job, passed(), Produced::default(), 31)
         .await
         .unwrap();
 }
@@ -337,7 +340,7 @@ pub async fn a_job_past_its_deadline_times_out<H: RunnerDeployment>() {
     assert!(
         harness
             .jobs()
-            .report(&bot, job, passed(), 101)
+            .report(&bot, job, passed(), Produced::default(), 101)
             .await
             .is_err()
     );
@@ -360,7 +363,13 @@ pub async fn a_cancelled_job_tells_its_runner_to_stop<H: RunnerDeployment>() {
         harness.jobs().heartbeat(&bot, job, 1).await.unwrap(),
         Heartbeat::Stop(StopReason::Cancelled)
     );
-    assert!(harness.jobs().report(&bot, job, passed(), 2).await.is_err());
+    assert!(
+        harness
+            .jobs()
+            .report(&bot, job, passed(), Produced::default(), 2)
+            .await
+            .is_err()
+    );
     assert_eq!(
         jobs(&harness, &ada, &repo, landed, 3).await[0].state,
         JobState::Cancelled
@@ -712,7 +721,7 @@ pub async fn a_landing_that_changes_one_folder_queues_only_its_checks<H: RunnerD
     assert!(harness.jobs().claim(&bot, 2).await.unwrap().is_none());
     harness
         .jobs()
-        .report(&bot, queued.id, passed(), 3)
+        .report(&bot, queued.id, passed(), Produced::default(), 3)
         .await
         .unwrap();
     assert_eq!(last_green(&harness, &ada, &repo).await, Some(second));
@@ -850,18 +859,30 @@ pub async fn a_check_is_queued_once_every_check_it_needs_has_passed<H: RunnerDep
     assert_eq!([first.job.id, second.job.id], [a, c]);
     assert!(harness.jobs().claim(&bot, 1).await.unwrap().is_none());
 
-    harness.jobs().report(&bot, a, passed(), 2).await.unwrap();
+    harness
+        .jobs()
+        .report(&bot, a, passed(), Produced::default(), 2)
+        .await
+        .unwrap();
     let after = jobs(&harness, &ada, &repo, landed, 2).await;
     assert_eq!(job_of(&after, "b").state, JobState::Waiting);
     assert!(harness.jobs().claim(&bot, 2).await.unwrap().is_none());
 
-    harness.jobs().report(&bot, c, passed(), 3).await.unwrap();
+    harness
+        .jobs()
+        .report(&bot, c, passed(), Produced::default(), 3)
+        .await
+        .unwrap();
     let after = jobs(&harness, &ada, &repo, landed, 3).await;
     assert_eq!(job_of(&after, "b").state, JobState::Queued);
     let third = harness.jobs().claim(&bot, 3).await.unwrap().unwrap();
     assert_eq!(third.job.id, b);
     assert_eq!(last_green(&harness, &ada, &repo).await, None);
-    harness.jobs().report(&bot, b, passed(), 4).await.unwrap();
+    harness
+        .jobs()
+        .report(&bot, b, passed(), Produced::default(), 4)
+        .await
+        .unwrap();
     assert_eq!(last_green(&harness, &ada, &repo).await, Some(landed));
 }
 
@@ -885,7 +906,7 @@ pub async fn a_check_whose_need_failed_is_skipped_and_never_queued<H: RunnerDepl
     assert_eq!(first.job.check.name.as_str(), "a");
     harness
         .jobs()
-        .report(&bot, first.job.id, failed(), 2)
+        .report(&bot, first.job.id, failed(), Produced::default(), 2)
         .await
         .unwrap();
     let after = jobs(&harness, &ada, &repo, landed, 2).await;
@@ -897,7 +918,7 @@ pub async fn a_check_whose_need_failed_is_skipped_and_never_queued<H: RunnerDepl
         assert_ne!(claimed.job.id, b);
         harness
             .jobs()
-            .report(&bot, claimed.job.id, passed(), 3)
+            .report(&bot, claimed.job.id, passed(), Produced::default(), 3)
             .await
             .unwrap();
     }
@@ -1069,4 +1090,387 @@ pub async fn a_plan_names_a_check_that_never_passed_and_refuses_a_draft_it_canno
         refused,
         Err(ChecksError::Plan(PlanError::Definitions { file: named, .. })) if named == file
     ));
+}
+
+/// The paths of the files a claim grants, in order.
+fn granted(claimed: &Claimed) -> Vec<String> {
+    claimed
+        .files
+        .iter()
+        .map(|file| file.path.to_string())
+        .collect()
+}
+
+/// Stores `bytes` in `repo`'s object store and returns the file at `path` with them as content.
+async fn produce<H: RunnerDeployment>(
+    harness: &H,
+    repo: &crate::contract::Repo<'_, H>,
+    path: &str,
+    bytes: &[u8],
+) -> ProducedFile {
+    ProducedFile {
+        path: path.parse().unwrap(),
+        file: File {
+            kind: FileKind::Regular,
+            content: harness
+                .objects()
+                .put(repo.id, bytes.to_vec())
+                .await
+                .unwrap(),
+        },
+    }
+}
+
+/// The folder of `claimed`'s check, as a path.
+fn folder_of(claimed: &Claimed) -> String {
+    String::from_utf8_lossy(claimed.job.check.folder.components()[0].as_bytes()).into_owned()
+}
+
+/// A job is granted the files its inputs match at its changeset and no others.
+pub async fn a_job_is_granted_the_files_its_inputs_match_and_no_others<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let folders: &[(&str, &[Spec])] = &[("web", &[check("unit").reading(&["src/**"])])];
+    let files = [
+        ("web/src/a", "1\n"),
+        ("web/notes", "1\n"),
+        ("docs/x", "1\n"),
+    ];
+    land_checks_with(&repo, &ada, "first", folders, &files).await;
+
+    let claimed = harness.jobs().claim(&bot, 0).await.unwrap().unwrap();
+    // The file an input matches is granted; the files no input matches are not.
+    assert_eq!(granted(&claimed), ["web/src/a"]);
+}
+
+/// Claims every queued job as `bot`, each leaving `bytes` under `dist` of its folder besides a
+/// stray file, and reports it passed.
+async fn run_producing<H: RunnerDeployment>(
+    harness: &H,
+    repo: &crate::contract::Repo<'_, H>,
+    bot: &Caller,
+    bytes: &[u8],
+    now: i64,
+) {
+    while let Some(claimed) = harness.jobs().claim(bot, now).await.unwrap() {
+        let folder = folder_of(&claimed);
+        let produced = Produced {
+            outputs: vec![
+                produce(harness, repo, &format!("{folder}/dist/out"), bytes).await,
+                // A file outside the declared outputs is not part of the output tree.
+                produce(harness, repo, &format!("{folder}/stray"), b"stray\n").await,
+            ],
+            caches: Vec::new(),
+        };
+        harness
+            .jobs()
+            .report(bot, claimed.job.id, passed(), produced, now)
+            .await
+            .unwrap();
+    }
+}
+
+/// A job is granted the output tree of each check it needs, at the paths the check declares, and
+/// of no check it does not need; the output tree is what the passed check reported under its
+/// outputs.
+pub async fn a_job_is_granted_the_outputs_of_the_checks_it_needs<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let folders: &[(&str, &[Spec])] = &[
+        ("a", &[check("build").producing(&["dist"])]),
+        (
+            "b",
+            &[check("use").reading(&["src/**"]).needing(&["//a:build"])],
+        ),
+        ("c", &[check("other").producing(&["dist"])]),
+    ];
+    let files = [("a/src", "1\n"), ("b/src", "1\n"), ("c/src", "1\n")];
+    let landed = land_checks_with(&repo, &ada, "first", folders, &files).await;
+
+    run_producing_first(&harness, &repo, &bot).await;
+
+    let after = jobs(&harness, &ada, &repo, landed, 2).await;
+    assert_eq!(job_of(&after, "b:use").state, JobState::Queued);
+    let claimed = harness.jobs().claim(&bot, 2).await.unwrap().unwrap();
+    assert_eq!(claimed.job.check.id().to_string(), "b:use");
+    // Its own input and the output of the check it needs; not the stray file, nor the output of
+    // the check it does not need.
+    assert_eq!(granted(&claimed), ["a/dist/out", "b/src"]);
+}
+
+/// Runs the two jobs that are queued at first, the third waiting.
+async fn run_producing_first<H: RunnerDeployment>(
+    harness: &H,
+    repo: &crate::contract::Repo<'_, H>,
+    bot: &Caller,
+) {
+    let mut claimed = Vec::new();
+    while let Some(next) = harness.jobs().claim(bot, 0).await.unwrap() {
+        claimed.push(next);
+    }
+    assert_eq!(claimed.len(), 2, "b waits for a");
+    for next in claimed {
+        let folder = folder_of(&next);
+        let produced = Produced {
+            outputs: vec![
+                produce(harness, repo, &format!("{folder}/dist/out"), b"built\n").await,
+                produce(harness, repo, &format!("{folder}/stray"), b"stray\n").await,
+            ],
+            caches: Vec::new(),
+        };
+        harness
+            .jobs()
+            .report(bot, next.job.id, passed(), produced, 1)
+            .await
+            .unwrap();
+    }
+}
+
+/// A check whose needed check left a different output tree is keyed differently, and one whose
+/// needed check is unchanged is not run again.
+pub async fn a_check_is_rekeyed_when_the_output_of_a_check_it_needs_changes<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let folders: &[(&str, &[Spec])] = &[
+        ("a", &[check("build").producing(&["dist"])]),
+        ("b", &[check("use").needing(&["//a:build"])]),
+    ];
+    let files = [("a/src", "1\n"), ("b/src", "1\n"), ("docs/x", "1\n")];
+    let first = land_checks_with(&repo, &ada, "first", folders, &files).await;
+    run_producing(&harness, &repo, &bot, b"one\n", 0).await;
+    let before = jobs(&harness, &ada, &repo, first, 1).await;
+    let before = job_of(&before, "b:use").key.unwrap();
+
+    let second = land(&repo, &ada, "edit-a", &[("a/src", "2\n")])
+        .await
+        .unwrap();
+    run_producing(&harness, &repo, &bot, b"two\n", 2).await;
+    let after = jobs(&harness, &ada, &repo, second, 3).await;
+    assert_eq!(job_of(&after, "b:use").state, JobState::Passed);
+    assert_ne!(job_of(&after, "b:use").key.unwrap(), before);
+
+    // The control: a landing that leaves both alone passes both from the cache, with one key.
+    let third = land(&repo, &ada, "edit-docs", &[("docs/x", "2\n")])
+        .await
+        .unwrap();
+    let again = jobs(&harness, &ada, &repo, third, 4).await;
+    assert_eq!(job_of(&again, "b:use").state, JobState::Cached);
+    assert_eq!(job_of(&again, "b:use").key, job_of(&after, "b:use").key);
+}
+
+/// A passed report whose files the object store lacks ends the job as failed, and the grants for
+/// uploads cover only the files the store lacks.
+pub async fn a_pass_with_files_the_store_lacks_is_a_failure<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let folders: &[(&str, &[Spec])] = &[("a", &[check("build").producing(&["dist"])])];
+    let landed = land_checks_with(&repo, &ada, "first", folders, &[("a/src", "1\n")]).await;
+    let claimed = harness.jobs().claim(&bot, 0).await.unwrap().unwrap();
+
+    let held = produce(&harness, &repo, "a/dist/held", b"held\n").await;
+    let lacking = Upload {
+        address: Address::of(b"lacking\n"),
+        size: 8,
+    };
+    let held_upload = Upload {
+        address: held.file.content,
+        size: 5,
+    };
+    let grants = harness
+        .jobs()
+        .upload_grants(&bot, claimed.job.id, vec![held_upload, lacking], 0)
+        .await
+        .unwrap();
+    let addresses: Vec<Address> = grants.iter().map(|grant| grant.address).collect();
+    assert_eq!(addresses, [lacking.address], "the store holds the other");
+
+    let never_uploaded = ProducedFile {
+        path: "a/dist/lacking".parse().unwrap(),
+        file: File {
+            kind: FileKind::Regular,
+            content: lacking.address,
+        },
+    };
+    let produced = Produced {
+        outputs: vec![held, never_uploaded],
+        caches: Vec::new(),
+    };
+    harness
+        .jobs()
+        .report(&bot, claimed.job.id, passed(), produced, 1)
+        .await
+        .unwrap();
+    let after = jobs(&harness, &ada, &repo, landed, 2).await;
+    assert_eq!(job_of(&after, "a:build").state, JobState::Failed);
+}
+
+/// The cache ref of `path` of the check at `folder` in `repo`.
+async fn cache_ref_of<H: RunnerDeployment>(
+    harness: &H,
+    repo: &crate::contract::Repo<'_, H>,
+    folder: &str,
+    path: &str,
+) -> Option<CacheRef> {
+    let folder = Prefix::from(folder.parse::<Path>().unwrap());
+    harness
+        .queue()
+        .cache_ref(repo.id, &folder, &path.parse().unwrap())
+        .await
+        .unwrap()
+}
+
+/// Reports `claimed` as `outcome`, leaving `bytes` in `lib/target`.
+async fn report_caching<H: RunnerDeployment>(
+    harness: &H,
+    repo: &crate::contract::Repo<'_, H>,
+    bot: &Caller,
+    claimed: &Claimed,
+    outcome: Outcome,
+    bytes: &[u8],
+) {
+    let result = if outcome == Outcome::Passed {
+        passed()
+    } else {
+        failed()
+    };
+    let produced = Produced {
+        outputs: Vec::new(),
+        caches: vec![produce(harness, repo, "lib/target/out", bytes).await],
+    };
+    harness
+        .jobs()
+        .report(bot, claimed.job.id, result, produced, 1)
+        .await
+        .unwrap();
+}
+
+/// A cache ref moves to the tree a passed job left only where the job's changeset is later on
+/// `main` than the ref's; the next job of the check is granted that tree at the cache path.
+pub async fn a_cache_ref_advances_only_on_a_pass_at_a_later_landing<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let folders: &[(&str, &[Spec])] = &[(
+        "lib",
+        &[check("build").reading(&["src/**"]).caching(&["target"])],
+    )];
+    let c1 = land_checks_with(&repo, &ada, "first", folders, &[("lib/src/a", "1\n")]).await;
+    assert_eq!(cache_ref_of(&harness, &repo, "lib", "target").await, None);
+    let claimed = harness.jobs().claim(&bot, 0).await.unwrap().unwrap();
+    assert_eq!(granted(&claimed), ["lib/src/a"], "no ref, so no cache");
+    report_caching(&harness, &repo, &bot, &claimed, Outcome::Passed, b"one\n").await;
+    let one = cache_ref_of(&harness, &repo, "lib", "target")
+        .await
+        .unwrap();
+    assert_eq!(
+        one.changeset, c1,
+        "a pass at the first landing sets the ref"
+    );
+
+    // A pass at a later landing advances it, and the job is granted the tree it points at.
+    let c2 = land(&repo, &ada, "second", &[("lib/src/a", "2\n")])
+        .await
+        .unwrap();
+    let claimed = harness.jobs().claim(&bot, 2).await.unwrap().unwrap();
+    assert_eq!(granted(&claimed), ["lib/src/a", "lib/target/out"]);
+    report_caching(&harness, &repo, &bot, &claimed, Outcome::Passed, b"two\n").await;
+    let two = cache_ref_of(&harness, &repo, "lib", "target")
+        .await
+        .unwrap();
+    assert_eq!(two.changeset, c2);
+    assert_ne!(two.tree, one.tree);
+
+    // A failed job at a later landing leaves it.
+    land(&repo, &ada, "third", &[("lib/src/a", "3\n")])
+        .await
+        .unwrap();
+    let claimed = harness.jobs().claim(&bot, 3).await.unwrap().unwrap();
+    report_caching(&harness, &repo, &bot, &claimed, Outcome::Failed, b"three\n").await;
+    assert_eq!(
+        cache_ref_of(&harness, &repo, "lib", "target").await,
+        Some(two)
+    );
+
+    // A pass at an earlier landing than the ref's leaves it; the later one advances it.
+    let c4 = land(&repo, &ada, "fourth", &[("lib/src/a", "4\n")])
+        .await
+        .unwrap();
+    let c5 = land(&repo, &ada, "fifth", &[("lib/src/a", "5\n")])
+        .await
+        .unwrap();
+    let mut queued = Vec::new();
+    while let Some(next) = harness.jobs().claim(&bot, 4).await.unwrap() {
+        queued.push(next);
+    }
+    let at = |changeset: Address| {
+        queued
+            .iter()
+            .find(|job| job.job.changeset == changeset)
+            .unwrap()
+    };
+    report_caching(&harness, &repo, &bot, at(c5), Outcome::Passed, b"five\n").await;
+    let five = cache_ref_of(&harness, &repo, "lib", "target")
+        .await
+        .unwrap();
+    assert_eq!(five.changeset, c5);
+    report_caching(&harness, &repo, &bot, at(c4), Outcome::Passed, b"four\n").await;
+    assert_eq!(
+        cache_ref_of(&harness, &repo, "lib", "target").await,
+        Some(five)
+    );
+}
+
+/// A cache ref is set where it has none, and moves only from the changeset it records.
+pub async fn a_cache_ref_moves_only_from_the_changeset_it_records<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let folder = Prefix::from("lib".parse::<Path>().unwrap());
+    let path: Path = "target".parse().unwrap();
+    let to = |tree: &[u8], changeset: &[u8]| CacheRef {
+        tree: Address::of(tree),
+        changeset: Address::of(changeset),
+    };
+    let queue = harness.queue();
+
+    let first = to(b"t1", b"c1");
+    let set = queue
+        .advance_cache_ref(repo.id, &folder, &path, None, first)
+        .await
+        .unwrap();
+    assert!(set);
+    // Control: moving from the changeset it records succeeds.
+    let second = to(b"t2", b"c2");
+    let moved = queue
+        .advance_cache_ref(repo.id, &folder, &path, Some(first.changeset), second)
+        .await
+        .unwrap();
+    assert!(moved);
+    // Moving from one it does not record, or from none, does not.
+    let third = to(b"t3", b"c3");
+    let stale = queue
+        .advance_cache_ref(repo.id, &folder, &path, Some(first.changeset), third)
+        .await
+        .unwrap();
+    assert!(!stale);
+    let blind = queue
+        .advance_cache_ref(repo.id, &folder, &path, None, third)
+        .await
+        .unwrap();
+    assert!(!blind);
+    let held = queue.cache_ref(repo.id, &folder, &path).await.unwrap();
+    assert_eq!(held, Some(second));
+    // The ref is of its folder and path.
+    let other = Prefix::from("app".parse::<Path>().unwrap());
+    let elsewhere = queue.cache_ref(repo.id, &other, &path).await.unwrap();
+    assert_eq!(elsewhere, None);
 }

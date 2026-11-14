@@ -4,9 +4,10 @@ use std::sync::Mutex;
 use app::domain::address::Address;
 use app::domain::check::CheckKey;
 use app::domain::job::{
-    Heartbeat, Job, JobId, JobResult, JobState, NewJob, Resolution, StopReason,
+    CacheRef, Heartbeat, Job, JobId, JobResult, JobState, NewJob, Resolution, StopReason,
 };
 use app::domain::name::OrganisationName;
+use app::domain::path::{Path, Prefix};
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
 use app::domain::runner::{Registration, RegistrationId};
@@ -19,6 +20,7 @@ struct Jobs {
     issued: u64,
     held: BTreeMap<JobId, Job>,
     reserved: BTreeSet<(RepositoryId, Address)>,
+    cache_refs: BTreeMap<(RepositoryId, Prefix, Path), CacheRef>,
 }
 
 impl Jobs {
@@ -168,6 +170,18 @@ impl JobQueue for MemoryJobQueue {
         }
     }
 
+    async fn running(&self, job: JobId, runners: &[RegistrationId]) -> Result<Job, JobQueueError> {
+        lock(&self.jobs)
+            .held
+            .get(&job)
+            .filter(|found| {
+                matches!(found.state, JobState::Running { .. })
+                    && found.runner.is_some_and(|runner| runners.contains(&runner))
+            })
+            .cloned()
+            .ok_or(JobQueueError::NotFound(job))
+    }
+
     async fn complete(
         &self,
         job: JobId,
@@ -237,6 +251,35 @@ impl JobQueue for MemoryJobQueue {
             .filter(|job| job.repository == repository && job.changeset == changeset)
             .cloned()
             .collect())
+    }
+
+    async fn cache_ref(
+        &self,
+        repository: RepositoryId,
+        folder: &Prefix,
+        path: &Path,
+    ) -> Result<Option<CacheRef>, JobQueueError> {
+        Ok(lock(&self.jobs)
+            .cache_refs
+            .get(&(repository, folder.clone(), path.clone()))
+            .copied())
+    }
+
+    async fn advance_cache_ref(
+        &self,
+        repository: RepositoryId,
+        folder: &Prefix,
+        path: &Path,
+        from: Option<Address>,
+        to: CacheRef,
+    ) -> Result<bool, JobQueueError> {
+        let mut held = lock(&self.jobs);
+        let key = (repository, folder.clone(), path.clone());
+        if held.cache_refs.get(&key).map(|held| held.changeset) != from {
+            return Ok(false);
+        }
+        held.cache_refs.insert(key, to);
+        Ok(true)
     }
 
     async fn expire(&self, now: i64) -> Result<Vec<Job>, JobQueueError> {

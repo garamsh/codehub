@@ -6,7 +6,7 @@ use crate::contract::runner_deployment::{
 use crate::contract::{Repo, draft};
 use app::domain::address::Address;
 use app::domain::changeset::Changeset;
-use app::domain::job::{Heartbeat, Job, JobResult, JobState, Outcome, StopReason};
+use app::domain::job::{Heartbeat, Job, JobResult, JobState, Outcome, Produced, StopReason};
 use app::domain::principal::Caller;
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
@@ -92,7 +92,9 @@ async fn report_with_main_failing<H: RunnerDeployment>(
         LEASE,
         LandingAttempts::default(),
     );
-    let answer = service.report(bot, claimed.id, result, now).await;
+    let answer = service
+        .report(bot, claimed.id, result, Produced::default(), now)
+        .await;
     (claimed, answer)
 }
 
@@ -184,7 +186,7 @@ async fn report<H: RunnerDeployment>(
     let claimed = harness.jobs().claim(bot, now).await.unwrap().unwrap().job;
     harness
         .jobs()
-        .report(bot, claimed.id, result, now)
+        .report(bot, claimed.id, result, Produced::default(), now)
         .await
         .unwrap();
     claimed
@@ -663,8 +665,8 @@ pub async fn two_blocking_failures_reported_together_land_one_revert<H: RunnerDe
 
     let jobs_port = harness.jobs();
     let (one, other) = tokio::join!(
-        jobs_port.report(&bot, first.id, failed(), 2),
-        jobs_port.report(&bot, second.id, failed(), 2)
+        jobs_port.report(&bot, first.id, failed(), Produced::default(), 2),
+        jobs_port.report(&bot, second.id, failed(), Produced::default(), 2)
     );
     one.unwrap();
     other.unwrap();

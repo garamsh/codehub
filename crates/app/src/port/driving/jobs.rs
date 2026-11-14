@@ -3,10 +3,12 @@
 use std::fmt;
 
 use crate::domain::address::Address;
+use crate::domain::encoding::{DecodeError, EncodeError};
 use crate::domain::file::FileKind;
-use crate::domain::job::{Heartbeat, Job, JobId, JobResult};
+use crate::domain::job::{Heartbeat, Job, JobId, JobResult, Produced};
 use crate::domain::path::{Path, PathError};
 use crate::domain::principal::Caller;
+use crate::domain::tree::DeriveError;
 use crate::port::driven::changeset_log::ChangesetLogError;
 use crate::port::driven::derived_data::DerivedDataError;
 use crate::port::driven::job_queue::JobQueueError;
@@ -42,7 +44,24 @@ pub trait Jobs {
         now: i64,
     ) -> impl Future<Output = Result<Heartbeat, JobsError>> + Send;
 
-    /// Ends `job`, which the caller holds, as `result` says. A pass may move `last-green`.
+    /// Grants uploads of those of `files` the object store lacks, for `job`, which the caller
+    /// holds. A file the store has is not granted.
+    ///
+    /// # Errors
+    ///
+    /// [`JobsError::Queue`] with [`JobQueueError::NotFound`] where the caller does not hold `job`.
+    fn upload_grants(
+        &self,
+        caller: &Caller,
+        job: JobId,
+        files: Vec<Upload>,
+        now: i64,
+    ) -> impl Future<Output = Result<Vec<UploadGrant>, JobsError>> + Send;
+
+    /// Ends `job`, which the caller holds, as `result` says, with the files it left, which the
+    /// caller has uploaded. A pass records the tree of the files under the check's `outputs`, and
+    /// may advance the cache refs and move `last-green`. A pass whose files are not all in the
+    /// object store ends as a failure.
     ///
     /// # Errors
     ///
@@ -52,8 +71,27 @@ pub trait Jobs {
         caller: &Caller,
         job: JobId,
         result: JobResult,
+        produced: Produced,
         now: i64,
     ) -> impl Future<Output = Result<(), JobsError>> + Send;
+}
+
+/// A file a runner wants to upload: the address of its bytes and their size.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Upload {
+    /// The address of the file's bytes.
+    pub address: Address,
+    /// The file's size in bytes.
+    pub size: u64,
+}
+
+/// A grant to upload the bytes of one file.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct UploadGrant {
+    /// The address of the file's bytes.
+    pub address: Address,
+    /// A grant to upload them.
+    pub grant: Grant,
 }
 
 /// A job a runner took, and the way to the files of the changeset it runs against.
@@ -61,11 +99,14 @@ pub trait Jobs {
 pub struct Claimed {
     /// The job, running.
     pub job: Job,
-    /// Every file of the changeset's tree.
+    /// The files the job is granted: those its `inputs` match at the changeset, the output trees
+    /// of the checks it needs and the trees of its cache refs. A file is listed once, at its path
+    /// from the repository root; where more than one grant gives a path, the inputs win, then the
+    /// outputs, then the caches.
     pub files: Vec<ClaimedFile>,
 }
 
-/// One file of the changeset a runner may download.
+/// One file a runner may download.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ClaimedFile {
     /// Where the file is in the tree.
@@ -164,6 +205,29 @@ impl From<ChangesetLogError> for JobsError {
 impl From<PathError> for JobsError {
     fn from(error: PathError) -> Self {
         Self::Path(error)
+    }
+}
+
+/// A stored tree of outputs or of a cache that is not a tree is a fault of the object store.
+impl From<DecodeError> for JobsError {
+    fn from(error: DecodeError) -> Self {
+        Self::Objects(ObjectStoreError::Backend(error.to_string()))
+    }
+}
+
+/// A tree of outputs or of a cache that has no encoding is a fault of the derived data it is
+/// recorded with.
+impl From<EncodeError> for JobsError {
+    fn from(error: EncodeError) -> Self {
+        Self::Derived(DerivedDataError::Backend(error.to_string()))
+    }
+}
+
+/// The files a job left that do not make a tree are a fault of the derived data they are
+/// recorded with.
+impl From<DeriveError> for JobsError {
+    fn from(error: DeriveError) -> Self {
+        Self::Derived(DerivedDataError::Backend(error.to_string()))
     }
 }
 

@@ -35,7 +35,7 @@ impl Outcome {
     #[must_use]
     pub fn of(result: Result<Execution, ExecutorError>) -> Self {
         match result {
-            Ok(Execution { end, output }) => {
+            Ok(Execution { end, output, .. }) => {
                 let (line, code) = match end {
                     End::Exited(code) => (
                         format!("exited with code {code}"),
@@ -85,6 +85,9 @@ async fn execute<E: Executor>(
         repository: 0,
         changeset: CHANGESET,
         check: "check-executor".to_owned(),
+        folder: String::new(),
+        outputs: Vec::new(),
+        caches: Vec::new(),
         command: command.to_owned(),
         heartbeat_interval: Duration::ZERO,
         files: Vec::new(),

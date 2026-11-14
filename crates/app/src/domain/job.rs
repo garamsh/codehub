@@ -4,7 +4,9 @@ use std::fmt;
 
 use crate::domain::address::Address;
 use crate::domain::check::{CheckDefinition, CheckKey};
+use crate::domain::file::File;
 use crate::domain::name::OrganisationName;
+use crate::domain::path::{Path, Prefix};
 use crate::domain::repository::RepositoryId;
 use crate::domain::revert::Revert;
 use crate::domain::runner::RegistrationId;
@@ -191,6 +193,62 @@ pub struct JobResult {
     pub output: Vec<u8>,
 }
 
+/// A file a job left under its `outputs` or `caches`, which the runner has uploaded.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ProducedFile {
+    /// Where the file is in the repository, from the root.
+    pub path: Path,
+    /// The file's mode and the address of its bytes.
+    pub file: File,
+}
+
+/// The files a job left, which a runner reports with its result.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Produced {
+    /// The files under the check's `outputs`.
+    pub outputs: Vec<ProducedFile>,
+    /// The files under the check's `caches`.
+    pub caches: Vec<ProducedFile>,
+}
+
+/// What a cache ref records: the tree of a cache, and the changeset whose job left it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CacheRef {
+    /// The tree of the cache, rooted at the cache path.
+    pub tree: Address,
+    /// The landed changeset of the job that left the tree.
+    pub changeset: Address,
+}
+
+impl Job {
+    /// The paths the check declares as outputs, from the repository root.
+    #[must_use]
+    pub fn output_prefixes(&self) -> Vec<Prefix> {
+        self.check
+            .outputs
+            .iter()
+            .map(|path| under(&self.check.folder, path))
+            .collect()
+    }
+
+    /// The paths the check declares as caches, from the repository root.
+    #[must_use]
+    pub fn cache_prefixes(&self) -> Vec<Prefix> {
+        self.check
+            .caches
+            .iter()
+            .map(|path| under(&self.check.folder, path))
+            .collect()
+    }
+}
+
+/// `path` below `folder`, from the repository root.
+fn under(folder: &Prefix, path: &Path) -> Prefix {
+    let mut components = folder.components().to_vec();
+    components.extend_from_slice(path.components());
+    Prefix::new(components)
+}
+
 /// Why a runner should stop a job it still holds.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StopReason {
@@ -209,8 +267,8 @@ pub enum Heartbeat {
     Stop(StopReason),
 }
 
-/// The output tree of a run that records none: the empty tree, which a run records until runs
-/// produce outputs.
+/// The output tree of a run that records none: the empty tree, which a run records where it
+/// passed with no output, or did not pass.
 #[must_use]
 pub fn empty_output_tree() -> Address {
     // An empty tree always has an encoding, so the fallback is never taken.

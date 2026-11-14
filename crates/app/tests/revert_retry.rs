@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use adapter_memory::MemoryChangesetLog;
 use app::domain::address::Address;
 use app::domain::changeset::Changeset;
-use app::domain::job::{JobResult, Outcome};
+use app::domain::job::{JobResult, Outcome, Produced};
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
 use app::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
@@ -144,7 +144,9 @@ async fn report(
         LandingAttempts::new(NonZeroU32::new(attempts).unwrap()),
     );
     let bot = harness.caller("bot").await;
-    service.report(&bot, job, failed(), 5).await
+    service
+        .report(&bot, job, failed(), Produced::default(), 5)
+        .await
 }
 
 #[tokio::test]

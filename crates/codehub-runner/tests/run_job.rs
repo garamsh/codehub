@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use codehub_runner::gaon::results::Results;
 use codehub_runner::job_source::{Address, Job, JobId};
-use codehub_runner::run_job::{Description, Posted, PostedEnd};
+use codehub_runner::run_job::{Description, Posted, PostedEnd, PostedProduced};
 
 /// A job of `id` that runs `command`.
 #[cfg(test)]
@@ -18,6 +18,9 @@ fn job(id: u64, command: &str) -> Job {
         repository: 42,
         changeset: Address::new([9; 32]),
         check: "unit".into(),
+        folder: String::new(),
+        outputs: Vec::new(),
+        caches: Vec::new(),
         command: command.into(),
         heartbeat_interval: Duration::from_secs(5),
         files: Vec::new(),
@@ -71,6 +74,7 @@ async fn the_command_runs_its_end_is_posted_and_its_code_is_the_exit_code() {
         Some(Posted {
             end: PostedEnd::Exited(4),
             output: "from the job\n".into(),
+            produced: PostedProduced::default(),
         })
     );
 }

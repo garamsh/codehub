@@ -16,7 +16,7 @@ use crate::config::JobUser;
 use crate::executor::{End, Execution, Executor, ExecutorError, Stop};
 use crate::gaon::api::{Api, ApiError, Kind, Listed};
 use crate::gaon::results::{Expectation, Results};
-use crate::job_source::Job;
+use crate::job_source::{Job, Produced};
 use crate::run_job::Description;
 
 /// The key of the description in its Secret.
@@ -209,7 +209,11 @@ impl GaonExecutor {
             }
             tokio::select! {
                 reason = stop.requested() => {
-                    return Ok(Execution { end: End::Stopped(reason), output: String::new() });
+                    return Ok(Execution {
+                        end: End::Stopped(reason),
+                        output: String::new(),
+                        produced: Produced::default(),
+                    });
                 }
                 () = tokio::time::sleep(self.poll) => {}
             }

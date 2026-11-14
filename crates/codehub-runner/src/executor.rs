@@ -5,7 +5,7 @@ use std::future::Future;
 
 use tokio::sync::watch;
 
-use crate::job_source::{Job, StopReason};
+use crate::job_source::{Job, Produced, StopReason};
 
 /// How the job's command ended.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -25,6 +25,8 @@ pub struct Execution {
     pub end: End,
     /// The end of the command's combined output.
     pub output: String,
+    /// The files the command left under the check's outputs and caches; none unless it exited 0.
+    pub produced: Produced,
 }
 
 /// Why a driver could not run the job's command.
@@ -46,6 +48,13 @@ pub enum ExecutorError {
     },
     /// The command could not be started.
     Spawn(std::io::Error),
+    /// A file the command left under an output or a cache could not be read.
+    Collect {
+        /// The file's path.
+        path: String,
+        /// What went wrong.
+        reason: String,
+    },
     /// The description of the job is larger than the orchestrator holds.
     DescriptionTooLarge {
         /// The description's size, with its key, in bytes.
@@ -73,6 +82,12 @@ impl fmt::Display for ExecutorError {
                 write!(f, "the bytes of {path} do not match its address")
             }
             Self::Spawn(error) => write!(f, "starting the command failed: {error}"),
+            Self::Collect { path, reason } => {
+                write!(
+                    f,
+                    "reading {path}, which the command left, failed: {reason}"
+                )
+            }
             Self::DescriptionTooLarge { size, limit } => write!(
                 f,
                 "the job's description is {size} bytes, over the {limit} the orchestrator holds"

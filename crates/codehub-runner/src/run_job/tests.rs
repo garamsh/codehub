@@ -47,6 +47,9 @@ fn job(id: u64, command: &str) -> Job {
         repository: 42,
         changeset: Address::new([9; 32]),
         check: "unit".into(),
+        folder: String::new(),
+        outputs: Vec::new(),
+        caches: Vec::new(),
         command: command.into(),
         heartbeat_interval: Duration::from_secs(5),
         files: Vec::new(),
@@ -143,4 +146,44 @@ async fn a_file_that_is_not_a_description_is_a_failure() {
         .await
         .unwrap_err();
     assert!(error.contains("not a job description"), "{error}");
+}
+
+#[test]
+fn the_files_a_job_posts_come_back_addressed_by_their_bytes() {
+    let produced = Produced {
+        outputs: vec![ProducedFile {
+            path: "web/dist/a".parse().unwrap(),
+            address: Address::new(sha2::Sha256::digest(b"alpha").into()),
+            executable: true,
+            bytes: b"alpha".to_vec(),
+        }],
+        caches: Vec::new(),
+    };
+    let posted = Posted {
+        end: PostedEnd::Exited(0),
+        output: String::new(),
+        produced: PostedProduced::of(&produced),
+    };
+    let text = serde_json::to_string(&posted).unwrap();
+    let execution = Execution::from(serde_json::from_str::<Posted>(&text).unwrap());
+    assert_eq!(
+        (execution.end, execution.produced),
+        (End::Exited(0), produced)
+    );
+}
+
+#[test]
+fn files_that_cannot_be_read_end_the_command_as_failed_whatever_its_code() {
+    let posted = Posted {
+        end: PostedEnd::Exited(0),
+        output: "out".into(),
+        produced: serde_json::from_value(serde_json::json!({
+            "outputs": [{"path": "../escape", "executable": false, "bytes": ""}],
+            "caches": []
+        }))
+        .unwrap(),
+    };
+    let execution = Execution::from(posted);
+    assert_eq!(execution.end, End::Signalled);
+    assert_eq!(execution.produced, Produced::default());
 }
