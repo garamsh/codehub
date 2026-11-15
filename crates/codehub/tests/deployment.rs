@@ -1,7 +1,8 @@
-//! The deployment contract and the release tooling that ships with it.
+//! The deployment contract and the release tag check.
 
 use clap::CommandFactory;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
 fn deployment_md_names_every_server_setting_and_no_other() {
@@ -9,15 +10,45 @@ fn deployment_md_names_every_server_setting_and_no_other() {
 }
 
 #[cfg(test)]
-/// The version `scripts/release-version.sh` prints for `tag`, or its refusal.
-fn release_version(tag: &str) -> Result<String, String> {
-    let script = concat!(
+/// The `run:` block of the step with `id: version` in `release.yml`, dedented.
+fn version_step() -> String {
+    let workflow = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../scripts/release-version.sh"
-    );
-    let out = Command::new("sh").arg(script).arg(tag).output().unwrap();
+        "/../../.github/workflows/release.yml"
+    ))
+    .unwrap();
+    let mut lines = workflow.lines().skip_while(|l| l.trim() != "- id: version");
+    assert!(lines.next().is_some(), "no step with id: version");
+    let mut lines = lines.skip_while(|l| l.trim() != "run: |");
+    assert!(lines.next().is_some(), "the version step has no run block");
+    lines
+        .take_while(|l| l.trim().is_empty() || l.starts_with("          "))
+        .map(|l| l.get(10..).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(test)]
+/// The version the `release.yml` version step writes for `tag`, or its stderr.
+fn release_version(tag: &str) -> Result<String, String> {
+    static RUNS: AtomicUsize = AtomicUsize::new(0);
+    let output = std::env::temp_dir().join(format!(
+        "release-version-{}-{}",
+        std::process::id(),
+        RUNS.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::write(&output, "").unwrap();
+    let out = Command::new("bash")
+        .args(["-e", "-c", &version_step()])
+        .env("REF_NAME", tag)
+        .env("GITHUB_OUTPUT", &output)
+        .output()
+        .unwrap();
+    let written = std::fs::read_to_string(&output).unwrap();
+    std::fs::remove_file(&output).unwrap();
     if out.status.success() {
-        Ok(String::from_utf8(out.stdout).unwrap().trim_end().to_owned())
+        let version = written.strip_prefix("version=").unwrap();
+        Ok(version.trim_end().to_owned())
     } else {
         Err(String::from_utf8(out.stderr).unwrap())
     }
