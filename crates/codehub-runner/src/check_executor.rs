@@ -70,12 +70,12 @@ impl Outcome {
 
 /// Runs one job with no files and `command` through `executor`, and stops it as timed out after
 /// `timeout`.
-pub async fn run<E: Executor>(executor: &E, command: &str, timeout: Duration) -> Outcome {
+pub async fn run(executor: &dyn Executor, command: &str, timeout: Duration) -> Outcome {
     Outcome::of(execute(executor, command, timeout).await)
 }
 
-async fn execute<E: Executor>(
-    executor: &E,
+async fn execute(
+    executor: &dyn Executor,
     command: &str,
     timeout: Duration,
 ) -> Result<Execution, ExecutorError> {

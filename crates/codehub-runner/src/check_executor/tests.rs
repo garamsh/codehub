@@ -4,6 +4,8 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use async_trait::async_trait;
+
 use crate::host::HostExecutor;
 use crate::job_source::Produced;
 use crate::run_job::Description;
@@ -35,6 +37,7 @@ impl Recording {
     }
 }
 
+#[async_trait]
 impl Executor for Recording {
     async fn run(&self, job: &Job, _stop: Stop) -> Result<Execution, ExecutorError> {
         self.jobs.lock().unwrap().push(job.clone());

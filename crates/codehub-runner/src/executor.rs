@@ -1,8 +1,8 @@
 //! The executor driver port: runs one job in an environment the driver builds and removes.
 
 use std::fmt;
-use std::future::Future;
 
+use async_trait::async_trait;
 use tokio::sync::watch;
 
 use crate::job_source::{Job, Produced, StopReason};
@@ -142,16 +142,13 @@ impl Stop {
 }
 
 /// Runs a job's command with the changeset's files present.
-pub trait Executor {
+#[async_trait]
+pub trait Executor: Send + Sync {
     /// Builds the environment for `job`, runs its command, and removes the environment. Where
     /// `stop` requests one, ends the command and returns [`End::Stopped`].
     ///
     /// # Errors
     ///
     /// An [`ExecutorError`] where the environment could not be built or the command not started.
-    fn run(
-        &self,
-        job: &Job,
-        stop: Stop,
-    ) -> impl Future<Output = Result<Execution, ExecutorError>> + Send;
+    async fn run(&self, job: &Job, stop: Stop) -> Result<Execution, ExecutorError>;
 }

@@ -8,6 +8,7 @@ use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use rustix::process::{Pid, Signal};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
@@ -307,6 +308,7 @@ fn signal(group: Option<Pid>, signal: Signal) {
     }
 }
 
+#[async_trait]
 impl Executor for HostExecutor {
     async fn run(&self, job: &Job, mut stop: Stop) -> Result<Execution, ExecutorError> {
         tokio::fs::create_dir_all(&self.work_dir)
