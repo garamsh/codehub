@@ -5,19 +5,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::address::Address;
 use crate::domain::changeset::Change;
-use crate::domain::check::{CheckDefinition, CheckId, CheckKey, needs_fault};
+use crate::domain::check::{CheckDefinition, CheckId, CheckKey};
 use crate::domain::draft::DraftId;
-use crate::domain::path::{Path, Prefix};
+use crate::domain::path::Path;
 use crate::domain::repository::RepositoryId;
-use crate::domain::tree::Entry;
 use crate::port::driven::changeset_log::{ChangesetLog, Ref};
 use crate::port::driven::check_definitions::CheckDefinitions;
-use crate::port::driven::derived_data::{DerivedData, DerivedDataError};
+use crate::port::driven::derived_data::DerivedData;
 use crate::port::driven::draft_store::DraftStore;
 use crate::port::driven::job_queue::JobQueue;
 use crate::port::driven::object_store::ObjectStore;
 use crate::port::driving::checks::{Plan, PlanError, PlanOutcome, PlannedCheck, RunReason};
 use crate::use_case::land::rebase;
+use crate::use_case::tree_checks::{DefinitionsError, Unreadable, read_definitions, tree_files};
 
 /// The driven ports a plan is made over.
 pub(crate) struct PlanPorts<'a, Q, L, O, D, C, S> {
@@ -57,7 +57,7 @@ where
     let before = match main {
         Some(main) => {
             let root = ports.derived.root(repository, main).await?;
-            files(ports.derived, repository, root).await?
+            tree_files(ports.derived, repository, root).await?
         }
         None => BTreeMap::new(),
     };
@@ -85,7 +85,18 @@ where
         .filter(|path| before.get(*path) != after.get(*path))
         .collect();
 
-    let definitions = definitions(ports, repository, &after).await?;
+    let definitions = read_definitions(ports.objects, ports.definitions, repository, &after)
+        .await
+        .map_err(|error| match error {
+            DefinitionsError::Objects(error) => PlanError::Objects(error),
+            DefinitionsError::Unreadable(Unreadable { folder, reason }) => PlanError::Definitions {
+                file: CheckDefinition::unreadable(&folder, ports.definitions.file())
+                    .command
+                    .as_str()
+                    .to_owned(),
+                reason,
+            },
+        })?;
     let mut checks = Vec::new();
     let mut settled: BTreeMap<CheckId, Cached> = BTreeMap::new();
     let mut remaining: BTreeMap<CheckId, &CheckDefinition> = definitions
@@ -114,12 +125,7 @@ where
         }
         let mut cached = None;
         if needed.len() == definition.needs.len() {
-            let inputs: Vec<(Path, Address)> = after
-                .iter()
-                .filter(|(path, _)| definition.reads(path))
-                .map(|(path, content)| (path.clone(), *content))
-                .collect();
-            let key = CheckKey::new(definition, &inputs, &needed);
+            let key = CheckKey::of_tree(definition, &after, &needed);
             cached = ports
                 .queue
                 .passed_with_key(repository, key)
@@ -143,68 +149,4 @@ where
         });
     }
     Ok(Plan { checks })
-}
-
-/// The checks the tree `files` defines, read from every check file in it. A file that cannot be
-/// read, or checks that name each other wrongly, are a [`PlanError::Definitions`].
-async fn definitions<Q, L, O, D, C, S>(
-    ports: &PlanPorts<'_, Q, L, O, D, C, S>,
-    repository: RepositoryId,
-    files: &BTreeMap<Path, Address>,
-) -> Result<Vec<CheckDefinition>, PlanError>
-where
-    O: ObjectStore + Sync,
-    C: CheckDefinitions + Sync,
-{
-    let file = ports.definitions.file();
-    let mut found: BTreeMap<Prefix, Address> = BTreeMap::new();
-    for (path, content) in files {
-        if let Some(folder) = path.components().strip_suffix(file.components()) {
-            found.insert(Prefix::new(folder.to_vec()), *content);
-        }
-    }
-    let at_fault = |folder: &Prefix, reason: String| PlanError::Definitions {
-        file: CheckDefinition::unreadable(folder, file)
-            .command
-            .as_str()
-            .to_owned(),
-        reason,
-    };
-    let mut definitions = Vec::new();
-    for (folder, content) in found {
-        let bytes = ports.objects.get(repository, content).await?;
-        match ports.definitions.parse(&folder, &bytes) {
-            Ok(read) => definitions.extend(read),
-            Err(error) => return Err(at_fault(&folder, error.to_string())),
-        }
-    }
-    if let Some(fault) = needs_fault(&definitions) {
-        return Err(at_fault(&fault.check().folder, fault.to_string()));
-    }
-    Ok(definitions)
-}
-
-/// Every file of the tree rooted at `root`, by path, with the address of its content.
-async fn files<D: DerivedData>(
-    derived: &D,
-    repository: RepositoryId,
-    root: Address,
-) -> Result<BTreeMap<Path, Address>, DerivedDataError> {
-    let mut files = BTreeMap::new();
-    let mut pending = vec![(Vec::new(), root)];
-    while let Some((directory, address)) = pending.pop() {
-        for (name, entry) in derived.tree(repository, address).await?.entries {
-            let mut components = directory.clone();
-            components.push(name);
-            match entry {
-                Entry::Directory(subtree) => pending.push((components, subtree)),
-                Entry::File(file) => {
-                    let path = Path::new(components)
-                        .map_err(|error| DerivedDataError::Backend(error.to_string()))?;
-                    files.insert(path, file.content);
-                }
-            }
-        }
-    }
-    Ok(files)
 }

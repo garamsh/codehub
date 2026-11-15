@@ -1047,6 +1047,62 @@ pub async fn a_plan_runs_what_the_draft_changes_and_takes_the_rest_from_the_cach
     assert_eq!(repo.main().await, Some(first));
 }
 
+/// A plan gives each check the key its landing gave it: a draft that changes none of a tree's
+/// files, planned over a tree whose checks need one another, takes every check from the cache of
+/// the landing's run, and a draft that rewrites a file with the content it has changes no key.
+pub async fn a_plan_gives_each_check_the_key_its_landing_gave<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let folders: &[(&str, &[Spec])] = &[
+        ("", &[check("root").reading(&["//docs/**"])]),
+        ("a", &[check("unit")]),
+        ("b", &[check("unit")]),
+        ("c", &[check("package").needing(&["//b:unit", "//a:unit"])]),
+        ("d", &[check("deploy").needing(&["//c:package", "//:root"])]),
+    ];
+    let first = land_checks_with(
+        &repo,
+        &ada,
+        "first",
+        folders,
+        &[
+            ("docs/x", "1\n"),
+            ("a/src/deep/x", "1\n"),
+            ("b/src", "1\n"),
+            ("c/src", "1\n"),
+            ("d/src", "1\n"),
+        ],
+    )
+    .await;
+    run_all(&harness, &bot, &[], 0).await;
+    let landed = jobs(&harness, &ada, &repo, first, 1).await;
+    assert_eq!(landed.len(), 5);
+    assert!(landed.iter().all(|job| job.key.is_some()));
+
+    let idle = draft("idle");
+    repo.stage(&ada, &idle, &[("README", "hello\n")]).await;
+    let same = draft("same");
+    repo.stage(&ada, &same, &[("a/src/deep/x", "1\n")]).await;
+    for draft in [&idle, &same] {
+        let plan = harness.checks().plan(&ada, repo.id, draft).await.unwrap();
+        assert_eq!(plan.checks.len(), 5);
+        assert!(plan.checks.iter().all(|c| c.outcome == PlanOutcome::Cached));
+    }
+
+    // The control: a changed file reaches the key of a check two needs away.
+    let edit = draft("edit");
+    repo.stage(&ada, &edit, &[("a/src/deep/x", "2\n")]).await;
+    let plan = harness.checks().plan(&ada, repo.id, &edit).await.unwrap();
+    assert_eq!(
+        planned(&plan.checks, "a:unit").outcome,
+        PlanOutcome::Run(vec![RunReason::InputsChanged])
+    );
+    assert_eq!(planned(&plan.checks, "b:unit").outcome, PlanOutcome::Cached);
+    assert_eq!(planned(&plan.checks, "root").outcome, PlanOutcome::Cached);
+}
+
 /// A check whose key has no passed run is planned as a run with no reason but that, and a draft
 /// whose files conflict with `main`, or whose check file cannot be read, has no plan.
 pub async fn a_plan_names_a_check_that_never_passed_and_refuses_a_draft_it_cannot_read<

@@ -5,6 +5,7 @@ use crate::domain::address::Address;
 use crate::domain::job::Job;
 use crate::domain::repository::RepositoryId;
 use crate::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
+use crate::use_case::first_parent::advance_forward;
 
 /// Whether every blocking job of `jobs` has passed, by a run or from the cache; true where there
 /// is none. A skipped job has not passed.
@@ -26,37 +27,21 @@ pub(crate) async fn advance<L: ChangesetLog>(
     repository: RepositoryId,
     candidate: Address,
 ) -> Result<(), ChangesetLogError> {
-    loop {
-        let current = log.read_ref(repository, Ref::LastGreen).await?;
-        if let Some(current) = current
-            && !descends(log, repository, candidate, current).await?
-        {
-            return Ok(());
-        }
-        match log
-            .compare_and_swap(repository, Ref::LastGreen, current, candidate)
-            .await
-        {
-            Ok(()) => return Ok(()),
-            Err(ChangesetLogError::RefMoved { .. }) => {}
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-/// Whether `candidate` is a strict first-parent descendant of `current`.
-async fn descends<L: ChangesetLog>(
-    log: &L,
-    repository: RepositoryId,
-    candidate: Address,
-    current: Address,
-) -> Result<bool, ChangesetLogError> {
-    let mut at = candidate;
-    while at != current {
-        match log.get(repository, at).await?.parents.first() {
-            Some(parent) => at = *parent,
-            None => return Ok(false),
-        }
-    }
-    Ok(candidate != current)
+    advance_forward(
+        log,
+        repository,
+        candidate,
+        || log.read_ref(repository, Ref::LastGreen),
+        |current| async move {
+            match log
+                .compare_and_swap(repository, Ref::LastGreen, current, candidate)
+                .await
+            {
+                Ok(()) => Ok(true),
+                Err(ChangesetLogError::RefMoved { .. }) => Ok(false),
+                Err(error) => Err(error),
+            }
+        },
+    )
+    .await
 }
