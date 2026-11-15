@@ -109,11 +109,14 @@ where
         .iter()
         .map(|definition| (definition.id(), definition))
         .collect();
-    // A check is settled once the checks it needs are, as the queueing of a landing settles a job
-    // once the jobs it needs have ended: a need that would run stands for a job that did not pass.
+    // A check is settled once every check it needs is, because a plan gives a reason for each need
+    // that runs; a need that would run stands for a job that did not pass.
     loop {
         let mut ready = None;
         for (id, definition) in &remaining {
+            if !definition.needed().all(|need| settled.contains_key(&need)) {
+                continue;
+            }
             let standing = |need: &CheckId| match settled.get(need) {
                 None => Standing::Open,
                 Some(Some((key, output))) => Standing::Passed(*key, *output),

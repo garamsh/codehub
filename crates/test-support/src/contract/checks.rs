@@ -1057,6 +1057,46 @@ pub async fn a_plan_runs_what_the_draft_changes_and_takes_the_rest_from_the_cach
     assert_eq!(repo.main().await, Some(first));
 }
 
+/// A plan names a check whose needs differ in standing by the one that runs only, though the check
+/// sorts before the one that is cached: it is planned once both are settled.
+pub async fn a_plan_gives_a_check_a_reason_for_each_need_that_runs_and_none_for_one_cached<
+    H: RunnerDeployment,
+>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let folders: &[(&str, &[Spec])] = &[
+        (
+            "",
+            &[check("package")
+                .reading(&["//docs/**"])
+                .needing(&["//a:unit", "//b:unit"])],
+        ),
+        ("a", &[check("unit")]),
+        ("b", &[check("unit")]),
+    ];
+    land_checks_with(
+        &repo,
+        &ada,
+        "first",
+        folders,
+        &[("docs/x", "1\n"), ("a/src", "1\n"), ("b/src", "1\n")],
+    )
+    .await;
+    run_all(&harness, &bot, &[], 0).await;
+
+    let work = draft("work");
+    repo.stage(&ada, &work, &[("a/src", "2\n")]).await;
+    let plan = harness.checks().plan(&ada, repo.id, &work).await.unwrap();
+    let a_unit = planned(&plan.checks, "a:unit").check.clone();
+    assert_eq!(planned(&plan.checks, "b:unit").outcome, PlanOutcome::Cached);
+    assert_eq!(
+        planned(&plan.checks, "package").outcome,
+        PlanOutcome::Run(vec![RunReason::NeedRuns(a_unit)])
+    );
+}
+
 /// A plan gives each check the key its landing gave it: a draft that changes none of a tree's
 /// files, planned over a tree whose checks need one another, takes every check from the cache of
 /// the landing's run, and a draft that rewrites a file with the content it has changes no key.
