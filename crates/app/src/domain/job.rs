@@ -267,6 +267,39 @@ pub enum Heartbeat {
     Stop(StopReason),
 }
 
+/// Where the checks a check needs stand among the jobs of a changeset.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Needs {
+    /// A check it needs has not ended.
+    Waiting,
+    /// A check it needs did not pass, or has no key to give.
+    Skipped,
+    /// Every check it needs passed, each with its key and output tree, in the order of its `needs`.
+    Passed(Vec<(CheckKey, Address)>),
+}
+
+impl Needs {
+    /// Where the checks `check` needs stand among `jobs`, the jobs of its changeset. A need is the
+    /// first job of its check, whether the key of `check` or its grant asks; the first need that
+    /// has not passed decides, as it comes in the order of `needs`.
+    #[must_use]
+    pub fn of(check: &CheckDefinition, jobs: &[Job]) -> Self {
+        let empty = empty_output_tree();
+        let mut passed = Vec::new();
+        for id in check.needed() {
+            match jobs.iter().find(|other| other.check.id() == id) {
+                Some(other) if !other.state.is_finished() => return Self::Waiting,
+                Some(other) if other.state.is_passed() => match other.key {
+                    Some(key) => passed.push((key, other.output_tree.unwrap_or(empty))),
+                    None => return Self::Skipped,
+                },
+                Some(_) | None => return Self::Skipped,
+            }
+        }
+        Self::Passed(passed)
+    }
+}
+
 /// The output tree of a run that records none: the empty tree, which a run records where it
 /// passed with no output, or did not pass.
 #[must_use]

@@ -26,7 +26,7 @@ use crate::port::driving::jobs::{Claimed, ClaimedFile, Jobs, JobsError, Upload, 
 use crate::use_case::first_parent::advance_forward;
 use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
-use crate::use_case::tree_checks::walk_files;
+use crate::use_case::tree_checks::{Resolved, dependencies, walk_files};
 
 /// The driven ports the jobs are built over.
 pub struct JobsAdapters<'a, G, Q, O, D, L, R, C> {
@@ -112,15 +112,6 @@ where
     }
 }
 
-/// Where the trees of a walk are read from.
-#[derive(Clone, Copy)]
-enum Trees {
-    /// The trees of changesets, in derived data.
-    Changesets,
-    /// The trees of outputs and of caches, as blobs in the object store.
-    Blobs,
-}
-
 /// `path` below `prefix`.
 fn joined(prefix: &Prefix, path: &Path) -> Result<Path, PathError> {
     let mut components = prefix.components().to_vec();
@@ -150,30 +141,24 @@ where
     D: DerivedData + Sync,
     L: ChangesetLog + Sync,
 {
-    async fn tree(
-        &self,
-        repository: RepositoryId,
-        from: Trees,
-        address: Address,
-    ) -> Result<Tree, JobsError> {
-        match from {
-            Trees::Changesets => Ok(self.derived.tree(repository, address).await?),
-            Trees::Blobs if address == empty_output_tree() => Ok(Tree::default()),
-            Trees::Blobs => Ok(Tree::decode(&self.objects.get(repository, address).await?)?),
-        }
-    }
-
-    /// Every file of the tree at `root`, by its path from the root.
+    /// Every file of the output or cache tree at `root`, a blob in the object store, by its path
+    /// from the root.
     async fn walk(
         &self,
         repository: RepositoryId,
-        from: Trees,
         root: Address,
     ) -> Result<BTreeMap<Path, File>, JobsError> {
         walk_files(
             root,
-            |address| self.tree(repository, from, address),
+            |address| async move {
+                if address == empty_output_tree() {
+                    Ok(Tree::default())
+                } else {
+                    Ok(Tree::decode(&self.objects.get(repository, address).await?)?)
+                }
+            },
             JobsError::from,
+            None,
         )
         .await
     }
@@ -190,7 +175,7 @@ where
             else {
                 continue;
             };
-            for (path, file) in self.walk(job.repository, Trees::Blobs, cache.tree).await? {
+            for (path, file) in self.walk(job.repository, cache.tree).await? {
                 granted.insert(joined(&prefix, &path)?, file);
             }
         }
@@ -198,23 +183,17 @@ where
             .queue
             .of_changeset(job.repository, job.changeset)
             .await?;
-        for needed in job.check.needed() {
-            let output = jobs
-                .iter()
-                .rev()
-                .find(|other| other.check.id() == needed && other.state.is_passed())
-                .and_then(|other| other.output_tree);
-            if let Some(tree) = output {
-                granted.extend(self.walk(job.repository, Trees::Blobs, tree).await?);
-            }
-        }
         let root = self.derived.root(job.repository, job.changeset).await?;
-        let changeset = self.walk(job.repository, Trees::Changesets, root).await?;
-        granted.extend(
-            changeset
-                .into_iter()
-                .filter(|(path, _)| job.check.reads(path)),
-        );
+        // A claimed job's needs have passed, so it is ready; a job that is not grants only its
+        // caches.
+        if let Resolved::Ready(dependencies) =
+            dependencies(self.derived, job.repository, root, &job.check, &jobs).await?
+        {
+            for (_, output) in dependencies.needed {
+                granted.extend(self.walk(job.repository, output).await?);
+            }
+            granted.extend(dependencies.inputs);
+        }
         Ok(granted)
     }
 

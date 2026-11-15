@@ -6,10 +6,9 @@ use std::fmt;
 
 use crate::domain::address::Address;
 use crate::domain::changeset::{Change, Changeset};
-use crate::domain::check::{CheckDefinition, CheckKey};
+use crate::domain::check::CheckDefinition;
 use crate::domain::draft::Draft;
-use crate::domain::job::{Job, JobState, NewJob, Resolution, empty_output_tree};
-use crate::domain::path::Path;
+use crate::domain::job::{Job, JobState, NewJob, Resolution};
 use crate::domain::repository::RepositoryId;
 use crate::domain::revert::{self, AUTHOR, Revert};
 use crate::port::driven::changeset_log::ChangesetLog;
@@ -28,7 +27,9 @@ use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::last_green::{advance, blocking_checks_passed};
 use crate::use_case::read_file::file_at;
 use crate::use_case::source_control::AfterLanding;
-use crate::use_case::tree_checks::{DefinitionsError, Unreadable, read_definitions, tree_files};
+use crate::use_case::tree_checks::{
+    DefinitionsError, Resolved, Unreadable, dependencies, read_definitions, tree_files,
+};
 
 /// Why the post-land checks of a landing failed after it landed.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -357,13 +358,11 @@ where
         changeset: Address,
     ) -> Result<(), ProgressError> {
         let adapters = &self.adapters;
-        let mut files = None;
         loop {
             let jobs = adapters.queue.of_changeset(repository, changeset).await?;
             let mut settled = false;
             for job in jobs.iter().filter(|job| job.state == JobState::Waiting) {
-                let Some(resolution) = self.resolution(job, &jobs, &mut files, changeset).await?
-                else {
+                let Some(resolution) = self.resolution(job, &jobs, changeset).await? else {
                     continue;
                 };
                 settled |= adapters.queue.resolve(job.id, resolution).await?;
@@ -378,40 +377,22 @@ where
     }
 
     /// What becomes of the waiting `job` among `jobs`, the jobs of its changeset; `None` where a
-    /// check it needs has not ended. `files` holds the files of the changeset's tree once they
-    /// have been read.
+    /// check it needs has not ended.
     async fn resolution(
         &self,
         job: &Job,
         jobs: &[Job],
-        files: &mut Option<BTreeMap<Path, Address>>,
         changeset: Address,
     ) -> Result<Option<Resolution>, ProgressError> {
         let adapters = &self.adapters;
-        let empty = empty_output_tree();
-        let mut needed = Vec::new();
-        for id in job.check.needed() {
-            let found = jobs.iter().find(|other| other.check.id() == id);
-            match found {
-                Some(other) if !other.state.is_finished() => return Ok(None),
-                Some(other) if other.state.is_passed() => {
-                    if let Some(key) = other.key {
-                        needed.push((key, other.output_tree.unwrap_or(empty)));
-                        continue;
-                    }
-                    return Ok(Some(Resolution::Skip));
-                }
-                Some(_) | None => return Ok(Some(Resolution::Skip)),
-            }
-        }
-        let tree = match files {
-            Some(files) => files,
-            None => {
-                let root = adapters.derived.root(job.repository, changeset).await?;
-                files.insert(tree_files(adapters.derived, job.repository, root).await?)
-            }
-        };
-        let key = CheckKey::of_tree(&job.check, tree, &needed);
+        let root = adapters.derived.root(job.repository, changeset).await?;
+        let dependencies =
+            match dependencies(adapters.derived, job.repository, root, &job.check, jobs).await? {
+                Resolved::Waiting => return Ok(None),
+                Resolved::Skipped => return Ok(Some(Resolution::Skip)),
+                Resolved::Ready(dependencies) => dependencies,
+            };
+        let key = dependencies.key(&job.check);
         Ok(Some(
             match adapters.queue.passed_with_key(job.repository, key).await? {
                 Some(output_tree) => Resolution::Cache { key, output_tree },
