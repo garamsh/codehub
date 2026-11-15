@@ -59,9 +59,9 @@ services:
         condition: service_healthy
     restart: "no"
 
-  # `up --wait` accepts a one-shot container that exited 0 only when a service depends on it with
-  # service_completed_successfully, so this holds the dependency and is healthy once the bucket is
-  # readable.
+  # Compose 5.7.0 treats a one-shot container that exited 0 as a failed `up --wait` unless a
+  # service depends on it with service_completed_successfully. This service holds that dependency
+  # and is healthy once the bucket is readable.
   s3-ready:
     image: cgr.dev/chainguard/minio:latest@sha256:db3f583fa49121942168bd6383a773b2cde3384c9a99bf7193560b9a0f3a28fd
     entrypoint: ["sleep", "infinity"]
