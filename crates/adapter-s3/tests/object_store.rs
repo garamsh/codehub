@@ -1,4 +1,4 @@
-//! The S3 object store against the MinIO the checks run (`dev/check-env.sh`). Every test uses
+//! The S3 object store against the MinIO the checks run (`dev/test.env`). Every test uses
 //! repository ids no other test uses, and deletes nothing.
 
 use std::collections::hash_map::RandomState;

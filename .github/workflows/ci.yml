@@ -17,5 +17,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Mover: Dependabot's github-actions updates (.github/dependabot.yml), merged by the PM. The
+      # tool is installed at its latest version with the action's checksum check; nextest prints
+      # its version in every run, and .config/nextest.toml sets the oldest accepted.
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-nextest
       - name: Run checks
         run: make ci

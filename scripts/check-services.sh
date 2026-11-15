@@ -10,13 +10,7 @@ fail() {
     exit 1
 }
 
-# dev/check-env.sh is sourced only when the caller has not exported the
-# variables itself; either way the checks below read what the process sees.
-if [ -z "${CODEHUB_TEST_POSTGRES_URL:-}" ]; then
-    set -a
-    . dev/check-env.sh
-    set +a
-fi
+# The variables of dev/test.env come from the caller's environment (`make` exports them).
 
 for tool in curl jq docker openssl; do
     command -v "$tool" >/dev/null 2>&1 || fail "$tool is required"

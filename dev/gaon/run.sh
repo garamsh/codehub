@@ -3,7 +3,7 @@
 # RBAC and service-account tokens, applies the runner's ClusterRole and binding, runs the live tests
 # of the gaon driver (crates/codehub-runner/tests/gaon_live.rs) against it, and removes the
 # containers, the process and the temporary directory at every exit, whatever the test's result.
-# Run from the repository root by `make e2e-gaon`. Arguments pass to `cargo test`, after the test
+# Run from the repository root by `make e2e-gaon`. Arguments pass to `cargo nextest run`, after the test
 # selection. The built binary stays in target/codehub-gaon-e2e/, keyed by the commit, so a second
 # run skips the build; `cargo clean` removes it. Every wait is bounded, so a stalled service fails
 # the run instead of hanging it. Only public images are pulled.
@@ -136,7 +136,7 @@ export CODEHUB_GAON_E2E_CA CODEHUB_GAON_E2E_ADMIN_PEM CODEHUB_GAON_E2E_DIR
 echo "e2e-gaon: gaon-apiserver built from garamsh/gaon $CODEHUB_GAON_E2E_SHA, etcd $CODEHUB_GAON_E2E_ETCD_IMAGE"
 cd "$root"
 status=0
-TEST_SELECTOR="-p codehub-runner --test gaon_live" sh scripts/test-count.sh -- --ignored "$@" || status=$?
+cargo nextest run -p codehub-runner --locked --no-tests=fail --test gaon_live --run-ignored only "$@" || status=$?
 if [ "$status" -ne 0 ]; then
     echo "e2e-gaon: gaon-apiserver log tail:" >&2
     tail -n 40 "$dir/apiserver.log" >&2

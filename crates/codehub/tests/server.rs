@@ -1,4 +1,4 @@
-//! The shipped `codehub` binary against the services the checks run (`dev/check-env.sh`):
+//! The shipped `codehub` binary against the services the checks run (`dev/test.env`):
 //! PostgreSQL, MinIO and Dex. Each test starts its own process over a database of its own.
 
 #[cfg(test)]

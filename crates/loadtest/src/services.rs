@@ -17,7 +17,7 @@ use crate::Failure;
 /// How long a start or a request to a service may take.
 const BOUND: Duration = Duration::from_secs(60);
 
-/// The value of the environment variable `name`, which `dev/check-env.sh` sets.
+/// The value of the environment variable `name`, which `dev/test.env` sets.
 ///
 /// # Errors
 ///

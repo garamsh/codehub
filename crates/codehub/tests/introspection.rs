@@ -1,5 +1,5 @@
 //! The shipped `codehub` binary in introspection mode, against the test identity provider
-//! (Keycloak) and the services of `dev/check-env.sh`.
+//! (Keycloak) and the services of `dev/test.env`.
 
 #[cfg(test)]
 pub mod common;
