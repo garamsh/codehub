@@ -19,7 +19,7 @@ name: codehub
 # `docker compose --profile garam pull --policy missing migrate policy-migrate`. The profile runs
 # as its own project (CODEHUB_GARAM_E2E_PROJECT), so taking it down leaves the services above up,
 # and is named by the service that readies it all, gateway. Its addresses are in dev/test.env; the
-# directory of keys (CODEHUB_GARAM_E2E_DIR, made by dev/garam/keys.sh) and the host user
+# directory of keys (CODEHUB_GARAM_E2E_DIR, made by the e2e example garam_keys) and the host user
 # (CODEHUB_GARAM_E2E_USER) are set by `make e2e-garam` alone; the directory defaults to `.` so the
 # file validates without it, which compose requires of services whose profile is off.
 #
