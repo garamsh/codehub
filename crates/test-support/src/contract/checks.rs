@@ -6,7 +6,7 @@ use crate::contract::runner_deployment::{
     organisation, runner,
 };
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use app::domain::address::Address;
 use app::domain::file::{File, FileKind};
@@ -18,7 +18,7 @@ use app::domain::job::{
 use app::domain::path::{Component, Path, Prefix};
 use app::domain::principal::Caller;
 use app::domain::repository::RepositoryId;
-use app::domain::tree::Tree;
+use app::domain::tree::{Entry, Tree};
 use app::port::driven::changeset_log::{ChangesetLog, Ref};
 use app::port::driven::check_definitions::CheckDefinitions;
 use app::port::driven::check_definitions::CheckFileError;
@@ -1540,10 +1540,11 @@ pub async fn a_cache_ref_moves_only_from_the_changeset_it_records<H: RunnerDeplo
     assert_eq!(elsewhere, None);
 }
 
-/// Derived data that counts the trees it is asked for and otherwise answers as `inner` does.
+/// Derived data that records the addresses of the trees it is asked for and otherwise answers as
+/// `inner` does.
 struct CountingTrees<'a, D> {
     inner: &'a D,
-    trees: AtomicUsize,
+    read: Mutex<Vec<Address>>,
 }
 
 impl<D: DerivedData> DerivedData for CountingTrees<'_, D> {
@@ -1570,7 +1571,9 @@ impl<D: DerivedData> DerivedData for CountingTrees<'_, D> {
         repository: RepositoryId,
         address: Address,
     ) -> impl Future<Output = Result<Tree, DerivedDataError>> + Send {
-        self.trees.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut read) = self.read.lock() {
+            read.push(address);
+        }
         self.inner.tree(repository, address)
     }
 
@@ -1603,8 +1606,22 @@ impl<D: DerivedData> DerivedData for CountingTrees<'_, D> {
     }
 }
 
-/// A claim reads the trees its job's inputs can reach and no others: the trees from the root to
-/// the folders its patterns name, not the whole changeset.
+/// The address of the tree of the directory `name` in the tree at `address`.
+async fn subtree<H: RunnerDeployment>(
+    harness: &H,
+    repo: RepositoryId,
+    address: Address,
+    name: &str,
+) -> Address {
+    let tree = harness.derived().tree(repo, address).await.unwrap();
+    let key = Component::new(name.as_bytes().to_vec()).unwrap();
+    match tree.entries.get(&key) {
+        Some(Entry::Directory(subtree)) => *subtree,
+        _ => panic!("no directory {name}"),
+    }
+}
+
+/// A claim reads no tree of a directory its job's inputs cannot reach.
 pub async fn a_claim_reads_only_the_trees_its_inputs_reach<H: RunnerDeployment>() {
     let harness = H::start().await;
     let ada = harness.caller("ada").await;
@@ -1617,11 +1634,21 @@ pub async fn a_claim_reads_only_the_trees_its_inputs_reach<H: RunnerDeployment>(
         ("docs/deep/er/x", "1\n"),
         ("docs/y", "1\n"),
     ];
-    land_checks_with(&repo, &ada, "first", folders, &files).await;
+    let landed = land_checks_with(&repo, &ada, "first", folders, &files).await;
+
+    // The trees no input of the check can reach: `docs`, below which nothing is selected, and
+    // the folder holding the check file. The tree of `web/src` is the one its inputs do reach.
+    let root = harness.derived().root(repo.id, landed).await.unwrap();
+    let web = subtree(&harness, repo.id, root, "web").await;
+    let unreachable = [
+        subtree(&harness, repo.id, root, "docs").await,
+        subtree(&harness, repo.id, web, ".codehub").await,
+    ];
+    let reachable = subtree(&harness, repo.id, web, "src").await;
 
     let counting = CountingTrees {
         inner: harness.derived(),
-        trees: AtomicUsize::new(0),
+        read: Mutex::new(Vec::new()),
     };
     let jobs = JobsService::new(
         JobsAdapters {
@@ -1639,6 +1666,10 @@ pub async fn a_claim_reads_only_the_trees_its_inputs_reach<H: RunnerDeployment>(
     let claimed = jobs.claim(&bot, 0).await.unwrap().unwrap();
 
     assert_eq!(granted(&claimed), ["web/src/a"]);
-    // The root, `web` and `web/src`; not `docs`, nor the check file's folder.
-    assert_eq!(counting.trees.load(Ordering::SeqCst), 3);
+    let read = counting.read.lock().unwrap();
+    // The control: the tree its input selects was read, so the claim did walk.
+    assert!(read.contains(&reachable));
+    for tree in unreachable {
+        assert!(!read.contains(&tree), "the claim read {tree}");
+    }
 }
