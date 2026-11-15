@@ -181,14 +181,14 @@ This section states the Rust comment syntax.
   and `clippy::missing_errors_doc` and `clippy::missing_panics_doc` flag
   the absent sections; set both to `"warn"` under
   `[workspace.lints.clippy]`.
-- A code block in a doc comment is compiled and run by `cargo test` as a
-  doc test, so it is an example that stays true or it fails.
+- A code block in a doc comment is compiled and run by `cargo test --doc`
+  as a doc test, so it is an example that stays true or it fails.
 
 ## Testing
 
 This section states the Rust test placement, runner and test-name form.
 
-**Runner:** `cargo test` with the built-in `#[test]` harness; assertions
+**Runner:** cargo-nextest (`cargo nextest run`) over the built-in `#[test]` harness, with `cargo test --doc` for doc tests, which nextest does not run. Assertions
 are `assert!`, `assert_eq!` and `assert_ne!`. A test may return
 `Result<(), E>` and use `?` instead of `unwrap`.
 
@@ -216,10 +216,10 @@ are `assert!`, `assert_eq!` and `assert_ne!`. A test may return
   package's binaries for its integration tests and sets
   `CARGO_BIN_EXE_<name>` to each path.
 - Test names are `snake_case` sentences that read like a spec
-  (`rejects_expired_token`); `cargo test` prints them with their module
-  path.
-- `cargo test <filter>` passes the filter to every test binary and exits
-  0 when it matches nothing.
+  (`rejects_expired_token`); nextest prints them with their binary and
+  module path.
+- `cargo test <filter>` exits 0 when the filter matches nothing; `cargo
+  nextest run --no-tests=fail <filter>` fails instead.
 
 ## Verification commands
 
@@ -229,9 +229,9 @@ takes `--locked`.
 | Task | Command |
 |------|---------|
 | Build | `cargo build --workspace --all-targets --locked` |
-| Test | `cargo test --workspace --locked` (add `--exclude e2e` once `e2e` exists) |
-| Test (one) | `cargo test -p <package> <filter> --locked` |
-| Test (e2e) | `cargo test -p e2e --locked` |
+| Test | `cargo nextest run --workspace --locked --no-tests=fail` (add `--exclude e2e` once `e2e` exists), then `cargo test --doc --workspace --locked` |
+| Test (one) | `cargo nextest run -p <package> --locked --no-tests=fail <filter>` |
+| Test (e2e) | `cargo nextest run -p e2e --locked --no-tests=fail` |
 | Lint | `cargo clippy --workspace --all-targets --locked`, run with `CARGO_BUILD_WARNINGS=deny` |
 | Format check | `cargo fmt --all --check` |
 | Format apply | `cargo fmt --all` |
@@ -241,23 +241,27 @@ later) makes any warning fail the run, rustc's included, and unlike
 `-D warnings` it does not invalidate the build cache. Set it on the lint
 entry point alone.
 
-`cargo test` prints `running N tests` per test binary and `test result`
-per binary, and exits 0 where `N` is 0 everywhere: a package with no
-tests, or a filter that matches none, passes. The test entry point sums
-the `running N tests` lines it receives, prints the total beside the
-selector `--workspace`, and fails where the total is zero. It passes
-any arguments it is given through to `cargo test` and prints them
-after `--workspace`, verbatim, in the selector (`3 tests ran
-(--workspace version)`), so a filtered run never reads as the full
-one. Over a workspace with no members cargo itself exits 101 (`The
-manifest is virtual, and the workspace has no members`), so a member
-count is not checked separately.
+nextest prints how many tests it starts across how many binaries, and a
+summary of passed, failed and skipped. With `--no-tests=fail`, given
+explicitly so that no release's default decides it, a run in which no
+test is selected fails. That covers a package with no tests and a filter
+that matches none, so the entry point needs no count of its own. The
+summary names the tests it ran, and any filter is shown in the command
+the entry point echoes, so a filtered run never reads as the full one.
+The minimum nextest version is set in `.config/nextest.toml`
+(`nextest-version`), so an older binary refuses to run instead of
+behaving differently. CI installs nextest through a maintained action
+pinned per `ci.md`.
+
+`cargo test --doc` exits 0 where a workspace has no doc tests. Its
+count is beside nextest's, not in place of it, so a run with no doc
+tests is not a run with no tests.
 
 `--workspace` selects the packages `members` lists, and the glob
-`crates/*` takes the directories on disk. `cargo test` without
-`--all-targets` runs the doc tests of each library; `--all-targets`
-does not, and `--doc` cannot be combined with it, so Test is the entry
-point that runs them. `cargo fmt --all` reaches the files each target's
+`crates/*` takes the directories on disk. Neither nextest nor
+`cargo test --all-targets` runs doc tests, and `--doc` cannot be
+combined with `--all-targets`, so Test runs them with its own
+`cargo test --doc` invocation. `cargo fmt --all` reaches the files each target's
 `mod` declarations reach, so a `.rs` file nothing declares is neither
 checked nor rewritten.
 
