@@ -106,6 +106,13 @@ takes, how a caller holds a port, and which packages name the runtime.
 - **An internal seam that is not a port** may stay a generic type
   parameter while its implementation is fixed where it is built. One
   with two implementations chosen at run time takes the port form.
+- **A test double's port method does not `unwrap`, `expect` or
+  `panic!` in its body.** `#[async_trait]` moves the body into a
+  generated future, and the `*-in-tests` exemptions of the lint
+  levels below do not reach it, even when the `impl` carries
+  `#[cfg(test)]`. The double calls a `#[cfg(test)]` inherent method of
+  its own type that does the `unwrap`, and the port method awaits or
+  returns its result.
 - **`tokio` is a `[dependencies]` entry only of a binary package and of
   `crates/test-support`**, and any package may name it under
   `[dev-dependencies]`. A test that
