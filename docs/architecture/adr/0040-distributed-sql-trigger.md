@@ -9,7 +9,7 @@ Append-only: once merged, the body below is not rewritten. A fact later found wr
 
 ADR 0013 keeps the metadata, the changeset log and the refs in PostgreSQL. It keeps the ports free of PostgreSQL features so that a distributed SQL store can serve them later, and accepts that write throughput on the log and on `main` is bounded by one primary until then. `source-control.md` left open what measurement triggers the move. Goal issue #91 asks for it to be decided.
 
-The scale baseline (`docs/scale-baseline.md`) ran 200 agents against two server replicas sharing one PostgreSQL on a 12-core machine. PostgreSQL's CPU was sampled every 10 seconds:
+The scale baseline (`docs/guide/scale-baseline.md`) ran 200 agents against two server replicas sharing one PostgreSQL on a 12-core machine. PostgreSQL's CPU was sampled every 10 seconds:
 - a median of about 2.0 cores, at most 2.7, at `595f4c3`, while lost swaps went back to the client;
 - a median of about 0.9 cores, at most 3.3, once the server retried them (ADR 0036) and landings of one repository passed a gate in each process (ADR 0039), while the scenarios landed 3 to 7 times as many changesets.
 

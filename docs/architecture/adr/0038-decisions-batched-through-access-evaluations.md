@@ -9,7 +9,7 @@ Append-only: once merged, the body below is not rewritten. A fact later found wr
 
 A landing asks for `write` on every path it changes (ADR 0021), and the core asks the decision port once per path. ADR 0030 decides no caching of decisions, and `access.md` left open whether to batch evaluations, to be measured first.
 
-The scale baseline (`docs/scale-baseline.md`) measured 11.18 decision-point calls per API request in external mode, with 20 paths per landing.
+The scale baseline (`docs/guide/scale-baseline.md`) measured 11.18 decision-point calls per API request in external mode, with 20 paths per landing.
 
 OpenID Authorization API 1.0 (AuthZEN), Final, defines an Access Evaluations API: one request carrying many evaluations, answered with one decision each, in order. A decision point advertises it as `access_evaluations_endpoint` in its metadata at `/.well-known/authzen-configuration`. Cerbos 0.57.0, the decision point of `compose.yaml`, advertises it and answers there.
 

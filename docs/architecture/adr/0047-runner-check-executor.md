@@ -7,7 +7,7 @@ Append-only: once merged, the body below is not rewritten. A fact later found wr
 
 ## Context
 
-A runner takes its jobs from the server (ADR 0034), and the server needs PostgreSQL, an object store and an identity issuer (`docs/deployment.md` §What the server needs). An operator who sets up a runner's executor, such as the gaon driver of ADR 0046 with its ServiceAccount, its RBAC, its result listener and its egress, learns whether that setup works only when a check of a real repository is claimed. When a job fails there, the cause may be the setup or the check.
+A runner takes its jobs from the server (ADR 0034), and the server needs PostgreSQL, an object store and an identity issuer (`docs/guide/deployment.md` §What the server needs). An operator who sets up a runner's executor, such as the gaon driver of ADR 0046 with its ServiceAccount, its RBAC, its result listener and its egress, learns whether that setup works only when a check of a real repository is claimed. When a job fails there, the cause may be the setup or the check.
 
 garamsh/aurora#749 accepts codehub's criterion "a driver that runs each job in a MicroVM on gaon" only on output of a job running in a booted MicroVM on aurora's cluster (aurora#749 issuecomment-6846613539, decision 11). No codehub server runs on that cluster yet. aurora declares one once gaon serves Service, the gateway and Secret through `gaon apply` (garamsh/gaon#207) on a deployed naru release (aurora#750 issuecomment-6840854355), and the release that serves them comes after the one that first serves MicroVMs (aurora#750). The workstation cannot stand in for the server: aurora refuses a path from job MicroVMs back to it (aurora#750 issuecomment-6848796892).
 
@@ -38,7 +38,7 @@ Alternatives not taken:
 
   The server's claim and heartbeat are not on that path. They are the same for every executor, and the host-driver tests and the end-to-end suite show them.
 - A job with no files fetches nothing, so the check needs no object store. Egress to an object store is therefore not checked by it.
-- `docs/deployment.md` can tell an operator to run it before registering a runner. The mode's options belong to the subcommand, not to the runner's options table.
+- `docs/guide/deployment.md` can tell an operator to run it before registering a runner. The mode's options belong to the subcommand, not to the runner's options table.
 
 ## Signs the decision was wrong
 

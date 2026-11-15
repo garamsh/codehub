@@ -9,7 +9,7 @@ Append-only: once merged, the body below is not rewritten. A fact later found wr
 
 ADR 0036 retries a lost compare-and-swap on `main` inside the server. It names serialising landings within one process as measured in #116 and left to the ADR on per-repository limits; this is that ADR. `tenancy.md` left open whether a repository limits its concurrent landings.
 
-The server-side retry alone still lets every landing in flight read `main`, rebase and race for the swap, so under 200 agents most attempts lose. #116 measured three ways of passing landings of one repository through a gate in each process (`docs/scale-baseline.md`):
+The server-side retry alone still lets every landing in flight read `main`, rebase and race for the swap, so under 200 agents most attempts lose. #116 measured three ways of passing landings of one repository through a gate in each process (`docs/guide/scale-baseline.md`):
 
 - with no gate, on main at `595f4c3`, a few landings took most of the lost swaps; 11,295 to 16,104 lost swaps per scenario reached the client, and each such landing took about 150 requests;
 - with an unfair async mutex as the gate, lost swaps fell to 0–16, but a landing woken from the queue could be overtaken by one just arriving, again and again: land p99 reached 96–137 s and every scenario overran its 60 s window;

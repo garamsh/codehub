@@ -7,7 +7,7 @@ Append-only: once merged, the body below is not rewritten. A fact later found wr
 
 ## Context
 
-ADR 0024 puts the API under the path prefix `/v1`, has callers present bearer tokens, and maps a backend failure to 500. The server runs as a container (`docs/deployment.md`), and whoever declares its deployment needs two things an orchestrator asks of a process: whether it is alive, and whether it may receive traffic. An orchestrator's probe carries no token, and a path under `/v1` is versioned with the API, which a probe is not part of.
+ADR 0024 puts the API under the path prefix `/v1`, has callers present bearer tokens, and maps a backend failure to 500. The server runs as a container (`docs/guide/deployment.md`), and whoever declares its deployment needs two things an orchestrator asks of a process: whether it is alive, and whether it may receive traffic. An orchestrator's probe carries no token, and a path under `/v1` is versioned with the API, which a probe is not part of.
 
 Alternatives not taken:
 

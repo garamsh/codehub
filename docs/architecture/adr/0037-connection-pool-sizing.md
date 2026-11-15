@@ -9,7 +9,7 @@ Append-only: once merged, the body below is not rewritten. A fact later found wr
 
 ADR 0022 pools connections in process with a configurable size, and defers an external pooler until the connection count is a problem. `CODEHUB_POSTGRES_POOL_SIZE` defaults to 10.
 
-The scale baseline (`docs/scale-baseline.md`) swept the pool size at 200 agents against two replicas. Against pool 10, pool 40 raised `read-heavy` throughput from 165.8 to 215.6 operations per second, and lowered `disjoint` land p50 from 370 ms to 257 ms. Pool 4 was slower than both.
+The scale baseline (`docs/guide/scale-baseline.md`) swept the pool size at 200 agents against two replicas. Against pool 10, pool 40 raised `read-heavy` throughput from 165.8 to 215.6 operations per second, and lowered `disjoint` land p50 from 370 ms to 257 ms. Pool 4 was slower than both.
 
 PostgreSQL's `max_connections` defaults to 100.
 

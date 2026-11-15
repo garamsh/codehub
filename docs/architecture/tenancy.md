@@ -39,7 +39,7 @@ How the system is divided into organisations and repositories, and how a reposit
 - Shared organisation names, lazy creation in external mode and the directory-change port: ADR 0028 and ADR 0030; the outbox and at-least-once delivery of repository changes: ADR 0044.
 - The term "repository" for what ADR 0004 and ADR 0005 call a workspace is in ADR 0020.
 - The bundle as the one unit for export, backup and import is in ADR 0005.
-- No limit on concurrent landings, and the gate in each process instead of a lock across replicas: ADR 0039, measured in `docs/scale-baseline.md`.
+- No limit on concurrent landings, and the gate in each process instead of a lock across replicas: ADR 0039, measured in `docs/guide/scale-baseline.md`.
 
 ## Open questions
 

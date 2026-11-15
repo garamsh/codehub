@@ -1,4 +1,4 @@
-//! The check that `docs/deployment.md` names every setting of a binary and no other.
+//! The check that `docs/guide/deployment.md` names every setting of a binary and no other.
 
 use std::collections::BTreeSet;
 
@@ -25,7 +25,7 @@ fn names(text: &str) -> BTreeSet<String> {
     found
 }
 
-/// Asserts that the section `heading` of `docs/deployment.md` holds one table row for each option
+/// Asserts that the section `heading` of `docs/guide/deployment.md` holds one table row for each option
 /// of `command`, that no other `--option` or `CODEHUB_*` variable appears in the section, and that
 /// an option is marked `yes` as a secret exactly where its value is hidden in the command's help output.
 ///
@@ -35,7 +35,10 @@ fn names(text: &str) -> BTreeSet<String> {
 ///
 /// Panics where the contract and the command differ, naming the difference.
 pub fn assert_contract(command: &Command, heading: &str) {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/deployment.md");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/guide/deployment.md"
+    );
     let doc = std::fs::read_to_string(path).unwrap();
     let marker = format!("## {heading}");
     let section: String = doc
@@ -47,7 +50,7 @@ pub fn assert_contract(command: &Command, heading: &str) {
         .join("\n");
     assert!(
         !section.is_empty(),
-        "docs/deployment.md has no section `{heading}`"
+        "docs/guide/deployment.md has no section `{heading}`"
     );
 
     let rows: Vec<Vec<&str>> = section
