@@ -13,9 +13,8 @@ lint:
 format:
 	cargo fmt --all --check
 
-# Starts the check services (compose.yaml), smoke-tests them, and runs the
-# workspace tests, without the e2e package, with the CODEHUB_TEST_* variables
-# of dev/test.env. A run that selects no test fails.
+# Starts the check services (compose.yaml) and runs the workspace tests, without the e2e
+# package, with the CODEHUB_TEST_* variables of dev/test.env. A run that selects no test fails.
 # The services stay up afterwards; `make services-down` stops them.
 test: services
 	cargo nextest run --workspace --exclude e2e --locked --no-tests=fail $(TEST_ARGS)
@@ -86,7 +85,6 @@ ci: lint format test e2e loadtest-smoke build
 # `make services-down` and then `make services`.
 services:
 	docker compose --env-file dev/test.env up --detach --wait --wait-timeout 180 --no-recreate
-	sh scripts/check-services.sh
 
 services-down:
 	docker compose --env-file dev/test.env down --volumes

@@ -9,7 +9,7 @@ use adapter_introspection::IntrospectionIdentityVerification;
 use app::domain::credential::Credential;
 use app::port::driven::identity_verification::{IdentityError, IdentityVerification};
 use serde_json::{Value, json};
-use test_support::{env, keycloak_token};
+use test_support::{env, keycloak_token, token_endpoint};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -160,6 +160,83 @@ async fn rejects_a_revoked_token() {
         verifier.verify(&credential(&token)).await,
         Err(IdentityError::Rejected)
     );
+}
+
+#[tokio::test]
+async fn discovers_the_configured_issuer_and_the_endpoints_the_adapter_uses() {
+    let issuer = env("CODEHUB_TEST_KEYCLOAK_ISSUER");
+    let document: Value = reqwest::get(format!("{issuer}/.well-known/openid-configuration"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(document["issuer"], json!(issuer));
+    for endpoint in [
+        "token_endpoint",
+        "introspection_endpoint",
+        "revocation_endpoint",
+    ] {
+        assert!(
+            document[endpoint]
+                .as_str()
+                .is_some_and(|url| url.starts_with(&issuer)),
+            "{endpoint} is not under the issuer: {document}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn verifies_a_token_exchanged_by_rfc_8693_for_codehubs_audience() {
+    let provider = Provider::discover().await;
+    let verifier = provider.verifier();
+    let upstream = keycloak_token("UPSTREAM", "alice").await;
+    // The control: the upstream token is not for codehub's audience.
+    assert_eq!(
+        verifier.verify(&credential(&upstream)).await,
+        Err(IdentityError::Rejected)
+    );
+
+    let answer: Value = reqwest::Client::new()
+        .post(token_endpoint())
+        .basic_auth(
+            env("CODEHUB_TEST_KEYCLOAK_EXCHANGE_CLIENT_ID"),
+            Some(env("CODEHUB_TEST_KEYCLOAK_EXCHANGE_CLIENT_SECRET")),
+        )
+        .form(&[
+            (
+                "grant_type",
+                "urn:ietf:params:oauth:grant-type:token-exchange",
+            ),
+            ("subject_token", upstream.as_str()),
+            (
+                "subject_token_type",
+                "urn:ietf:params:oauth:token-type:access_token",
+            ),
+            (
+                "requested_token_type",
+                "urn:ietf:params:oauth:token-type:access_token",
+            ),
+            ("audience", &env("CODEHUB_TEST_KEYCLOAK_AUDIENCE")),
+            (
+                "audience",
+                &env("CODEHUB_TEST_KEYCLOAK_INTROSPECTION_CLIENT_ID"),
+            ),
+        ])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let exchanged = answer["access_token"]
+        .as_str()
+        .unwrap_or_else(|| panic!("Keycloak exchanged no token: {answer}"));
+
+    let principal = verifier.verify(&credential(exchanged)).await.unwrap();
+    assert_eq!(principal.issuer(), provider.issuer);
+    assert_eq!(principal.subject(), ALICE);
 }
 
 #[tokio::test]
