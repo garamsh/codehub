@@ -47,8 +47,13 @@ jobs:
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
-          version=$(sh scripts/release-version.sh "$REF_NAME")
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # vX.Y.Z, vX.Y.Z-dev.N or vX.Y.Z-rc.N: no leading zeros, N positive, no newline.
+          re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(dev|rc)\.[1-9][0-9]*)?$'
+          if [[ ! $REF_NAME =~ $re ]]; then
+            echo "release-version: tag is not vX.Y.Z, vX.Y.Z-dev.N or vX.Y.Z-rc.N: nothing published" >&2
+            exit 1
+          fi
+          echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - id: revision
         run: echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
