@@ -132,6 +132,11 @@ async fn a_plan_runs_what_the_draft_changes_and_takes_the_rest_from_the_cache() 
 }
 
 #[tokio::test]
+async fn a_plan_gives_each_check_the_key_its_landing_gave() {
+    checks::a_plan_gives_each_check_the_key_its_landing_gave::<Harness>().await;
+}
+
+#[tokio::test]
 async fn a_plan_names_a_check_that_never_passed_and_refuses_a_draft_it_cannot_read() {
     checks::a_plan_names_a_check_that_never_passed_and_refuses_a_draft_it_cannot_read::<Harness>()
         .await;

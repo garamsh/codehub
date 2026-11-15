@@ -365,6 +365,25 @@ impl CheckKey {
     }
 }
 
+impl CheckKey {
+    /// The key of `definition` over the files of a tree, `files` by path with each content
+    /// address, of which the definition's patterns select its inputs, and `needed`, as in
+    /// [`CheckKey::new`]. A landing and a plan of a draft both key a check through here.
+    #[must_use]
+    pub fn of_tree(
+        definition: &CheckDefinition,
+        files: &BTreeMap<Path, Address>,
+        needed: &[(CheckKey, Address)],
+    ) -> Self {
+        let inputs: Vec<(Path, Address)> = files
+            .iter()
+            .filter(|(path, _)| definition.reads(path))
+            .map(|(path, content)| (path.clone(), *content))
+            .collect();
+        Self::new(definition, &inputs, needed)
+    }
+}
+
 impl fmt::Display for CheckKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)

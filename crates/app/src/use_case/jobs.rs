@@ -10,11 +10,11 @@ use crate::domain::job::{
     CacheRef, Heartbeat, Job, JobId, JobResult, Outcome, Produced, ProducedFile, empty_output_tree,
     output_tail,
 };
-use crate::domain::path::{Component, Path, PathError, Prefix};
+use crate::domain::path::{Path, PathError, Prefix};
 use crate::domain::principal::{Caller, Principal};
 use crate::domain::repository::RepositoryId;
 use crate::domain::runner::{Registration, RegistrationId};
-use crate::domain::tree::{Entry, Tree, derive};
+use crate::domain::tree::{Tree, derive};
 use crate::port::driven::changeset_log::ChangesetLog;
 use crate::port::driven::check_definitions::CheckDefinitions;
 use crate::port::driven::derived_data::DerivedData;
@@ -23,8 +23,10 @@ use crate::port::driven::object_store::ObjectStore;
 use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driven::runner_registry::RunnerRegistry;
 use crate::port::driving::jobs::{Claimed, ClaimedFile, Jobs, JobsError, Upload, UploadGrant};
+use crate::use_case::first_parent::advance_forward;
 use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
+use crate::use_case::tree_checks::walk_files;
 
 /// The driven ports the jobs are built over.
 pub struct JobsAdapters<'a, G, Q, O, D, L, R, C> {
@@ -168,21 +170,12 @@ where
         from: Trees,
         root: Address,
     ) -> Result<BTreeMap<Path, File>, JobsError> {
-        let mut files = BTreeMap::new();
-        let mut pending: Vec<(Vec<Component>, Address)> = vec![(Vec::new(), root)];
-        while let Some((directory, tree)) = pending.pop() {
-            for (name, entry) in self.tree(repository, from, tree).await?.entries {
-                let mut components = directory.clone();
-                components.push(name);
-                match entry {
-                    Entry::Directory(subtree) => pending.push((components, subtree)),
-                    Entry::File(file) => {
-                        files.insert(Path::new(components)?, file);
-                    }
-                }
-            }
-        }
-        Ok(files)
+        walk_files(
+            root,
+            |address| self.tree(repository, from, address),
+            JobsError::from,
+        )
+        .await
     }
 
     /// The files `job` is granted, by path from the repository root.
@@ -274,23 +267,6 @@ where
         Ok(true)
     }
 
-    /// Whether `candidate` is a strict first-parent descendant of `current`.
-    async fn later(
-        &self,
-        repository: RepositoryId,
-        candidate: Address,
-        current: Address,
-    ) -> Result<bool, JobsError> {
-        let mut at = candidate;
-        while at != current {
-            match self.log.get(repository, at).await?.parents.first() {
-                Some(parent) => at = *parent,
-                None => return Ok(false),
-            }
-        }
-        Ok(candidate != current)
-    }
-
     /// Points each cache ref of `job` at the tree `job` left in its cache path, where `job`'s
     /// changeset is later than the one the ref records. Where a ref moves between the read and
     /// the compare-and-swap, decides again over where it moved.
@@ -306,35 +282,35 @@ where
                 .filter_map(|(file, content)| Some((relative(&prefix, file)?, *content)))
                 .collect();
             let tree = self.store_tree(job.repository, files).await?;
-            loop {
-                let current = self
-                    .queue
-                    .cache_ref(job.repository, &job.check.folder, path)
-                    .await?;
-                if let Some(current) = current
-                    && !self
-                        .later(job.repository, job.changeset, current.changeset)
-                        .await?
-                {
-                    break;
-                }
-                let moved = self
-                    .queue
-                    .advance_cache_ref(
-                        job.repository,
-                        &job.check.folder,
-                        path,
-                        current.map(|current| current.changeset),
-                        CacheRef {
-                            tree,
-                            changeset: job.changeset,
-                        },
+            advance_forward(
+                self.log,
+                job.repository,
+                job.changeset,
+                || async {
+                    let current = self
+                        .queue
+                        .cache_ref(job.repository, &job.check.folder, path)
+                        .await?;
+                    Ok::<_, JobsError>(current.map(|current| current.changeset))
+                },
+                |current| async move {
+                    Ok::<_, JobsError>(
+                        self.queue
+                            .advance_cache_ref(
+                                job.repository,
+                                &job.check.folder,
+                                path,
+                                current,
+                                CacheRef {
+                                    tree,
+                                    changeset: job.changeset,
+                                },
+                            )
+                            .await?,
                     )
-                    .await?;
-                if moved {
-                    break;
-                }
-            }
+                },
+            )
+            .await?;
         }
         Ok(())
     }
