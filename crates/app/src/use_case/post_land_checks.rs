@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 use crate::domain::address::Address;
 use crate::domain::changeset::{Change, Changeset};
@@ -208,47 +209,36 @@ impl From<ProgressError> for RevertError {
 }
 
 /// The driven ports the post-land checks are built over.
-pub struct PostLandChecksAdapters<'a, O, D, L, R, Q, C> {
+pub struct PostLandChecksAdapters {
     /// Stores blobs.
-    pub objects: &'a O,
+    pub objects: Arc<dyn ObjectStore>,
     /// Stores derived data.
-    pub derived: &'a D,
+    pub derived: Arc<dyn DerivedData>,
     /// Stores changesets and `last-green`.
-    pub log: &'a L,
+    pub log: Arc<dyn ChangesetLog>,
     /// Finds a repository's organisation.
-    pub directory: &'a R,
+    pub directory: Arc<dyn RepositoryDirectory>,
     /// Holds the jobs.
-    pub queue: &'a Q,
+    pub queue: Arc<dyn JobQueue>,
     /// Reads the check definitions.
-    pub definitions: &'a C,
+    pub definitions: Arc<dyn CheckDefinitions>,
 }
 
 /// The post-land checks over the driven ports a landing and the queuing of its checks use, with
 /// the number of times a revert that lost the compare-and-swap on `main` is tried.
-pub struct PostLandChecks<'a, O, D, L, R, Q, C> {
-    adapters: PostLandChecksAdapters<'a, O, D, L, R, Q, C>,
+pub struct PostLandChecks {
+    adapters: PostLandChecksAdapters,
     attempts: LandingAttempts,
 }
 
-impl<'a, O, D, L, R, Q, C> PostLandChecks<'a, O, D, L, R, Q, C> {
+impl PostLandChecks {
     /// Post-land checks over `adapters`, each revert tried at most `attempts` times.
-    pub const fn new(
-        adapters: PostLandChecksAdapters<'a, O, D, L, R, Q, C>,
-        attempts: LandingAttempts,
-    ) -> Self {
+    pub const fn new(adapters: PostLandChecksAdapters, attempts: LandingAttempts) -> Self {
         Self { adapters, attempts }
     }
 }
 
-impl<O, D, L, R, Q, C> AfterLanding for PostLandChecks<'_, O, D, L, R, Q, C>
-where
-    O: ObjectStore + Sync,
-    D: DerivedData + Sync,
-    L: ChangesetLog + Sync,
-    R: RepositoryDirectory + Sync,
-    Q: JobQueue + Sync,
-    C: CheckDefinitions + Sync,
-{
+impl AfterLanding for PostLandChecks {
     /// Records the checks `landed` defines in `repository` and queues those that need nothing,
     /// unless their key passed already, or moves `last-green` to it where none blocks. Where its
     /// definitions cannot be read, the failure is recorded as a failed blocking
@@ -277,15 +267,7 @@ where
     }
 }
 
-impl<O, D, L, R, Q, C> PostLandChecks<'_, O, D, L, R, Q, C>
-where
-    O: ObjectStore + Sync,
-    D: DerivedData + Sync,
-    L: ChangesetLog + Sync,
-    R: RepositoryDirectory + Sync,
-    Q: JobQueue + Sync,
-    C: CheckDefinitions + Sync,
-{
+impl PostLandChecks {
     /// Acts on time having passed to `now`: expires the queue's jobs and, for each job that timed
     /// out, resolves the checks of its changeset that wait for it and, where it blocks, reverts the
     /// changeset with `now` as the revert's time.
@@ -369,7 +351,7 @@ where
             }
             if !settled {
                 if blocking_checks_passed(&jobs) {
-                    advance(adapters.log, repository, changeset).await?;
+                    advance(&*adapters.log, repository, changeset).await?;
                 }
                 return Ok(());
             }
@@ -387,7 +369,7 @@ where
         let adapters = &self.adapters;
         let root = adapters.derived.root(job.repository, changeset).await?;
         let dependencies =
-            match dependencies(adapters.derived, job.repository, root, &job.check, jobs).await? {
+            match dependencies(&*adapters.derived, job.repository, root, &job.check, jobs).await? {
                 Resolved::Waiting => return Ok(None),
                 Resolved::Skipped => return Ok(Some(Resolution::Skip)),
                 Resolved::Ready(dependencies) => dependencies,
@@ -423,10 +405,10 @@ where
 
         let file = adapters.definitions.file();
         let root = adapters.derived.root(repository, landed).await?;
-        let files = tree_files(adapters.derived, repository, root).await?;
+        let files = tree_files(&*adapters.derived, repository, root).await?;
         let definitions = match read_definitions(
-            adapters.objects,
-            adapters.definitions,
+            &*adapters.objects,
+            &*adapters.definitions,
             repository,
             &files,
         )
@@ -530,10 +512,10 @@ where
         let mut before = BTreeMap::new();
         let mut after = BTreeMap::new();
         for path in changeset.changes.keys() {
-            if let Some(file) = file_at(adapters.derived, repository, parent_root, path).await? {
+            if let Some(file) = file_at(&*adapters.derived, repository, parent_root, path).await? {
                 before.insert(path.clone(), file);
             }
-            if let Some(file) = file_at(adapters.derived, repository, root, path).await? {
+            if let Some(file) = file_at(&*adapters.derived, repository, root, path).await? {
                 after.insert(path.clone(), file);
             }
         }
@@ -546,9 +528,9 @@ where
         };
         let landing = Landing { message, timestamp };
         match land(
-            adapters.objects,
-            adapters.log,
-            adapters.derived,
+            &*adapters.objects,
+            &*adapters.log,
+            &*adapters.derived,
             repository,
             AUTHOR,
             staged,

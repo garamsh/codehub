@@ -53,6 +53,7 @@ fn seconds(timeout: u64) -> i64 {
     i64::try_from(timeout).unwrap_or(i64::MAX)
 }
 
+#[async_trait::async_trait]
 impl JobQueue for MemoryJobQueue {
     async fn queue(&self, jobs: Vec<NewJob>) -> Result<Vec<JobId>, JobQueueError> {
         let mut held = lock(&self.jobs);

@@ -8,8 +8,8 @@ use crate::domain::repository::RepositoryId;
 use crate::port::driven::changeset_log::{ChangesetLog, ChangesetLogError};
 
 /// Whether `candidate` is a strict first-parent descendant of `current`.
-async fn descends<L: ChangesetLog>(
-    log: &L,
+async fn descends(
+    log: &dyn ChangesetLog,
     repository: RepositoryId,
     candidate: Address,
     current: Address,
@@ -32,15 +32,14 @@ async fn descends<L: ChangesetLog>(
 /// # Errors
 ///
 /// The failure of the changeset log, or of `read` or `swap`.
-pub(crate) async fn advance_forward<L, E, R, RF, S, SF>(
-    log: &L,
+pub(crate) async fn advance_forward<E, R, RF, S, SF>(
+    log: &dyn ChangesetLog,
     repository: RepositoryId,
     candidate: Address,
     read: R,
     swap: S,
 ) -> Result<(), E>
 where
-    L: ChangesetLog,
     E: From<ChangesetLogError>,
     R: Fn() -> RF,
     RF: Future<Output = Result<Option<Address>, E>>,

@@ -4,6 +4,7 @@
 pub mod common;
 
 use std::num::NonZeroU32;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use adapter_memory::MemoryChangesetLog;
@@ -27,13 +28,14 @@ use test_support::contract::{Deployment, Repo};
 
 /// A log that loses the compare-and-swap on `main` the first `losses` times it is asked, as if
 /// another landing had moved `main` first, and counts the asks.
-struct LosingLog<'a> {
-    inner: &'a MemoryChangesetLog,
+struct LosingLog {
+    inner: Arc<MemoryChangesetLog>,
     losses: AtomicU32,
     asked: AtomicU32,
 }
 
-impl ChangesetLog for LosingLog<'_> {
+#[async_trait::async_trait]
+impl ChangesetLog for LosingLog {
     async fn append(
         &self,
         repository: RepositoryId,
@@ -101,7 +103,7 @@ async fn setup(
     Repo<'_, Harness>,
     Address,
     app::domain::job::JobId,
-    LosingLog<'_>,
+    Arc<LosingLog>,
 ) {
     let ada = harness.caller("ada").await;
     let repo = harness.repository(&ada, "acme").await;
@@ -115,31 +117,31 @@ async fn setup(
         .await
         .unwrap();
     let job = harness.jobs().claim(&bot, 0).await.unwrap().unwrap().job.id;
-    let log = LosingLog {
-        inner: &harness.log,
+    let log = Arc::new(LosingLog {
+        inner: harness.log.clone(),
         losses: AtomicU32::new(losses),
         asked: AtomicU32::new(0),
-    };
+    });
     (repo, bad, job, log)
 }
 
 #[cfg(test)]
 async fn report(
     harness: &Harness,
-    log: &LosingLog<'_>,
+    log: &Arc<LosingLog>,
     job: app::domain::job::JobId,
     attempts: u32,
 ) -> Result<(), JobsError> {
     let service = JobsService::new(
         JobsAdapters {
-            registry: &harness.registry,
-            queue: &harness.queue,
-            cache_refs: &harness.cache_refs,
-            objects: &harness.objects,
-            derived: &harness.derived,
-            log,
-            directory: &harness.directory,
-            definitions: &harness.definitions,
+            registry: harness.registry.clone(),
+            queue: harness.queue.clone(),
+            cache_refs: harness.cache_refs.clone(),
+            objects: harness.objects.clone(),
+            derived: harness.derived.clone(),
+            log: log.clone(),
+            directory: harness.directory.clone(),
+            definitions: harness.definitions.clone(),
         },
         30,
         LandingAttempts::new(NonZeroU32::new(attempts).unwrap()),

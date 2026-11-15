@@ -74,6 +74,7 @@ type Row = (
     Option<Vec<u8>>,
 );
 
+#[async_trait::async_trait]
 impl DraftStore for PostgresDraftStore {
     async fn open(
         &self,

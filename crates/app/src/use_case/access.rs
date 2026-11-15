@@ -20,8 +20,8 @@ const fn action(access: Access) -> Action {
     }
 }
 
-pub(crate) async fn allowed<A: AuthorisationDecision>(
-    authorisation: &A,
+pub(crate) async fn allowed(
+    authorisation: &dyn AuthorisationDecision,
     subject: &Principal,
     action: Action,
     resource: &Resource,
@@ -30,8 +30,8 @@ pub(crate) async fn allowed<A: AuthorisationDecision>(
 }
 
 /// Requires that `subject` may take `action` on `resource`.
-pub(crate) async fn require<A: AuthorisationDecision>(
-    authorisation: &A,
+pub(crate) async fn require(
+    authorisation: &dyn AuthorisationDecision,
     subject: &Principal,
     action: Action,
     resource: &Resource,
@@ -44,9 +44,9 @@ pub(crate) async fn require<A: AuthorisationDecision>(
 }
 
 /// The organisation holding `repository` and the name it has there, where `subject` may read it.
-pub(crate) async fn readable_repository<R: RepositoryDirectory, A: AuthorisationDecision>(
-    directory: &R,
-    authorisation: &A,
+pub(crate) async fn readable_repository(
+    directory: &dyn RepositoryDirectory,
+    authorisation: &dyn AuthorisationDecision,
     subject: &Principal,
     repository: RepositoryId,
 ) -> Result<(OrganisationName, RepositoryName), AccessError> {
@@ -68,8 +68,8 @@ pub(crate) async fn readable_repository<R: RepositoryDirectory, A: Authorisation
 
 /// Requires that `subject` holds `access` on every one of `paths` in `repository`, and names all
 /// that it does not, asking the decision port once.
-pub(crate) async fn require_paths<'p, A: AuthorisationDecision + Sync>(
-    authorisation: &A,
+pub(crate) async fn require_paths<'p>(
+    authorisation: &dyn AuthorisationDecision,
     subject: &Principal,
     organisation: &OrganisationName,
     name: &RepositoryName,

@@ -21,6 +21,7 @@ impl MemoryIdentityVerification {
     }
 }
 
+#[async_trait::async_trait]
 impl IdentityVerification for MemoryIdentityVerification {
     async fn verify(&self, credential: &Credential) -> Result<Principal, IdentityError> {
         lock(&self.principals)

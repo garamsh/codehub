@@ -60,8 +60,8 @@ where
 /// # Errors
 ///
 /// The failure of derived data.
-pub(crate) async fn tree_files<D: DerivedData>(
-    derived: &D,
+pub(crate) async fn tree_files(
+    derived: &dyn DerivedData,
     repository: RepositoryId,
     root: Address,
 ) -> Result<BTreeMap<Path, File>, DerivedDataError> {
@@ -109,10 +109,10 @@ pub(crate) enum Resolved {
 }
 
 /// Where the files of a tree come from.
-pub(crate) enum Files<'a, D> {
+pub(crate) enum Files<'a> {
     /// The changeset tree at `root` of `repository`, read through derived data.
     Landed {
-        derived: &'a D,
+        derived: &'a dyn DerivedData,
         repository: RepositoryId,
         root: Address,
     },
@@ -120,7 +120,7 @@ pub(crate) enum Files<'a, D> {
     Rebased(&'a BTreeMap<Path, File>),
 }
 
-impl<D: DerivedData> Files<'_, D> {
+impl Files<'_> {
     /// The files `check` reads, by path: a landed tree is read only below the directories its
     /// inputs can reach.
     async fn selected(
@@ -157,8 +157,8 @@ impl<D: DerivedData> Files<'_, D> {
 /// # Errors
 ///
 /// The failure of derived data.
-pub(crate) async fn resolve<D: DerivedData>(
-    files: &Files<'_, D>,
+pub(crate) async fn resolve(
+    files: &Files<'_>,
     check: &CheckDefinition,
     needs: Needs,
 ) -> Result<Resolved, DerivedDataError> {
@@ -177,8 +177,8 @@ pub(crate) async fn resolve<D: DerivedData>(
 /// # Errors
 ///
 /// The failure of derived data.
-pub(crate) async fn dependencies<D: DerivedData>(
-    derived: &D,
+pub(crate) async fn dependencies(
+    derived: &dyn DerivedData,
     repository: RepositoryId,
     root: Address,
     check: &CheckDefinition,
@@ -222,16 +222,12 @@ pub(crate) struct Unreadable {
 /// [`DefinitionsError::Objects`] where a check file cannot be fetched, and
 /// [`DefinitionsError::Unreadable`] where one cannot be parsed or the checks name each other
 /// wrongly.
-pub(crate) async fn read_definitions<O, C>(
-    objects: &O,
-    reader: &C,
+pub(crate) async fn read_definitions(
+    objects: &dyn ObjectStore,
+    reader: &dyn CheckDefinitions,
     repository: RepositoryId,
     files: &BTreeMap<Path, File>,
-) -> Result<Vec<CheckDefinition>, DefinitionsError>
-where
-    O: ObjectStore,
-    C: CheckDefinitions,
-{
+) -> Result<Vec<CheckDefinition>, DefinitionsError> {
     let file = reader.file();
     let mut found: BTreeMap<Prefix, Address> = BTreeMap::new();
     for (path, found_file) in files {

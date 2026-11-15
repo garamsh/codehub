@@ -57,6 +57,7 @@ const fn ref_name(name: Ref) -> &'static str {
     }
 }
 
+#[async_trait::async_trait]
 impl ChangesetLog for PostgresChangesetLog {
     async fn append(
         &self,

@@ -247,9 +247,9 @@ pub async fn landing_removes_the_draft<H: Deployment>() {
     let bob = harness.caller("bob").await;
     MembersService::new(
         MembersAdapters {
-            directory: harness.directory(),
-            authorisation: harness.authorisation(),
-            membership: harness.membership(),
+            directory: harness.directory().clone(),
+            authorisation: harness.authorisation().clone(),
+            membership: harness.membership().clone(),
         },
         Administration::BuiltIn,
     )

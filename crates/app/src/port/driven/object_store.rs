@@ -29,50 +29,51 @@ pub struct Grant {
 }
 
 /// Holds each repository's blobs, each under the address of its bytes.
-pub trait ObjectStore {
+#[async_trait::async_trait]
+pub trait ObjectStore: Send + Sync {
     /// Stores `bytes` and returns their address.
     ///
     /// # Errors
     ///
     /// The store's [`ObjectStoreError`].
-    fn put(
+    async fn put(
         &self,
         repository: RepositoryId,
         bytes: Vec<u8>,
-    ) -> impl Future<Output = Result<Address, ObjectStoreError>> + Send;
+    ) -> Result<Address, ObjectStoreError>;
 
     /// The bytes stored under `address`.
     ///
     /// # Errors
     ///
     /// [`ObjectStoreError::NotFound`] where nothing is stored under `address`.
-    fn get(
+    async fn get(
         &self,
         repository: RepositoryId,
         address: Address,
-    ) -> impl Future<Output = Result<Vec<u8>, ObjectStoreError>> + Send;
+    ) -> Result<Vec<u8>, ObjectStoreError>;
 
     /// The size in bytes of the object stored under `address`, answered without its bytes.
     ///
     /// # Errors
     ///
     /// [`ObjectStoreError::NotFound`] where nothing is stored under `address`.
-    fn size(
+    async fn size(
         &self,
         repository: RepositoryId,
         address: Address,
-    ) -> impl Future<Output = Result<u64, ObjectStoreError>> + Send;
+    ) -> Result<u64, ObjectStoreError>;
 
     /// Whether an object is stored under `address`.
     ///
     /// # Errors
     ///
     /// The store's [`ObjectStoreError`].
-    fn exists(
+    async fn exists(
         &self,
         repository: RepositoryId,
         address: Address,
-    ) -> impl Future<Output = Result<bool, ObjectStoreError>> + Send;
+    ) -> Result<bool, ObjectStoreError>;
 
     /// A grant to upload the `size` bytes stored under `address`. The store takes bytes only of
     /// that size.
@@ -80,23 +81,23 @@ pub trait ObjectStore {
     /// # Errors
     ///
     /// The store's [`ObjectStoreError`].
-    fn upload_grant(
+    async fn upload_grant(
         &self,
         repository: RepositoryId,
         address: Address,
         size: u64,
-    ) -> impl Future<Output = Result<Grant, ObjectStoreError>> + Send;
+    ) -> Result<Grant, ObjectStoreError>;
 
     /// A grant to download the bytes stored under `address`. It does not check that they exist.
     ///
     /// # Errors
     ///
     /// The store's [`ObjectStoreError`].
-    fn download_grant(
+    async fn download_grant(
         &self,
         repository: RepositoryId,
         address: Address,
-    ) -> impl Future<Output = Result<Grant, ObjectStoreError>> + Send;
+    ) -> Result<Grant, ObjectStoreError>;
 }
 
 /// Why the object store did not answer.

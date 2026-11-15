@@ -38,21 +38,16 @@ use crate::use_case::read_file::file_at;
     clippy::too_many_arguments,
     reason = "the two callers each pass the ports and the landing once; a parameter struct would be built for one call"
 )]
-pub async fn land<O, L, D>(
-    objects: &O,
-    log: &L,
-    derived: &D,
+pub async fn land(
+    objects: &dyn ObjectStore,
+    log: &dyn ChangesetLog,
+    derived: &dyn DerivedData,
     repository: RepositoryId,
     author: &(impl Display + ?Sized),
     staged: Draft,
     landing: Landing,
     attempts: LandingAttempts,
-) -> Result<Address, LandError>
-where
-    O: ObjectStore,
-    L: ChangesetLog,
-    D: DerivedData,
-{
+) -> Result<Address, LandError> {
     let mut moved = LandError::MainMoved { current: None };
     for _ in 0..attempts.get() {
         match attempt(objects, log, derived, repository, author, &staged, &landing).await {
@@ -64,20 +59,15 @@ where
 }
 
 /// One try at landing `staged`: rebase onto `main` as read now, append, and swap.
-async fn attempt<O, L, D>(
-    objects: &O,
-    log: &L,
-    derived: &D,
+async fn attempt(
+    objects: &dyn ObjectStore,
+    log: &dyn ChangesetLog,
+    derived: &dyn DerivedData,
     repository: RepositoryId,
     author: &(impl Display + ?Sized),
     staged: &Draft,
     landing: &Landing,
-) -> Result<Address, LandError>
-where
-    O: ObjectStore,
-    L: ChangesetLog,
-    D: DerivedData,
-{
+) -> Result<Address, LandError> {
     let main = log.read_ref(repository, Ref::Main).await?;
     let changes = rebase(
         objects,
@@ -116,10 +106,10 @@ where
 
 /// The landing's delta against `main`: unchanged where no path overlaps what `main` changed since
 /// `base`, and merged where paths overlap.
-pub(crate) async fn rebase<O: ObjectStore, L: ChangesetLog, D: DerivedData>(
-    objects: &O,
-    log: &L,
-    derived: &D,
+pub(crate) async fn rebase(
+    objects: &dyn ObjectStore,
+    log: &dyn ChangesetLog,
+    derived: &dyn DerivedData,
     repository: RepositoryId,
     base: Option<Address>,
     main: Option<Address>,
@@ -174,8 +164,8 @@ pub(crate) async fn rebase<O: ObjectStore, L: ChangesetLog, D: DerivedData>(
 
 /// What the changesets from `base`, exclusive, to `main`, inclusive, changed, following first
 /// parents; a later change to a path replaces an earlier one.
-async fn delta_since<L: ChangesetLog>(
-    log: &L,
+async fn delta_since(
+    log: &dyn ChangesetLog,
     repository: RepositoryId,
     base: Option<Address>,
     main: Option<Address>,
@@ -197,8 +187,8 @@ async fn delta_since<L: ChangesetLog>(
     Ok(delta)
 }
 
-async fn version<O: ObjectStore>(
-    objects: &O,
+async fn version(
+    objects: &dyn ObjectStore,
     repository: RepositoryId,
     file: File,
 ) -> Result<FileVersion, LandError> {
@@ -208,8 +198,8 @@ async fn version<O: ObjectStore>(
     })
 }
 
-async fn merge_change<O: ObjectStore>(
-    objects: &O,
+async fn merge_change(
+    objects: &dyn ObjectStore,
     repository: RepositoryId,
     change: Change,
 ) -> Result<merge::Change, LandError> {
@@ -220,8 +210,8 @@ async fn merge_change<O: ObjectStore>(
 }
 
 /// A merged change as a delta records it, its content stored in the object store.
-async fn stored<O: ObjectStore>(
-    objects: &O,
+async fn stored(
+    objects: &dyn ObjectStore,
     repository: RepositoryId,
     change: merge::Change,
 ) -> Result<Change, LandError> {
@@ -235,8 +225,8 @@ async fn stored<O: ObjectStore>(
 }
 
 /// Derives `changeset`'s trees, loading each tree the derivation asks for.
-async fn derive_trees<D: DerivedData>(
-    derived: &D,
+async fn derive_trees(
+    derived: &dyn DerivedData,
     repository: RepositoryId,
     changeset: &Changeset,
 ) -> Result<Step<Address, Tree>, LandError> {

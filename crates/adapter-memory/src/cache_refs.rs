@@ -15,6 +15,7 @@ pub struct MemoryCacheRefs {
     refs: Mutex<BTreeMap<(RepositoryId, Prefix, Path), CacheRef>>,
 }
 
+#[async_trait::async_trait]
 impl CacheRefs for MemoryCacheRefs {
     async fn cache_ref(
         &self,

@@ -2,6 +2,7 @@
 //! store, derived data and the changeset log it is given.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::domain::address::Address;
 use crate::domain::changeset::Change;
@@ -30,46 +31,42 @@ use crate::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
 use crate::use_case::tree_checks::{Resolved, dependencies, walk_files};
 
 /// The driven ports the jobs are built over.
-pub struct JobsAdapters<'a, G, Q, F, O, D, L, R, C> {
+pub struct JobsAdapters {
     /// Finds the callers' registrations.
-    pub registry: &'a G,
+    pub registry: Arc<dyn RunnerRegistry>,
     /// Holds the jobs.
-    pub queue: &'a Q,
+    pub queue: Arc<dyn JobQueue>,
     /// Holds the cache refs.
-    pub cache_refs: &'a F,
+    pub cache_refs: Arc<dyn CacheRefs>,
     /// Stores blobs.
-    pub objects: &'a O,
+    pub objects: Arc<dyn ObjectStore>,
     /// Stores derived data.
-    pub derived: &'a D,
+    pub derived: Arc<dyn DerivedData>,
     /// Stores changesets and `last-green`.
-    pub log: &'a L,
+    pub log: Arc<dyn ChangesetLog>,
     /// Finds a repository's organisation.
-    pub directory: &'a R,
+    pub directory: Arc<dyn RepositoryDirectory>,
     /// Reads the check definitions.
-    pub definitions: &'a C,
+    pub definitions: Arc<dyn CheckDefinitions>,
 }
 
 /// Jobs served to registered runners, each claim holding its job for `lease` seconds. A blocking
 /// job that ends in failure or in a timeout has its changeset reverted.
-pub struct JobsService<'a, G, Q, F, O, D, L, R, C> {
-    registry: &'a G,
-    queue: &'a Q,
-    cache_refs: &'a F,
-    objects: &'a O,
-    derived: &'a D,
-    log: &'a L,
-    checks: PostLandChecks<'a, O, D, L, R, Q, C>,
+pub struct JobsService {
+    registry: Arc<dyn RunnerRegistry>,
+    queue: Arc<dyn JobQueue>,
+    cache_refs: Arc<dyn CacheRefs>,
+    objects: Arc<dyn ObjectStore>,
+    derived: Arc<dyn DerivedData>,
+    log: Arc<dyn ChangesetLog>,
+    checks: PostLandChecks,
     lease: i64,
 }
 
-impl<'a, G, Q, F, O, D, L, R, C> JobsService<'a, G, Q, F, O, D, L, R, C> {
+impl JobsService {
     /// Jobs over `adapters`, where a claim or a heartbeat holds a job for `lease` seconds and each
     /// revert is tried at most `attempts` times.
-    pub const fn new(
-        adapters: JobsAdapters<'a, G, Q, F, O, D, L, R, C>,
-        lease: i64,
-        attempts: LandingAttempts,
-    ) -> Self {
+    pub fn new(adapters: JobsAdapters, lease: i64, attempts: LandingAttempts) -> Self {
         let JobsAdapters {
             registry,
             queue,
@@ -82,11 +79,11 @@ impl<'a, G, Q, F, O, D, L, R, C> JobsService<'a, G, Q, F, O, D, L, R, C> {
         } = adapters;
         Self {
             registry,
-            queue,
+            queue: Arc::clone(&queue),
             cache_refs,
-            objects,
-            derived,
-            log,
+            objects: Arc::clone(&objects),
+            derived: Arc::clone(&derived),
+            log: Arc::clone(&log),
             checks: PostLandChecks::new(
                 PostLandChecksAdapters {
                     objects,
@@ -103,10 +100,7 @@ impl<'a, G, Q, F, O, D, L, R, C> JobsService<'a, G, Q, F, O, D, L, R, C> {
     }
 }
 
-impl<G, Q, F, O, D, L, R, C> JobsService<'_, G, Q, F, O, D, L, R, C>
-where
-    G: RunnerRegistry + Sync,
-{
+impl JobsService {
     /// The registrations of `principal`, which are at least one.
     async fn registrations(&self, principal: &Principal) -> Result<Vec<Registration>, JobsError> {
         let registrations = self.registry.of_principal(principal).await?;
@@ -140,14 +134,7 @@ fn covered(produced: &[ProducedFile], prefixes: &[Prefix]) -> BTreeMap<Path, Fil
         .collect()
 }
 
-impl<G, Q, F, O, D, L, R, C> JobsService<'_, G, Q, F, O, D, L, R, C>
-where
-    Q: JobQueue + Sync,
-    F: CacheRefs + Sync,
-    O: ObjectStore + Sync,
-    D: DerivedData + Sync,
-    L: ChangesetLog + Sync,
-{
+impl JobsService {
     /// Every file of the output or cache tree at `root`, a blob in the object store, by its path
     /// from the root.
     async fn walk(
@@ -194,7 +181,7 @@ where
         // A claimed job's needs have passed, so it is ready; a job that is not grants only its
         // caches.
         if let Resolved::Ready(dependencies) =
-            dependencies(self.derived, job.repository, root, &job.check, &jobs).await?
+            dependencies(&*self.derived, job.repository, root, &job.check, &jobs).await?
         {
             for (_, output) in dependencies.needed {
                 granted.extend(self.walk(job.repository, output).await?);
@@ -268,9 +255,9 @@ where
                 .filter_map(|(file, content)| Some((relative(&prefix, file)?, *content)))
                 .collect();
             let tree = self.store_tree(job.repository, files).await?;
-            advance::<_, _, JobsError>(
-                self.cache_refs,
-                self.log,
+            advance::<JobsError>(
+                &*self.cache_refs,
+                &*self.log,
                 job.repository,
                 &job.check.folder,
                 path,
@@ -290,17 +277,8 @@ fn ids(registrations: &[Registration]) -> Vec<RegistrationId> {
         .collect()
 }
 
-impl<G, Q, F, O, D, L, R, C> Jobs for JobsService<'_, G, Q, F, O, D, L, R, C>
-where
-    G: RunnerRegistry + Sync,
-    Q: JobQueue + Sync,
-    F: CacheRefs + Sync,
-    O: ObjectStore + Sync,
-    D: DerivedData + Sync,
-    L: ChangesetLog + Sync,
-    R: RepositoryDirectory + Sync,
-    C: CheckDefinitions + Sync,
-{
+#[async_trait::async_trait]
+impl Jobs for JobsService {
     async fn claim(&self, caller: &Caller, now: i64) -> Result<Option<Claimed>, JobsError> {
         let registrations = self.registrations(caller.principal()).await?;
         self.checks.expire(now).await?;

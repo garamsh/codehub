@@ -7,17 +7,15 @@ use crate::domain::principal::Caller;
 use crate::port::driven::identity_verification::IdentityError;
 
 /// What the outside asks to establish who is calling.
-pub trait Authentication {
+#[async_trait::async_trait]
+pub trait Authentication: Send + Sync {
     /// The caller `credential` identifies.
     ///
     /// # Errors
     ///
     /// [`AuthenticationError::Identity`] with [`IdentityError::Rejected`] where the credential
     /// does not identify anyone.
-    fn authenticate(
-        &self,
-        credential: &Credential,
-    ) -> impl Future<Output = Result<Caller, AuthenticationError>> + Send;
+    async fn authenticate(&self, credential: &Credential) -> Result<Caller, AuthenticationError>;
 }
 
 /// Why no caller was established.

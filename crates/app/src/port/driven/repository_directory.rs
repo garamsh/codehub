@@ -7,16 +7,14 @@ use crate::domain::name::{OrganisationName, RepositoryName};
 use crate::domain::repository::RepositoryId;
 
 /// Holds the organisations and their repositories.
-pub trait RepositoryDirectory {
+#[async_trait::async_trait]
+pub trait RepositoryDirectory: Send + Sync {
     /// Creates the organisation `name`.
     ///
     /// # Errors
     ///
     /// [`DirectoryError::OrganisationExists`] where `name` is taken.
-    fn create_organisation(
-        &self,
-        name: &OrganisationName,
-    ) -> impl Future<Output = Result<(), DirectoryError>> + Send;
+    async fn create_organisation(&self, name: &OrganisationName) -> Result<(), DirectoryError>;
 
     /// Creates the repository `repository` in `organisation` and returns its identifier.
     ///
@@ -24,22 +22,22 @@ pub trait RepositoryDirectory {
     ///
     /// [`DirectoryError::OrganisationNotFound`] where `organisation` does not exist, and
     /// [`DirectoryError::RepositoryExists`] where it already holds a repository of that name.
-    fn create_repository(
+    async fn create_repository(
         &self,
         organisation: &OrganisationName,
         repository: &RepositoryName,
-    ) -> impl Future<Output = Result<RepositoryId, DirectoryError>> + Send;
+    ) -> Result<RepositoryId, DirectoryError>;
 
     /// The identifier of the repository `organisation`/`repository`.
     ///
     /// # Errors
     ///
     /// [`DirectoryError::RepositoryNotFound`] where there is no such repository.
-    fn find_repository(
+    async fn find_repository(
         &self,
         organisation: &OrganisationName,
         repository: &RepositoryName,
-    ) -> impl Future<Output = Result<RepositoryId, DirectoryError>> + Send;
+    ) -> Result<RepositoryId, DirectoryError>;
 
     /// The organisation holding `repository` and the name it has there; `None` where no
     /// repository has this identifier.
@@ -47,10 +45,10 @@ pub trait RepositoryDirectory {
     /// # Errors
     ///
     /// The directory's [`DirectoryError`].
-    fn names_of(
+    async fn names_of(
         &self,
         repository: RepositoryId,
-    ) -> impl Future<Output = Result<Option<(OrganisationName, RepositoryName)>, DirectoryError>> + Send;
+    ) -> Result<Option<(OrganisationName, RepositoryName)>, DirectoryError>;
 }
 
 /// Why the directory refused or did not answer.

@@ -19,6 +19,7 @@ pub struct MemoryRunnerRegistry {
     registrations: Mutex<Registrations>,
 }
 
+#[async_trait::async_trait]
 impl RunnerRegistry for MemoryRunnerRegistry {
     async fn register(
         &self,

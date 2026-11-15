@@ -37,8 +37,8 @@ impl Changed<'_> {
 
 /// The paths `draft` changes, in path order, each with its status against the draft's base. A path
 /// whose change leaves the base's file as it is is left out.
-pub(crate) async fn changed<'a, D: DerivedData>(
-    derived: &D,
+pub(crate) async fn changed<'a>(
+    derived: &dyn DerivedData,
     repository: RepositoryId,
     draft: &'a Draft,
 ) -> Result<Vec<Changed<'a>>, DerivedDataError> {
@@ -63,8 +63,8 @@ pub(crate) async fn changed<'a, D: DerivedData>(
 
 /// `draft` as a workspace listing `changed`, each added or modified path with a grant to download
 /// its content.
-pub(crate) async fn workspace<O: ObjectStore>(
-    objects: &O,
+pub(crate) async fn workspace(
+    objects: &dyn ObjectStore,
     repository: RepositoryId,
     draft: &Draft,
     changed: &[Changed<'_>],
@@ -90,8 +90,8 @@ pub(crate) async fn workspace<O: ObjectStore>(
 }
 
 /// The difference from the base to the draft of each of `changed`.
-pub(crate) async fn diffs<O: ObjectStore>(
-    objects: &O,
+pub(crate) async fn diffs(
+    objects: &dyn ObjectStore,
     repository: RepositoryId,
     changed: &[Changed<'_>],
 ) -> Result<Vec<PathDiff>, WorkspaceError> {
@@ -112,8 +112,8 @@ pub(crate) async fn diffs<O: ObjectStore>(
     Ok(diffs)
 }
 
-async fn content<O: ObjectStore>(
-    objects: &O,
+async fn content(
+    objects: &dyn ObjectStore,
     repository: RepositoryId,
     file: Option<File>,
 ) -> Result<Option<(FileKind, Vec<u8>)>, WorkspaceError> {
@@ -134,8 +134,8 @@ fn side(content: &Option<(FileKind, Vec<u8>)>) -> Side<'_> {
 
 /// Requires that every file `edits` records is in `repository`'s object store, so that a snapshot
 /// applies whole or not at all.
-pub(crate) async fn require_uploaded<O: ObjectStore>(
-    objects: &O,
+pub(crate) async fn require_uploaded(
+    objects: &dyn ObjectStore,
     repository: RepositoryId,
     edits: &BTreeMap<Path, Edit>,
 ) -> Result<(), WorkspaceError> {

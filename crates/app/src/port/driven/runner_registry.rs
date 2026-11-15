@@ -7,47 +7,48 @@ use crate::domain::principal::Principal;
 use crate::domain::runner::{NewRegistration, Registration, RegistrationId};
 
 /// Holds the registrations. A principal may hold several.
-pub trait RunnerRegistry {
+#[async_trait::async_trait]
+pub trait RunnerRegistry: Send + Sync {
     /// Records `registration` and returns its identifier.
     ///
     /// # Errors
     ///
     /// [`RunnerRegistryError::Backend`] where the registry fails.
-    fn register(
+    async fn register(
         &self,
         registration: NewRegistration,
-    ) -> impl Future<Output = Result<RegistrationId, RunnerRegistryError>> + Send;
+    ) -> Result<RegistrationId, RunnerRegistryError>;
 
     /// Removes the registration `id` of `organisation`.
     ///
     /// # Errors
     ///
     /// [`RunnerRegistryError::NotFound`] where `organisation` has no such registration.
-    fn remove(
+    async fn remove(
         &self,
         organisation: &OrganisationName,
         id: RegistrationId,
-    ) -> impl Future<Output = Result<(), RunnerRegistryError>> + Send;
+    ) -> Result<(), RunnerRegistryError>;
 
     /// The registrations of `organisation`, oldest first.
     ///
     /// # Errors
     ///
     /// [`RunnerRegistryError::Backend`] where the registry fails.
-    fn list(
+    async fn list(
         &self,
         organisation: &OrganisationName,
-    ) -> impl Future<Output = Result<Vec<Registration>, RunnerRegistryError>> + Send;
+    ) -> Result<Vec<Registration>, RunnerRegistryError>;
 
     /// The registrations of `principal` in every organisation, oldest first.
     ///
     /// # Errors
     ///
     /// [`RunnerRegistryError::Backend`] where the registry fails.
-    fn of_principal(
+    async fn of_principal(
         &self,
         principal: &Principal,
-    ) -> impl Future<Output = Result<Vec<Registration>, RunnerRegistryError>> + Send;
+    ) -> Result<Vec<Registration>, RunnerRegistryError>;
 }
 
 /// Why the runner registry refused or did not answer.

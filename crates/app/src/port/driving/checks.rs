@@ -19,20 +19,21 @@ use crate::port::driving::revert::RevertError;
 use crate::port::driving::source_control::LandError;
 
 /// What the outside asks of a repository's checks.
-pub trait Checks {
+#[async_trait::async_trait]
+pub trait Checks: Send + Sync {
     /// The jobs of `changeset` in `repository`, oldest first, as they stand at `now` in seconds
     /// since 1970-01-01T00:00:00Z.
     ///
     /// # Errors
     ///
     /// [`ChecksError::Access`] where `repository` does not exist or `caller` holds no read on it.
-    fn jobs_of(
+    async fn jobs_of(
         &self,
         caller: &Caller,
         repository: RepositoryId,
         changeset: Address,
         now: i64,
-    ) -> impl Future<Output = Result<Vec<Job>, ChecksError>> + Send;
+    ) -> Result<Vec<Job>, ChecksError>;
 
     /// The changeset the ref `name` points at, `main` or `last-green`; `None` before it is first
     /// set.
@@ -40,12 +41,12 @@ pub trait Checks {
     /// # Errors
     ///
     /// [`ChecksError::Access`] where `repository` does not exist or `caller` holds no read on it.
-    fn reference(
+    async fn reference(
         &self,
         caller: &Caller,
         repository: RepositoryId,
         name: Ref,
-    ) -> impl Future<Output = Result<Option<Address>, ChecksError>> + Send;
+    ) -> Result<Option<Address>, ChecksError>;
 
     /// Cancels `job` of `repository`, queued or running, and returns it as it now stands.
     ///
@@ -55,12 +56,12 @@ pub trait Checks {
     /// runners of its organisation, and [`ChecksError::Queue`] with [`JobQueueError::NotFound`]
     /// where the organisation has no such job, or [`JobQueueError::Finished`] where it has
     /// ended.
-    fn cancel(
+    async fn cancel(
         &self,
         caller: &Caller,
         repository: RepositoryId,
         job: JobId,
-    ) -> impl Future<Output = Result<Job, ChecksError>> + Send;
+    ) -> Result<Job, ChecksError>;
 
     /// The plan of the caller's draft `draft` in `repository`: every check its tree would define,
     /// in `needs` order, each either run or taken from the cache, with keys computed against the
@@ -71,12 +72,12 @@ pub trait Checks {
     /// [`ChecksError::Access`] where `repository` does not exist or `caller` holds no read on it,
     /// and [`ChecksError::Plan`] where the caller holds no such draft, the draft conflicts with
     /// `main`, or the definitions it would land cannot be read.
-    fn plan(
+    async fn plan(
         &self,
         caller: &Caller,
         repository: RepositoryId,
         draft: &DraftName,
-    ) -> impl Future<Output = Result<Plan, ChecksError>> + Send;
+    ) -> Result<Plan, ChecksError>;
 }
 
 /// What landing a draft now would do about each check, in `needs` order.

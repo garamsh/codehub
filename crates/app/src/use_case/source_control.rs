@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::sync::Arc;
 
 use crate::domain::address::Address;
 use crate::domain::changeset::Change;
@@ -36,23 +37,23 @@ use crate::use_case::upload::request_upload;
 use crate::use_case::workspace::{changed, diffs, require_uploaded, workspace};
 
 /// The driven ports source control is built over.
-pub struct SourceControlAdapters<'a, O, L, D, S, R, A> {
+pub struct SourceControlAdapters {
     /// Stores blobs.
-    pub objects: &'a O,
+    pub objects: Arc<dyn ObjectStore>,
     /// Stores changesets and `main`.
-    pub log: &'a L,
+    pub log: Arc<dyn ChangesetLog>,
     /// Stores derived data.
-    pub derived: &'a D,
+    pub derived: Arc<dyn DerivedData>,
     /// Stores drafts.
-    pub drafts: &'a S,
+    pub drafts: Arc<dyn DraftStore>,
     /// Finds a repository's organisation.
-    pub directory: &'a R,
+    pub directory: Arc<dyn RepositoryDirectory>,
     /// Says what callers may do.
-    pub authorisation: &'a A,
+    pub authorisation: Arc<dyn AuthorisationDecision>,
 }
 
 /// What happens after a changeset has landed on `main`.
-pub trait AfterLanding {
+pub trait AfterLanding: Send + Sync {
     /// Acts on `landed` having landed in `repository`, with `timestamp` as the time of anything
     /// it records.
     ///
@@ -85,13 +86,13 @@ impl AfterLanding for NoAfterLanding {
 
 /// Source control over the driven ports the composition site passes to it, running `P` after
 /// each landing.
-pub struct SourceControlService<'a, O, L, D, S, R, A, P = NoAfterLanding> {
-    objects: &'a O,
-    log: &'a L,
-    derived: &'a D,
-    drafts: &'a S,
-    directory: &'a R,
-    authorisation: &'a A,
+pub struct SourceControlService<P = NoAfterLanding> {
+    objects: Arc<dyn ObjectStore>,
+    log: Arc<dyn ChangesetLog>,
+    derived: Arc<dyn DerivedData>,
+    drafts: Arc<dyn DraftStore>,
+    directory: Arc<dyn RepositoryDirectory>,
+    authorisation: Arc<dyn AuthorisationDecision>,
     max_upload_size: u64,
     attempts: LandingAttempts,
     after_landing: P,
@@ -100,14 +101,11 @@ pub struct SourceControlService<'a, O, L, D, S, R, A, P = NoAfterLanding> {
     gates: LandingGates,
 }
 
-impl<'a, O, L, D, S, R, A> SourceControlService<'a, O, L, D, S, R, A> {
+impl SourceControlService {
     /// Source control over `adapters` that grants uploads of at most `max_upload_size` bytes,
     /// tries each landing as often as [`LandingAttempts::default`] says and does nothing after
     /// a landing.
-    pub fn new(
-        adapters: SourceControlAdapters<'a, O, L, D, S, R, A>,
-        max_upload_size: u64,
-    ) -> Self {
+    pub fn new(adapters: SourceControlAdapters, max_upload_size: u64) -> Self {
         let SourceControlAdapters {
             objects,
             log,
@@ -131,7 +129,7 @@ impl<'a, O, L, D, S, R, A> SourceControlService<'a, O, L, D, S, R, A> {
     }
 }
 
-impl<'a, O, L, D, S, R, A, P> SourceControlService<'a, O, L, D, S, R, A, P> {
+impl<P> SourceControlService<P> {
     /// This source control with each landing that lost the compare-and-swap on `main` tried at
     /// most `attempts` times.
     #[must_use]
@@ -141,10 +139,7 @@ impl<'a, O, L, D, S, R, A, P> SourceControlService<'a, O, L, D, S, R, A, P> {
 
     /// This source control running `after_landing` after each landing.
     #[must_use]
-    pub fn with_after_landing<N>(
-        self,
-        after_landing: N,
-    ) -> SourceControlService<'a, O, L, D, S, R, A, N> {
+    pub fn with_after_landing<N>(self, after_landing: N) -> SourceControlService<N> {
         let Self {
             objects,
             log,
@@ -172,11 +167,7 @@ impl<'a, O, L, D, S, R, A, P> SourceControlService<'a, O, L, D, S, R, A, P> {
     }
 }
 
-impl<O, L, D, S, R, A, P> SourceControlService<'_, O, L, D, S, R, A, P>
-where
-    R: RepositoryDirectory + Sync,
-    A: AuthorisationDecision + Sync,
-{
+impl<P> SourceControlService<P> {
     /// The organisation of `repository` and its name there, where `caller` may read it.
     async fn names(
         &self,
@@ -184,8 +175,8 @@ where
         repository: RepositoryId,
     ) -> Result<(OrganisationName, RepositoryName), AccessError> {
         readable_repository(
-            self.directory,
-            self.authorisation,
+            &*self.directory,
+            &*self.authorisation,
             caller.principal(),
             repository,
         )
@@ -202,7 +193,7 @@ where
     ) -> Result<(), AccessError> {
         let (organisation, name) = self.names(caller, repository).await?;
         require_paths(
-            self.authorisation,
+            &*self.authorisation,
             caller.principal(),
             &organisation,
             &name,
@@ -214,13 +205,7 @@ where
     }
 }
 
-impl<O, L, D, S, R, A, P> SourceControlService<'_, O, L, D, S, R, A, P>
-where
-    O: ObjectStore + Sync,
-    D: DerivedData + Sync,
-    R: RepositoryDirectory + Sync,
-    A: AuthorisationDecision + Sync,
-{
+impl<P> SourceControlService<P> {
     /// `draft` as a workspace, where `caller` may read every path it changes.
     async fn read_workspace(
         &self,
@@ -230,11 +215,11 @@ where
         name: &RepositoryName,
         draft: &Draft,
     ) -> Result<Workspace, SourceControlError> {
-        let changed = changed(self.derived, repository, draft)
+        let changed = changed(&*self.derived, repository, draft)
             .await
             .map_err(WorkspaceError::from)?;
         require_paths(
-            self.authorisation,
+            &*self.authorisation,
             caller.principal(),
             organisation,
             name,
@@ -243,7 +228,7 @@ where
             changed.iter().map(|one| one.path),
         )
         .await?;
-        Ok(workspace(self.objects, repository, draft, &changed).await?)
+        Ok(workspace(&*self.objects, repository, draft, &changed).await?)
     }
 }
 
@@ -254,16 +239,8 @@ fn draft_id(caller: &Caller, draft: &DraftName) -> DraftId {
     }
 }
 
-impl<O, L, D, S, R, A, P> SourceControl for SourceControlService<'_, O, L, D, S, R, A, P>
-where
-    O: ObjectStore + Sync,
-    L: ChangesetLog + Sync,
-    D: DerivedData + Sync,
-    S: DraftStore + Sync,
-    R: RepositoryDirectory + Sync,
-    A: AuthorisationDecision + Sync,
-    P: AfterLanding + Sync,
-{
+#[async_trait::async_trait]
+impl<P: AfterLanding> SourceControl for SourceControlService<P> {
     async fn request_upload(
         &self,
         caller: &Caller,
@@ -273,7 +250,7 @@ where
     ) -> Result<Grant, SourceControlError> {
         let (organisation, name) = self.names(caller, repository).await?;
         require(
-            self.authorisation,
+            &*self.authorisation,
             caller.principal(),
             Action::Write,
             &Resource::Repository {
@@ -284,7 +261,7 @@ where
         )
         .await?;
         Ok(request_upload(
-            self.objects,
+            &*self.objects,
             repository,
             address,
             size,
@@ -304,7 +281,7 @@ where
         self.require_path(caller, repository, Access::Write, &path)
             .await?;
         let edits = BTreeMap::from([(path, Edit::Record(change))]);
-        require_uploaded(self.objects, repository, &edits).await?;
+        require_uploaded(&*self.objects, repository, &edits).await?;
         let draft = draft_id(caller, draft);
         let base = self
             .log
@@ -330,7 +307,7 @@ where
     ) -> Result<Workspace, SourceControlError> {
         let (organisation, name) = self.names(caller, repository).await?;
         require(
-            self.authorisation,
+            &*self.authorisation,
             caller.principal(),
             Action::Write,
             &Resource::Repository {
@@ -379,7 +356,7 @@ where
     ) -> Result<(), SourceControlError> {
         let (organisation, name) = self.names(caller, repository).await?;
         require(
-            self.authorisation,
+            &*self.authorisation,
             caller.principal(),
             Action::Write,
             &Resource::Repository {
@@ -405,7 +382,7 @@ where
     ) -> Result<(), SourceControlError> {
         let (organisation, name) = self.names(caller, repository).await?;
         require_paths(
-            self.authorisation,
+            &*self.authorisation,
             caller.principal(),
             &organisation,
             &name,
@@ -414,7 +391,7 @@ where
             edits.keys(),
         )
         .await?;
-        require_uploaded(self.objects, repository, &edits).await?;
+        require_uploaded(&*self.objects, repository, &edits).await?;
         self.drafts
             .record(repository, &draft_id(caller, draft), edits)
             .await
@@ -455,12 +432,12 @@ where
             .get(repository, &draft_id(caller, draft))
             .await
             .map_err(WorkspaceError::from)?;
-        let mut changed = changed(self.derived, repository, &held)
+        let mut changed = changed(&*self.derived, repository, &held)
             .await
             .map_err(WorkspaceError::from)?;
         changed.retain(|one| path.is_none_or(|wanted| one.path == wanted));
         require_paths(
-            self.authorisation,
+            &*self.authorisation,
             caller.principal(),
             &organisation,
             &name,
@@ -469,7 +446,7 @@ where
             changed.iter().map(|one| one.path),
         )
         .await?;
-        Ok(diffs(self.objects, repository, &changed).await?)
+        Ok(diffs(&*self.objects, repository, &changed).await?)
     }
 
     async fn list_files(
@@ -485,11 +462,11 @@ where
             .root(repository, changeset)
             .await
             .map_err(ListFilesError::from)?;
-        let files = files_under(self.derived, repository, root, prefix)
+        let files = files_under(&*self.derived, repository, root, prefix)
             .await
             .map_err(ListFilesError::from)?;
         require_paths(
-            self.authorisation,
+            &*self.authorisation,
             caller.principal(),
             &organisation,
             &name,
@@ -529,7 +506,7 @@ where
             .await
             .map_err(LandError::from)?;
         require_paths(
-            self.authorisation,
+            &*self.authorisation,
             caller.principal(),
             &organisation,
             &name,
@@ -551,9 +528,9 @@ where
         let arrival = self.gates.reach(repository);
         let _one_at_a_time = arrival.pass().await;
         let landed = land(
-            self.objects,
-            self.log,
-            self.derived,
+            &*self.objects,
+            &*self.log,
+            &*self.derived,
             repository,
             caller.principal(),
             staged,
@@ -583,7 +560,7 @@ where
     ) -> Result<FileContent, SourceControlError> {
         self.require_path(caller, repository, Access::Read, path)
             .await?;
-        Ok(read_file(self.objects, self.log, self.derived, repository, path).await?)
+        Ok(read_file(&*self.objects, &*self.log, &*self.derived, repository, path).await?)
     }
 
     async fn history(
@@ -595,6 +572,6 @@ where
     ) -> Result<Vec<Version>, SourceControlError> {
         self.require_path(caller, repository, Access::Read, path)
             .await?;
-        Ok(history(self.log, self.derived, repository, at, path).await?)
+        Ok(history(&*self.log, &*self.derived, repository, at, path).await?)
     }
 }

@@ -19,6 +19,7 @@ pub struct MemoryDerivedData {
     file_version_nodes: Mutex<BTreeMap<(RepositoryId, Address), FileVersionNode>>,
 }
 
+#[async_trait::async_trait]
 impl DerivedData for MemoryDerivedData {
     async fn put_trees(
         &self,

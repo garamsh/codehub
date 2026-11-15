@@ -6,7 +6,7 @@ use crate::contract::runner_deployment::{
     organisation, runner,
 };
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use app::domain::address::Address;
 use app::domain::file::{File, FileKind};
@@ -407,9 +407,9 @@ pub async fn checks_are_visible_to_readers_and_cancelled_by_administrators<H: Ru
     let rae = harness.caller("rae").await;
     let members = MembersService::new(
         MembersAdapters {
-            directory: harness.directory(),
-            authorisation: harness.authorisation(),
-            membership: harness.membership(),
+            directory: harness.directory().clone(),
+            authorisation: harness.authorisation().clone(),
+            membership: harness.membership().clone(),
         },
         Administration::BuiltIn,
     );
@@ -1583,67 +1583,70 @@ pub async fn a_cache_ref_moves_only_from_the_changeset_it_records<H: RunnerDeplo
 
 /// Derived data that records the addresses of the trees it is asked for and otherwise answers as
 /// `inner` does.
-struct CountingTrees<'a, D> {
-    inner: &'a D,
+struct CountingTrees {
+    inner: Arc<dyn DerivedData>,
     read: Mutex<Vec<Address>>,
 }
 
-impl<D: DerivedData> DerivedData for CountingTrees<'_, D> {
-    fn put_trees(
+#[async_trait::async_trait]
+impl DerivedData for CountingTrees {
+    async fn put_trees(
         &self,
         repository: RepositoryId,
         changeset: Address,
         root: Address,
         trees: BTreeMap<Address, Tree>,
-    ) -> impl Future<Output = Result<(), DerivedDataError>> + Send {
-        self.inner.put_trees(repository, changeset, root, trees)
+    ) -> Result<(), DerivedDataError> {
+        self.inner
+            .put_trees(repository, changeset, root, trees)
+            .await
     }
 
-    fn root(
+    async fn root(
         &self,
         repository: RepositoryId,
         changeset: Address,
-    ) -> impl Future<Output = Result<Address, DerivedDataError>> + Send {
-        self.inner.root(repository, changeset)
+    ) -> Result<Address, DerivedDataError> {
+        self.inner.root(repository, changeset).await
     }
 
-    fn tree(
+    async fn tree(
         &self,
         repository: RepositoryId,
         address: Address,
-    ) -> impl Future<Output = Result<Tree, DerivedDataError>> + Send {
+    ) -> Result<Tree, DerivedDataError> {
         if let Ok(mut read) = self.read.lock() {
             read.push(address);
         }
-        self.inner.tree(repository, address)
+        self.inner.tree(repository, address).await
     }
 
-    fn put_file_versions(
+    async fn put_file_versions(
         &self,
         repository: RepositoryId,
         changeset: Address,
         value: BTreeMap<Path, Address>,
         nodes: BTreeMap<Address, FileVersionNode>,
-    ) -> impl Future<Output = Result<(), DerivedDataError>> + Send {
+    ) -> Result<(), DerivedDataError> {
         self.inner
             .put_file_versions(repository, changeset, value, nodes)
+            .await
     }
 
-    fn file_versions(
+    async fn file_versions(
         &self,
         repository: RepositoryId,
         changeset: Address,
-    ) -> impl Future<Output = Result<Option<BTreeMap<Path, Address>>, DerivedDataError>> + Send
-    {
-        self.inner.file_versions(repository, changeset)
+    ) -> Result<Option<BTreeMap<Path, Address>>, DerivedDataError> {
+        self.inner.file_versions(repository, changeset).await
     }
 
-    fn file_version_node(
+    async fn file_version_node(
         &self,
         repository: RepositoryId,
         address: Address,
-    ) -> impl Future<Output = Result<FileVersionNode, DerivedDataError>> + Send {
-        self.inner.file_version_node(repository, address)
+    ) -> Result<FileVersionNode, DerivedDataError> {
+        self.inner.file_version_node(repository, address).await
     }
 }
 
@@ -1687,20 +1690,20 @@ pub async fn a_claim_reads_only_the_trees_its_inputs_reach<H: RunnerDeployment>(
     ];
     let reachable = subtree(&harness, repo.id, web, "src").await;
 
-    let counting = CountingTrees {
-        inner: harness.derived(),
+    let counting = Arc::new(CountingTrees {
+        inner: harness.derived().clone(),
         read: Mutex::new(Vec::new()),
-    };
+    });
     let jobs = JobsService::new(
         JobsAdapters {
-            registry: harness.registry(),
-            queue: harness.queue(),
-            cache_refs: harness.cache_refs(),
-            objects: harness.objects(),
-            derived: &counting,
-            log: harness.log(),
-            directory: harness.directory(),
-            definitions: harness.definitions(),
+            registry: harness.registry().clone(),
+            queue: harness.queue().clone(),
+            cache_refs: harness.cache_refs().clone(),
+            objects: harness.objects().clone(),
+            derived: counting.clone(),
+            log: harness.log().clone(),
+            directory: harness.directory().clone(),
+            definitions: harness.definitions().clone(),
         },
         LEASE,
         LandingAttempts::default(),

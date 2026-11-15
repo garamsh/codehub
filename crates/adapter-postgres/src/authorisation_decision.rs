@@ -69,6 +69,7 @@ fn permits(role: Role, grants: &Grants, action: Action, resource: &Resource) -> 
     }
 }
 
+#[async_trait::async_trait]
 impl AuthorisationDecision for PostgresAuthorisationDecision {
     async fn decide(
         &self,

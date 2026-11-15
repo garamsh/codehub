@@ -47,6 +47,7 @@ impl MemoryMembership {
     }
 }
 
+#[async_trait::async_trait]
 impl Membership for MemoryMembership {
     async fn grant_role(
         &self,

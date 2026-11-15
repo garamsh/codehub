@@ -205,6 +205,7 @@ impl Reader<'_> {
     }
 }
 
+#[async_trait::async_trait]
 impl CheckDefinitions for TomlCheckDefinitions {
     fn file(&self) -> &Path {
         &self.file

@@ -35,6 +35,7 @@ fn identifier(value: i64) -> Result<RepositoryId, DirectoryError> {
     })
 }
 
+#[async_trait::async_trait]
 impl RepositoryDirectory for PostgresRepositoryDirectory {
     async fn create_organisation(&self, name: &OrganisationName) -> Result<(), DirectoryError> {
         let created = sqlx::query(

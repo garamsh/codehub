@@ -10,65 +10,66 @@ use crate::domain::path::Path;
 use crate::domain::repository::RepositoryId;
 
 /// Holds each repository's drafts, each under its [`DraftId`].
-pub trait DraftStore {
+#[async_trait::async_trait]
+pub trait DraftStore: Send + Sync {
     /// The draft held under `draft`, created with `base` as its base and no changes where none is
     /// held; a draft already held is returned as it is, keeping its own base.
     ///
     /// # Errors
     ///
     /// The store's [`DraftStoreError`].
-    fn open(
+    async fn open(
         &self,
         repository: RepositoryId,
         draft: &DraftId,
         base: Option<Address>,
-    ) -> impl Future<Output = Result<Draft, DraftStoreError>> + Send;
+    ) -> Result<Draft, DraftStoreError>;
 
     /// Sets the description of the draft held under `draft`.
     ///
     /// # Errors
     ///
     /// [`DraftStoreError::NotFound`] where no draft is held under `draft`.
-    fn describe(
+    async fn describe(
         &self,
         repository: RepositoryId,
         draft: &DraftId,
         description: String,
-    ) -> impl Future<Output = Result<(), DraftStoreError>> + Send;
+    ) -> Result<(), DraftStoreError>;
 
     /// Applies every edit to the draft held under `draft`, or none of them.
     ///
     /// # Errors
     ///
     /// [`DraftStoreError::NotFound`] where no draft is held under `draft`.
-    fn record(
+    async fn record(
         &self,
         repository: RepositoryId,
         draft: &DraftId,
         edits: BTreeMap<Path, Edit>,
-    ) -> impl Future<Output = Result<(), DraftStoreError>> + Send;
+    ) -> Result<(), DraftStoreError>;
 
     /// The draft held under `draft`.
     ///
     /// # Errors
     ///
     /// [`DraftStoreError::NotFound`] where no draft is held under `draft`.
-    fn get(
+    async fn get(
         &self,
         repository: RepositoryId,
         draft: &DraftId,
-    ) -> impl Future<Output = Result<Draft, DraftStoreError>> + Send;
+    ) -> Result<Draft, DraftStoreError>;
 
     /// Removes the draft held under `draft`.
     ///
     /// # Errors
     ///
     /// [`DraftStoreError::NotFound`] where no draft is held under `draft`.
-    fn remove(
+    async fn remove(
         &self,
         repository: RepositoryId,
         draft: &DraftId,
-    ) -> impl Future<Output = Result<(), DraftStoreError>> + Send;
+    ) -> Result<(), DraftStoreError>;
 }
 
 /// Why the draft store refused or did not answer.

@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 app = { path = "../app" }
+async-trait.workspace = true
 oauth-client = { path = "../oauth-client" }
 reqwest = { workspace = true, features = ["json", "rustls"] }
 serde = { workspace = true, features = ["derive"] }

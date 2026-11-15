@@ -45,6 +45,7 @@ fn registration(row: Row) -> Result<Registration, RunnerRegistryError> {
     })
 }
 
+#[async_trait::async_trait]
 impl RunnerRegistry for PostgresRunnerRegistry {
     async fn register(
         &self,

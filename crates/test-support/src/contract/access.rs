@@ -1,6 +1,7 @@
 //! Authenticating callers and authorising them per path, through the driving ports.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::contract::{Deployment, MAX_UPLOAD_SIZE, Repo, draft};
@@ -50,9 +51,9 @@ impl<H: Deployment> Admin<'_, H> {
     pub(crate) async fn add(&self, member: &Caller, role: Role) {
         MembersService::new(
             MembersAdapters {
-                directory: self.harness.directory(),
-                authorisation: self.harness.authorisation(),
-                membership: self.harness.membership(),
+                directory: self.harness.directory().clone(),
+                authorisation: self.harness.authorisation().clone(),
+                membership: self.harness.membership().clone(),
             },
             Administration::BuiltIn,
         )
@@ -64,9 +65,9 @@ impl<H: Deployment> Admin<'_, H> {
     async fn remove(&self, member: &Caller) {
         MembersService::new(
             MembersAdapters {
-                directory: self.harness.directory(),
-                authorisation: self.harness.authorisation(),
-                membership: self.harness.membership(),
+                directory: self.harness.directory().clone(),
+                authorisation: self.harness.authorisation().clone(),
+                membership: self.harness.membership().clone(),
             },
             Administration::BuiltIn,
         )
@@ -78,9 +79,9 @@ impl<H: Deployment> Admin<'_, H> {
     pub(crate) async fn grant(&self, member: &Caller, path: &str, access: Access) {
         MembersService::new(
             MembersAdapters {
-                directory: self.harness.directory(),
-                authorisation: self.harness.authorisation(),
-                membership: self.harness.membership(),
+                directory: self.harness.directory().clone(),
+                authorisation: self.harness.authorisation().clone(),
+                membership: self.harness.membership().clone(),
             },
             Administration::BuiltIn,
         )
@@ -99,9 +100,9 @@ impl<H: Deployment> Admin<'_, H> {
     pub(crate) async fn ungrant(&self, member: &Caller, path: &str, access: Access) {
         MembersService::new(
             MembersAdapters {
-                directory: self.harness.directory(),
-                authorisation: self.harness.authorisation(),
-                membership: self.harness.membership(),
+                directory: self.harness.directory().clone(),
+                authorisation: self.harness.authorisation().clone(),
+                membership: self.harness.membership().clone(),
             },
             Administration::BuiltIn,
         )
@@ -468,6 +469,7 @@ pub async fn a_removed_member_loses_access<H: Deployment>() {
 /// An authorisation decision whose backend is down.
 struct Down;
 
+#[async_trait::async_trait]
 impl AuthorisationDecision for Down {
     async fn decide(
         &self,
@@ -491,12 +493,12 @@ pub async fn a_failing_authorisation_backend_refuses_the_call_with_its_descripti
     let path: Path = "a".parse().unwrap();
     let down = SourceControlService::new(
         SourceControlAdapters {
-            objects: harness.objects(),
-            log: harness.log(),
-            derived: harness.derived(),
-            drafts: harness.drafts(),
-            directory: harness.directory(),
-            authorisation: &Down,
+            objects: harness.objects().clone(),
+            log: harness.log().clone(),
+            derived: harness.derived().clone(),
+            drafts: harness.drafts().clone(),
+            directory: harness.directory().clone(),
+            authorisation: Arc::new(Down),
         },
         MAX_UPLOAD_SIZE,
     );
@@ -519,13 +521,14 @@ pub async fn a_failing_authorisation_backend_refuses_the_call_with_its_descripti
 
 /// A decision over `inner` that counts the calls deciding many resources and the paths decided
 /// one at a time.
-struct CountsCalls<'a, A> {
-    inner: &'a A,
+struct CountsCalls {
+    inner: Arc<dyn AuthorisationDecision>,
     many: AtomicU32,
     single_paths: AtomicU32,
 }
 
-impl<A: AuthorisationDecision + Sync> AuthorisationDecision for CountsCalls<'_, A> {
+#[async_trait::async_trait]
+impl AuthorisationDecision for CountsCalls {
     async fn decide(
         &self,
         subject: &Principal,
@@ -538,17 +541,14 @@ impl<A: AuthorisationDecision + Sync> AuthorisationDecision for CountsCalls<'_, 
         self.inner.decide(subject, action, resource).await
     }
 
-    fn decide_all(
+    async fn decide_all(
         &self,
         subject: &Principal,
         action: Action,
         resources: &[Resource],
-    ) -> impl Future<Output = Result<Vec<Decision>, AuthorisationError>> + Send
-    where
-        Self: Sync,
-    {
+    ) -> Result<Vec<Decision>, AuthorisationError> {
         self.many.fetch_add(1, Ordering::SeqCst);
-        self.inner.decide_all(subject, action, resources)
+        self.inner.decide_all(subject, action, resources).await
     }
 }
 
@@ -564,19 +564,19 @@ pub async fn a_landing_of_many_paths_asks_the_decision_port_once<H: Deployment>(
     )
     .await;
     repo.stage(&ada, &draft("one"), &[("f", "f\n")]).await;
-    let counted = CountsCalls {
-        inner: harness.authorisation(),
+    let counted = Arc::new(CountsCalls {
+        inner: harness.authorisation().clone(),
         many: AtomicU32::new(0),
         single_paths: AtomicU32::new(0),
-    };
+    });
     let source_control = SourceControlService::new(
         SourceControlAdapters {
-            objects: harness.objects(),
-            log: harness.log(),
-            derived: harness.derived(),
-            drafts: harness.drafts(),
-            directory: harness.directory(),
-            authorisation: &counted,
+            objects: harness.objects().clone(),
+            log: harness.log().clone(),
+            derived: harness.derived().clone(),
+            drafts: harness.drafts().clone(),
+            directory: harness.directory().clone(),
+            authorisation: Arc::clone(&counted) as Arc<dyn AuthorisationDecision>,
         },
         MAX_UPLOAD_SIZE,
     );

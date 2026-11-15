@@ -1,5 +1,6 @@
 //! The readiness probe: PostgreSQL and the object store each answer within [`LIMIT`].
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use adapter_http::{NotReady, Readiness};
@@ -13,16 +14,12 @@ use tokio::time::timeout;
 const LIMIT: Duration = Duration::from_secs(2);
 
 /// Asks the directory, which PostgreSQL holds, and the object store a question each.
-pub(crate) struct Probe<D: 'static, O: 'static> {
-    pub(crate) directory: &'static D,
-    pub(crate) objects: &'static O,
+pub(crate) struct Probe {
+    pub(crate) directory: Arc<dyn RepositoryDirectory>,
+    pub(crate) objects: Arc<dyn ObjectStore>,
 }
 
-impl<D, O> Readiness for Probe<D, O>
-where
-    D: RepositoryDirectory + Send + Sync,
-    O: ObjectStore + Send + Sync,
-{
+impl Readiness for Probe {
     async fn check(&self) -> Result<(), NotReady> {
         // Neither repository 0 nor the empty object need exist: a question answered "none" is
         // an answer.
@@ -66,6 +63,7 @@ mod tests {
 
     struct Directory(Answer);
 
+    #[async_trait::async_trait]
     impl RepositoryDirectory for Directory {
         async fn create_organisation(&self, _: &OrganisationName) -> Result<(), DirectoryError> {
             Ok(())
@@ -100,6 +98,7 @@ mod tests {
 
     struct Objects(Answer);
 
+    #[async_trait::async_trait]
     impl ObjectStore for Objects {
         async fn put(&self, _: RepositoryId, _: Vec<u8>) -> Result<Address, ObjectStoreError> {
             Ok(Address::of(b""))
@@ -144,8 +143,8 @@ mod tests {
 
     async fn check(database: Answer, objects: Answer) -> Result<(), NotReady> {
         let probe = Probe {
-            directory: Box::leak(Box::new(Directory(database))),
-            objects: Box::leak(Box::new(Objects(objects))),
+            directory: Arc::new(Directory(database)),
+            objects: Arc::new(Objects(objects)),
         };
         probe.check().await
     }

@@ -5,6 +5,7 @@
 
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
@@ -64,7 +65,7 @@ impl User {
 /// A server over fresh adapters.
 pub struct Server {
     url: String,
-    stores: &'static Stores,
+    stores: Arc<Stores>,
 }
 
 /// Serves the API on a port of `127.0.0.1` for as long as the test runs.
@@ -73,8 +74,9 @@ pub struct Server {
 ///
 /// Panics when the S3 variables are not set, or the socket cannot be bound.
 pub async fn serve() -> Server {
-    let stores = leak_stores();
-    bind(stores, &stores.identity).await
+    let stores = new_stores();
+    let identity = stores.identity.clone();
+    bind(stores, identity).await
 }
 
 /// Serves the API as [`serve`] does, but verifying credentials with the real OIDC adapter against
@@ -84,19 +86,19 @@ pub async fn serve() -> Server {
 ///
 /// Panics when the Keycloak or S3 variables are not set, or the socket cannot be bound.
 pub async fn serve_oidc() -> Server {
-    let oidc: &'static OidcIdentityVerification = Box::leak(Box::new(
+    let oidc = Arc::new(
         OidcIdentityVerification::new(
             &env("CODEHUB_TEST_KEYCLOAK_ISSUER"),
             "codehub",
             Duration::from_secs(1),
         )
         .unwrap(),
-    ));
-    bind(leak_stores(), oidc).await
+    );
+    bind(new_stores(), oidc).await
 }
 
-fn leak_stores() -> &'static Stores {
-    Stores::leaked(
+fn new_stores() -> Arc<Stores> {
+    Arc::new(Stores::new(
         S3ObjectStore::new(
             &env("CODEHUB_TEST_S3_ENDPOINT"),
             &env("CODEHUB_TEST_S3_REGION"),
@@ -106,13 +108,10 @@ fn leak_stores() -> &'static Stores {
             MAX_UPLOAD_SIZE,
         )
         .unwrap(),
-    )
+    ))
 }
 
-async fn bind<I: IdentityVerification + Send + Sync + 'static>(
-    stores: &'static Stores,
-    identity: &'static I,
-) -> Server {
+async fn bind(stores: Arc<Stores>, identity: Arc<dyn IdentityVerification>) -> Server {
     let assembly = stores.assembly(identity, Administration::BuiltIn, MAX_UPLOAD_SIZE);
     let router = adapter_http::api_router(
         assembly.authentication(),

@@ -4,6 +4,7 @@
 
 use adapter_http::{Pause, RunnerSettings};
 use adapter_memory::MemoryObjectStore;
+use std::sync::Arc;
 use std::time::Duration;
 
 use app::domain::address::Address;
@@ -46,13 +47,13 @@ pub struct Reply {
 /// A router over fresh in-memory adapters.
 pub struct Api {
     /// The adapters behind the router.
-    pub stores: &'static Stores,
+    pub stores: Arc<Stores>,
     router: Router,
 }
 
 /// The router over `stores`, with members administered as `administration` says.
-pub fn router(stores: &'static Stores, administration: Administration) -> Router {
-    let assembly = stores.assembly(&stores.identity, administration, MAX_UPLOAD_SIZE);
+pub fn router(stores: &Stores, administration: Administration) -> Router {
+    let assembly = stores.assembly(stores.identity.clone(), administration, MAX_UPLOAD_SIZE);
     adapter_http::api_router(
         assembly.authentication(),
         assembly.repositories(),
@@ -68,15 +69,11 @@ pub fn router(stores: &'static Stores, administration: Administration) -> Router
 
 /// The router over `stores`, with the repositories port replaced by `repositories`. It serves the
 /// source-control routes alone.
-pub fn router_with<R>(
-    stores: &'static Stores,
-    administration: Administration,
-    repositories: R,
-) -> Router
+pub fn router_with<R>(stores: &Stores, administration: Administration, repositories: R) -> Router
 where
     R: Repositories + Send + Sync + 'static,
 {
-    let assembly = stores.assembly(&stores.identity, administration, MAX_UPLOAD_SIZE);
+    let assembly = stores.assembly(stores.identity.clone(), administration, MAX_UPLOAD_SIZE);
     adapter_http::router(
         assembly.authentication(),
         repositories,
@@ -100,10 +97,10 @@ fn settings() -> RunnerSettings {
 
 impl Default for Api {
     fn default() -> Self {
-        let stores = Stores::leaked(MemoryObjectStore::default());
+        let stores = Arc::new(Stores::new(MemoryObjectStore::default()));
         Self {
+            router: router(&stores, Administration::BuiltIn),
             stores,
-            router: router(stores, Administration::BuiltIn),
         }
     }
 }

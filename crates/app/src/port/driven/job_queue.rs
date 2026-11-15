@@ -15,17 +15,15 @@ use crate::domain::revert::Revert;
 use crate::domain::runner::{Registration, RegistrationId};
 
 /// Holds the jobs.
-pub trait JobQueue {
+#[async_trait::async_trait]
+pub trait JobQueue: Send + Sync {
     /// Records `jobs` as waiting, for [`JobQueue::resolve`] to queue, and returns their identifiers
     /// in the order given. Identifiers grow with the order recorded. A waiting job is not claimed.
     ///
     /// # Errors
     ///
     /// [`JobQueueError::Backend`] where the queue fails; no job is then queued.
-    fn queue(
-        &self,
-        jobs: Vec<NewJob>,
-    ) -> impl Future<Output = Result<Vec<JobId>, JobQueueError>> + Send;
+    async fn queue(&self, jobs: Vec<NewJob>) -> Result<Vec<JobId>, JobQueueError>;
 
     /// Settles the waiting `job` as `resolution` says: queued for a runner under its key, passed
     /// from the cache with the output tree of the run that passed, or skipped. Returns whether it
@@ -34,11 +32,7 @@ pub trait JobQueue {
     /// # Errors
     ///
     /// [`JobQueueError::NotFound`] where there is no such job.
-    fn resolve(
-        &self,
-        job: JobId,
-        resolution: Resolution,
-    ) -> impl Future<Output = Result<bool, JobQueueError>> + Send;
+    async fn resolve(&self, job: JobId, resolution: Resolution) -> Result<bool, JobQueueError>;
 
     /// The output tree of a run in `repository` that passed with `key`; `None` where none did.
     /// Only a run that passed answers: a failed, timed-out or cancelled run is never cached, and
@@ -47,11 +41,11 @@ pub trait JobQueue {
     /// # Errors
     ///
     /// [`JobQueueError::Backend`] where the queue fails.
-    fn passed_with_key(
+    async fn passed_with_key(
         &self,
         repository: RepositoryId,
         key: CheckKey,
-    ) -> impl Future<Output = Result<Option<Address>, JobQueueError>> + Send;
+    ) -> Result<Option<Address>, JobQueueError>;
 
     /// Records `job` as failed without running it, with `output` as what it says, and returns it
     /// as recorded.
@@ -59,11 +53,7 @@ pub trait JobQueue {
     /// # Errors
     ///
     /// [`JobQueueError::Backend`] where the queue fails.
-    fn record_failed(
-        &self,
-        job: NewJob,
-        output: Vec<u8>,
-    ) -> impl Future<Output = Result<Job, JobQueueError>> + Send;
+    async fn record_failed(&self, job: NewJob, output: Vec<u8>) -> Result<Job, JobQueueError>;
 
     /// Gives the oldest queued job that one of `registrations` matches to that registration for
     /// `lease` seconds from `now`, and returns it as running. Its deadline is its check's timeout
@@ -72,12 +62,12 @@ pub trait JobQueue {
     /// # Errors
     ///
     /// [`JobQueueError::Backend`] where the queue fails.
-    fn claim(
+    async fn claim(
         &self,
         registrations: &[Registration],
         now: i64,
         lease: i64,
-    ) -> impl Future<Output = Result<Option<Job>, JobQueueError>> + Send;
+    ) -> Result<Option<Job>, JobQueueError>;
 
     /// Extends the lease on `job` to `lease` seconds from `now`, where it runs under one of
     /// `runners`. Where an administrator cancelled the job or it timed out while one of `runners`
@@ -89,24 +79,20 @@ pub trait JobQueue {
     ///
     /// [`JobQueueError::NotFound`] where `job` is not running, cancelled or timed out under one of
     /// `runners`.
-    fn heartbeat(
+    async fn heartbeat(
         &self,
         job: JobId,
         runners: &[RegistrationId],
         now: i64,
         lease: i64,
-    ) -> impl Future<Output = Result<Heartbeat, JobQueueError>> + Send;
+    ) -> Result<Heartbeat, JobQueueError>;
 
     /// `job`, where it runs under one of `runners`.
     ///
     /// # Errors
     ///
     /// [`JobQueueError::NotFound`] where `job` is not running under one of `runners`.
-    fn running(
-        &self,
-        job: JobId,
-        runners: &[RegistrationId],
-    ) -> impl Future<Output = Result<Job, JobQueueError>> + Send;
+    async fn running(&self, job: JobId, runners: &[RegistrationId]) -> Result<Job, JobQueueError>;
 
     /// Ends `job` as `result` says, where it runs under one of `runners`, and returns it as it
     /// now stands. `output_tree` is recorded with it.
@@ -114,13 +100,13 @@ pub trait JobQueue {
     /// # Errors
     ///
     /// [`JobQueueError::NotFound`] where `job` is not running under one of `runners`.
-    fn complete(
+    async fn complete(
         &self,
         job: JobId,
         runners: &[RegistrationId],
         result: JobResult,
         output_tree: Address,
-    ) -> impl Future<Output = Result<Job, JobQueueError>> + Send;
+    ) -> Result<Job, JobQueueError>;
 
     /// Cancels the waiting, queued or running `job` of `organisation` and returns it as it now stands.
     ///
@@ -128,11 +114,11 @@ pub trait JobQueue {
     ///
     /// [`JobQueueError::NotFound`] where `organisation` has no such job, and
     /// [`JobQueueError::Finished`] where the job has ended.
-    fn cancel(
+    async fn cancel(
         &self,
         organisation: &OrganisationName,
         job: JobId,
-    ) -> impl Future<Output = Result<Job, JobQueueError>> + Send;
+    ) -> Result<Job, JobQueueError>;
 
     /// Reserves the revert of the changeset `job` belongs to, for `job`. Of all the jobs of one
     /// changeset, however many ask at once, exactly one is answered `true`; the others are
@@ -142,10 +128,7 @@ pub trait JobQueue {
     /// # Errors
     ///
     /// [`JobQueueError::NotFound`] where there is no such job.
-    fn reserve_revert(
-        &self,
-        job: JobId,
-    ) -> impl Future<Output = Result<bool, JobQueueError>> + Send;
+    async fn reserve_revert(&self, job: JobId) -> Result<bool, JobQueueError>;
 
     /// Records `revert` with the result of `job` and returns the job as it now stands, which
     /// completes the reservation of the revert. A later record for the same job replaces the
@@ -154,22 +137,18 @@ pub trait JobQueue {
     /// # Errors
     ///
     /// [`JobQueueError::NotFound`] where there is no such job.
-    fn record_revert(
-        &self,
-        job: JobId,
-        revert: Revert,
-    ) -> impl Future<Output = Result<Job, JobQueueError>> + Send;
+    async fn record_revert(&self, job: JobId, revert: Revert) -> Result<Job, JobQueueError>;
 
     /// The jobs of `changeset` in `repository`, oldest first.
     ///
     /// # Errors
     ///
     /// [`JobQueueError::Backend`] where the queue fails.
-    fn of_changeset(
+    async fn of_changeset(
         &self,
         repository: RepositoryId,
         changeset: Address,
-    ) -> impl Future<Output = Result<Vec<Job>, JobQueueError>> + Send;
+    ) -> Result<Vec<Job>, JobQueueError>;
 
     /// Acts on time having passed to `now`. A running job past its deadline times out, and a
     /// running job whose lease lapsed before its deadline returns to the queue with no runner.
@@ -178,7 +157,7 @@ pub trait JobQueue {
     /// # Errors
     ///
     /// [`JobQueueError::Backend`] where the queue fails.
-    fn expire(&self, now: i64) -> impl Future<Output = Result<Vec<Job>, JobQueueError>> + Send;
+    async fn expire(&self, now: i64) -> Result<Vec<Job>, JobQueueError>;
 }
 
 /// Why the job queue refused or did not answer.

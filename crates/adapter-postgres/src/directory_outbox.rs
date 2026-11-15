@@ -53,6 +53,7 @@ fn change(row: Row) -> Result<RepositoryChange, DirectoryOutboxError> {
     })
 }
 
+#[async_trait::async_trait]
 impl DirectoryOutbox for PostgresDirectoryOutbox {
     async fn claim(
         &self,

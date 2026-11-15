@@ -15,6 +15,7 @@ pub struct MemoryDraftStore {
     drafts: Mutex<BTreeMap<(RepositoryId, DraftId), Draft>>,
 }
 
+#[async_trait::async_trait]
 impl DraftStore for MemoryDraftStore {
     async fn open(
         &self,

@@ -1,6 +1,21 @@
 //! The one assembly of the driving ports from the driven ports, which the composition site and
 //! every harness that serves the application build the shipped graph through.
 
+use std::sync::Arc;
+
+use crate::port::driven::authorisation_decision::AuthorisationDecision;
+use crate::port::driven::cache_refs::CacheRefs;
+use crate::port::driven::changeset_log::ChangesetLog;
+use crate::port::driven::check_definitions::CheckDefinitions;
+use crate::port::driven::derived_data::DerivedData;
+use crate::port::driven::directory_changes::DirectoryChanges;
+use crate::port::driven::draft_store::DraftStore;
+use crate::port::driven::identity_verification::IdentityVerification;
+use crate::port::driven::job_queue::JobQueue;
+use crate::port::driven::membership::Membership;
+use crate::port::driven::object_store::ObjectStore;
+use crate::port::driven::repository_directory::RepositoryDirectory;
+use crate::port::driven::runner_registry::RunnerRegistry;
 use crate::use_case::administration::Administration;
 use crate::use_case::authentication::AuthenticationService;
 use crate::use_case::checks::{ChecksAdapters, ChecksService};
@@ -8,6 +23,7 @@ use crate::use_case::jobs::{JobsAdapters, JobsService};
 use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::members::{MembersAdapters, MembersService};
 use crate::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
+use crate::use_case::relay::Delivery;
 use crate::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
 use crate::use_case::runners::{RunnersAdapters, RunnersService};
 use crate::use_case::source_control::{SourceControlAdapters, SourceControlService};
@@ -15,35 +31,35 @@ use crate::use_case::source_control::{SourceControlAdapters, SourceControlServic
 /// The driving ports as the application ships them, over the driven ports it is given: source
 /// control queues the checks of each landing, and the jobs and the checks revert a changeset
 /// whose blocking check failed. Its fields are what the driving ports are built over.
-pub struct Assembly<'a, O, L, D, S, R, A, M, Q, F, G, C, X, V, I> {
+pub struct Assembly {
     /// Stores blobs.
-    pub objects: &'a O,
+    pub objects: Arc<dyn ObjectStore>,
     /// Stores changesets and the refs.
-    pub log: &'a L,
+    pub log: Arc<dyn ChangesetLog>,
     /// Stores derived data.
-    pub derived: &'a D,
+    pub derived: Arc<dyn DerivedData>,
     /// Stores drafts.
-    pub drafts: &'a S,
+    pub drafts: Arc<dyn DraftStore>,
     /// Keeps organisations and repositories.
-    pub directory: &'a R,
+    pub directory: Arc<dyn RepositoryDirectory>,
     /// Says what callers may do.
-    pub authorisation: &'a A,
+    pub authorisation: Arc<dyn AuthorisationDecision>,
     /// Keeps members and their grants.
-    pub membership: &'a M,
+    pub membership: Arc<dyn Membership>,
     /// Holds the jobs.
-    pub queue: &'a Q,
+    pub queue: Arc<dyn JobQueue>,
     /// Holds the cache refs.
-    pub cache_refs: &'a F,
+    pub cache_refs: Arc<dyn CacheRefs>,
     /// Finds the callers' registrations.
-    pub registry: &'a G,
+    pub registry: Arc<dyn RunnerRegistry>,
     /// Reads the check definitions.
-    pub definitions: &'a C,
+    pub definitions: Arc<dyn CheckDefinitions>,
     /// Receives each organisation creation.
-    pub changes: &'a X,
+    pub changes: Arc<dyn DirectoryChanges>,
     /// Delivers the entries of a repository's creation once it has committed.
-    pub delivery: &'a V,
+    pub delivery: Arc<dyn Delivery>,
     /// Verifies credentials.
-    pub identity: &'a I,
+    pub identity: Arc<dyn IdentityVerification>,
     /// Whether members are kept here or in an external directory.
     pub administration: Administration,
     /// The largest upload source control grants, in bytes.
@@ -55,91 +71,88 @@ pub struct Assembly<'a, O, L, D, S, R, A, M, Q, F, G, C, X, V, I> {
 }
 
 /// The source control the application ships: the landing of checks queued after each landing.
-pub type ShippedSourceControl<'a, O, L, D, S, R, A, Q, C> =
-    SourceControlService<'a, O, L, D, S, R, A, PostLandChecks<'a, O, D, L, R, Q, C>>;
+pub type ShippedSourceControl = SourceControlService<PostLandChecks>;
 
-impl<'a, O, L, D, S, R, A, M, Q, F, G, C, X, V, I>
-    Assembly<'a, O, L, D, S, R, A, M, Q, F, G, C, X, V, I>
-{
+impl Assembly {
     /// The authentication port.
-    pub const fn authentication(&self) -> AuthenticationService<'a, I> {
-        AuthenticationService::new(self.identity)
+    pub fn authentication(&self) -> AuthenticationService {
+        AuthenticationService::new(Arc::clone(&self.identity))
     }
 
     /// The repositories port.
-    pub const fn repositories(&self) -> RepositoriesService<'a, R, A, M, X, V> {
+    pub fn repositories(&self) -> RepositoriesService {
         RepositoriesService::new(
             RepositoriesAdapters {
-                directory: self.directory,
-                authorisation: self.authorisation,
-                membership: self.membership,
-                changes: self.changes,
-                delivery: self.delivery,
+                directory: Arc::clone(&self.directory),
+                authorisation: Arc::clone(&self.authorisation),
+                membership: Arc::clone(&self.membership),
+                changes: Arc::clone(&self.changes),
+                delivery: Arc::clone(&self.delivery),
             },
             self.administration,
         )
     }
 
     /// The members port.
-    pub const fn members(&self) -> MembersService<'a, R, A, M> {
+    pub fn members(&self) -> MembersService {
         MembersService::new(
             MembersAdapters {
-                directory: self.directory,
-                authorisation: self.authorisation,
-                membership: self.membership,
+                directory: Arc::clone(&self.directory),
+                authorisation: Arc::clone(&self.authorisation),
+                membership: Arc::clone(&self.membership),
             },
             self.administration,
         )
     }
 
     /// The source-control port, which queues the checks of each landing.
-    pub fn source_control(&self) -> ShippedSourceControl<'a, O, L, D, S, R, A, Q, C> {
+    pub fn source_control(&self) -> ShippedSourceControl {
         SourceControlService::new(
             SourceControlAdapters {
-                objects: self.objects,
-                log: self.log,
-                derived: self.derived,
-                drafts: self.drafts,
-                directory: self.directory,
-                authorisation: self.authorisation,
+                objects: Arc::clone(&self.objects),
+                log: Arc::clone(&self.log),
+                derived: Arc::clone(&self.derived),
+                drafts: Arc::clone(&self.drafts),
+                directory: Arc::clone(&self.directory),
+                authorisation: Arc::clone(&self.authorisation),
             },
             self.max_upload_size,
         )
         .with_landing_attempts(self.attempts)
         .with_after_landing(PostLandChecks::new(
             PostLandChecksAdapters {
-                objects: self.objects,
-                derived: self.derived,
-                log: self.log,
-                directory: self.directory,
-                queue: self.queue,
-                definitions: self.definitions,
+                objects: Arc::clone(&self.objects),
+                derived: Arc::clone(&self.derived),
+                log: Arc::clone(&self.log),
+                directory: Arc::clone(&self.directory),
+                queue: Arc::clone(&self.queue),
+                definitions: Arc::clone(&self.definitions),
             },
             self.attempts,
         ))
     }
 
     /// The runners port.
-    pub const fn runners(&self) -> RunnersService<'a, G, R, A> {
+    pub fn runners(&self) -> RunnersService {
         RunnersService::new(RunnersAdapters {
-            registry: self.registry,
-            directory: self.directory,
-            authorisation: self.authorisation,
+            registry: Arc::clone(&self.registry),
+            directory: Arc::clone(&self.directory),
+            authorisation: Arc::clone(&self.authorisation),
         })
     }
 
     /// The jobs port.
-    pub const fn jobs(&self) -> JobsService<'a, G, Q, F, O, D, L, R, C> {
+    pub fn jobs(&self) -> JobsService {
         JobsService::new(
             JobsAdapters {
-                registry: self.registry,
-                queue: self.queue,
-                cache_refs: self.cache_refs,
-                objects: self.objects,
-                derived: self.derived,
-                log: self.log,
-                directory: self.directory,
-                definitions: self.definitions,
+                registry: Arc::clone(&self.registry),
+                queue: Arc::clone(&self.queue),
+                cache_refs: Arc::clone(&self.cache_refs),
+                objects: Arc::clone(&self.objects),
+                derived: Arc::clone(&self.derived),
+                log: Arc::clone(&self.log),
+                directory: Arc::clone(&self.directory),
+                definitions: Arc::clone(&self.definitions),
             },
             self.lease,
             self.attempts,
@@ -147,17 +160,17 @@ impl<'a, O, L, D, S, R, A, M, Q, F, G, C, X, V, I>
     }
 
     /// The checks port.
-    pub const fn checks(&self) -> ChecksService<'a, Q, L, R, A, O, D, C, S> {
+    pub fn checks(&self) -> ChecksService {
         ChecksService::new(
             ChecksAdapters {
-                queue: self.queue,
-                log: self.log,
-                directory: self.directory,
-                authorisation: self.authorisation,
-                objects: self.objects,
-                derived: self.derived,
-                definitions: self.definitions,
-                drafts: self.drafts,
+                queue: Arc::clone(&self.queue),
+                log: Arc::clone(&self.log),
+                directory: Arc::clone(&self.directory),
+                authorisation: Arc::clone(&self.authorisation),
+                objects: Arc::clone(&self.objects),
+                derived: Arc::clone(&self.derived),
+                definitions: Arc::clone(&self.definitions),
+                drafts: Arc::clone(&self.drafts),
             },
             self.attempts,
         )

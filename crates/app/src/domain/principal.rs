@@ -73,7 +73,7 @@ impl fmt::Display for Principal {
 
 /// A principal the application has established from a presented credential. Only the application
 /// constructs one, so a driving operation that takes it acts for a verified identity.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Caller {
     principal: Principal,
 }

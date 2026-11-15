@@ -2,6 +2,7 @@
 //! authorisation decision it is given.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use crate::domain::name::{Label, OrganisationName, RepositoryName};
 use crate::domain::principal::{Caller, Principal};
@@ -13,26 +14,26 @@ use crate::port::driving::runners::{Runners, RunnersError};
 use crate::use_case::access::require;
 
 /// The driven ports the runners are built over.
-pub struct RunnersAdapters<'a, G, R, A> {
+pub struct RunnersAdapters {
     /// Keeps the registrations.
-    pub registry: &'a G,
+    pub registry: Arc<dyn RunnerRegistry>,
     /// Looks repositories up.
-    pub directory: &'a R,
+    pub directory: Arc<dyn RepositoryDirectory>,
     /// Says what callers may do.
-    pub authorisation: &'a A,
+    pub authorisation: Arc<dyn AuthorisationDecision>,
 }
 
 /// Runners kept in the registry the composition site passes to it, administered by the callers
 /// the authorisation decision allows.
-pub struct RunnersService<'a, G, R, A> {
-    registry: &'a G,
-    directory: &'a R,
-    authorisation: &'a A,
+pub struct RunnersService {
+    registry: Arc<dyn RunnerRegistry>,
+    directory: Arc<dyn RepositoryDirectory>,
+    authorisation: Arc<dyn AuthorisationDecision>,
 }
 
-impl<'a, G, R, A> RunnersService<'a, G, R, A> {
+impl RunnersService {
     /// Runners over `adapters`.
-    pub const fn new(adapters: RunnersAdapters<'a, G, R, A>) -> Self {
+    pub fn new(adapters: RunnersAdapters) -> Self {
         let RunnersAdapters {
             registry,
             directory,
@@ -46,7 +47,7 @@ impl<'a, G, R, A> RunnersService<'a, G, R, A> {
     }
 }
 
-impl<G, R, A: AuthorisationDecision + Sync> RunnersService<'_, G, R, A> {
+impl RunnersService {
     async fn require_admin(
         &self,
         caller: &Caller,
@@ -54,7 +55,7 @@ impl<G, R, A: AuthorisationDecision + Sync> RunnersService<'_, G, R, A> {
     ) -> Result<(), RunnersError> {
         let resource = Resource::Organisation(organisation.clone());
         Ok(require(
-            self.authorisation,
+            &*self.authorisation,
             caller.principal(),
             Action::AdministerRunners,
             &resource,
@@ -63,12 +64,8 @@ impl<G, R, A: AuthorisationDecision + Sync> RunnersService<'_, G, R, A> {
     }
 }
 
-impl<G, R, A> Runners for RunnersService<'_, G, R, A>
-where
-    G: RunnerRegistry + Sync,
-    R: RepositoryDirectory + Sync,
-    A: AuthorisationDecision + Sync,
-{
+#[async_trait::async_trait]
+impl Runners for RunnersService {
     async fn register(
         &self,
         caller: &Caller,

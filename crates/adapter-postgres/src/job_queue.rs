@@ -210,6 +210,7 @@ async fn expire_at(connection: &mut PgConnection, now: i64) -> Result<Vec<Job>, 
     jobs(timed_out)
 }
 
+#[async_trait::async_trait]
 impl JobQueue for PostgresJobQueue {
     async fn queue(&self, new: Vec<NewJob>) -> Result<Vec<JobId>, JobQueueError> {
         let mut transaction = self.pool.begin().await.map_err(backend)?;

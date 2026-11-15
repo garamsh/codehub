@@ -17,9 +17,9 @@ use crate::use_case::first_parent::advance_forward;
 /// # Errors
 ///
 /// The failure of the cache refs or of the changeset log.
-pub(crate) async fn advance<C, L, E>(
-    refs: &C,
-    log: &L,
+pub(crate) async fn advance<E>(
+    refs: &dyn CacheRefs,
+    log: &dyn ChangesetLog,
     repository: RepositoryId,
     folder: &Prefix,
     path: &Path,
@@ -27,8 +27,6 @@ pub(crate) async fn advance<C, L, E>(
     tree: Address,
 ) -> Result<(), E>
 where
-    C: CacheRefs,
-    L: ChangesetLog,
     E: From<CacheRefsError> + From<ChangesetLogError>,
 {
     advance_forward(

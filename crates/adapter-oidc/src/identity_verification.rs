@@ -176,6 +176,7 @@ async fn get_json<T: DeserializeOwned>(
     response.json().await.map_err(backend)
 }
 
+#[async_trait::async_trait]
 impl IdentityVerification for OidcIdentityVerification {
     async fn verify(&self, credential: &Credential) -> Result<Principal, IdentityError> {
         let token = credential.as_str();

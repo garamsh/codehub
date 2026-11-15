@@ -34,6 +34,7 @@ impl MemoryCheckDefinitions {
     }
 }
 
+#[async_trait::async_trait]
 impl CheckDefinitions for MemoryCheckDefinitions {
     fn file(&self) -> &Path {
         &self.file

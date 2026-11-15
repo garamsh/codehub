@@ -4,6 +4,8 @@
 #[cfg(test)]
 pub mod common;
 
+use std::sync::Arc;
+
 use adapter_memory::MemoryJobQueue;
 use app::domain::address::Address;
 use app::domain::check::CheckKey;
@@ -35,9 +37,10 @@ use test_support::contract::{Deployment, draft};
 const QUEUE_DOWN: &str = "queue is down";
 
 /// A queue that refuses to queue and does everything else as the [`MemoryJobQueue`] it wraps does.
-struct RefusingQueue<'a>(&'a MemoryJobQueue);
+struct RefusingQueue(Arc<MemoryJobQueue>);
 
-impl JobQueue for RefusingQueue<'_> {
+#[async_trait::async_trait]
+impl JobQueue for RefusingQueue {
     async fn queue(&self, _jobs: Vec<NewJob>) -> Result<Vec<JobId>, JobQueueError> {
         Err(JobQueueError::Backend(QUEUE_DOWN.to_owned()))
     }
@@ -121,25 +124,14 @@ impl JobQueue for RefusingQueue<'_> {
 }
 
 #[cfg(test)]
-fn adapters<'a, Q>(
-    harness: &'a Harness,
-    queue: &'a Q,
-) -> PostLandChecksAdapters<
-    'a,
-    adapter_memory::MemoryObjectStore,
-    adapter_memory::MemoryDerivedData,
-    adapter_memory::MemoryChangesetLog,
-    adapter_memory::MemoryRepositoryDirectory,
-    Q,
-    adapter_memory::MemoryCheckDefinitions,
-> {
+fn adapters(harness: &Harness, queue: Arc<dyn JobQueue>) -> PostLandChecksAdapters {
     PostLandChecksAdapters {
-        objects: harness.objects(),
-        derived: harness.derived(),
-        log: harness.log(),
-        directory: harness.directory(),
+        objects: harness.objects().clone(),
+        derived: harness.derived().clone(),
+        log: harness.log().clone(),
+        directory: harness.directory().clone(),
         queue,
-        definitions: harness.definitions(),
+        definitions: harness.definitions().clone(),
     }
 }
 
@@ -211,8 +203,11 @@ async fn a_landing_whose_checks_cannot_be_queued_names_the_queue() {
         .land(&ada, repo.id, &name, landing)
         .await
         .unwrap();
-    let refusing = RefusingQueue(&harness.queue);
-    let checks = PostLandChecks::new(adapters(&harness, &refusing), LandingAttempts::default());
+    let refusing = Arc::new(RefusingQueue(harness.queue.clone()));
+    let checks = PostLandChecks::new(
+        adapters(&harness, refusing.clone()),
+        LandingAttempts::default(),
+    );
 
     let error = checks.after_landing(repo.id, landed, 0).await.unwrap_err();
 
@@ -231,7 +226,7 @@ async fn a_landing_whose_checks_cannot_be_queued_names_the_queue() {
             .is_empty()
     );
     let checks = PostLandChecks::new(
-        adapters(&harness, &harness.queue),
+        adapters(&harness, harness.queue.clone()),
         LandingAttempts::default(),
     );
     checks.after_landing(repo.id, landed, 0).await.unwrap();
@@ -250,11 +245,11 @@ async fn a_landing_whose_checks_cannot_be_queued_still_landed_and_says_so() {
     let file = harness.definitions().file().to_string();
     let name = draft("checks");
     repo.stage(&ada, &name, &[(&file, &body)]).await;
-    let refusing = RefusingQueue(&harness.queue);
+    let refusing = Arc::new(RefusingQueue(harness.queue.clone()));
     let checked = harness
         .source_control()
         .with_after_landing(PostLandChecks::new(
-            adapters(&harness, &refusing),
+            adapters(&harness, refusing.clone()),
             LandingAttempts::default(),
         ));
 
@@ -298,7 +293,7 @@ async fn settling_a_failed_blocking_job_reverts_its_changeset() {
         .await
         .unwrap();
     let checks = PostLandChecks::new(
-        adapters(&harness, &harness.queue),
+        adapters(&harness, harness.queue.clone()),
         LandingAttempts::default(),
     );
 
@@ -336,7 +331,7 @@ async fn settling_the_last_passing_blocking_job_moves_last_green() {
         .await
         .unwrap();
     let checks = PostLandChecks::new(
-        adapters(&harness, &harness.queue),
+        adapters(&harness, harness.queue.clone()),
         LandingAttempts::default(),
     );
 
@@ -356,7 +351,7 @@ async fn expiring_a_blocking_job_past_its_timeout_reverts_its_changeset() {
     let harness = Harness::start().await;
     let held = claimed(&harness).await;
     let checks = PostLandChecks::new(
-        adapters(&harness, &harness.queue),
+        adapters(&harness, harness.queue.clone()),
         LandingAttempts::default(),
     );
 
@@ -385,8 +380,11 @@ async fn a_revert_whose_checks_cannot_be_queued_has_landed_and_names_the_queue()
         )
         .await
         .unwrap();
-    let refusing = RefusingQueue(&harness.queue);
-    let checks = PostLandChecks::new(adapters(&harness, &refusing), LandingAttempts::default());
+    let refusing = Arc::new(RefusingQueue(harness.queue.clone()));
+    let checks = PostLandChecks::new(
+        adapters(&harness, refusing.clone()),
+        LandingAttempts::default(),
+    );
 
     let error = checks.settle(&ended, 5).await.unwrap_err();
 

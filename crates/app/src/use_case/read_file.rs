@@ -16,18 +16,13 @@ use crate::port::driving::source_control::{FileContent, ReadFileError};
 ///
 /// [`ReadFileError::NotFound`] where `main` is unset or holds no file at `path`, and otherwise
 /// the failure of a port.
-pub async fn read_file<O, L, D>(
-    objects: &O,
-    log: &L,
-    derived: &D,
+pub async fn read_file(
+    objects: &dyn ObjectStore,
+    log: &dyn ChangesetLog,
+    derived: &dyn DerivedData,
     repository: RepositoryId,
     path: &Path,
-) -> Result<FileContent, ReadFileError>
-where
-    O: ObjectStore,
-    L: ChangesetLog,
-    D: DerivedData,
-{
+) -> Result<FileContent, ReadFileError> {
     let not_found = || ReadFileError::NotFound(path.clone());
     let main = log
         .read_ref(repository, Ref::Main)
@@ -44,8 +39,8 @@ where
 }
 
 /// The file at `path` in the tree rooted at `root`, if it holds one.
-pub(crate) async fn file_at<D: DerivedData>(
-    derived: &D,
+pub(crate) async fn file_at(
+    derived: &dyn DerivedData,
     repository: RepositoryId,
     root: Option<Address>,
     path: &Path,

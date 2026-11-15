@@ -43,13 +43,15 @@ pub trait RelayEnvironment {
 }
 
 /// What the creation of a repository asks once it has committed.
-pub trait Delivery {
+#[async_trait::async_trait]
+pub trait Delivery: Send + Sync {
     /// Delivers the entries of `repository`, returning when that is done or given up on. Where
     /// the delivery is bounded in time, the implementation bounds it.
-    fn deliver(&self, repository: RepositoryId) -> impl Future<Output = ()> + Send;
+    async fn deliver(&self, repository: RepositoryId);
 }
 
 /// Delivers nothing.
+#[async_trait::async_trait]
 impl Delivery for () {
     async fn deliver(&self, _repository: RepositoryId) {}
 }
@@ -68,20 +70,20 @@ pub enum Pass {
 }
 
 /// Delivers the entries of the directory outbox.
-pub struct DirectoryRelay<O, C, E> {
-    outbox: Arc<O>,
-    changes: Arc<C>,
+pub struct DirectoryRelay<E> {
+    outbox: Arc<dyn DirectoryOutbox>,
+    changes: Arc<dyn DirectoryChanges>,
     environment: Arc<E>,
     creation_wait: Duration,
     /// Failed deliveries in a row, for each repository that has any.
     failures: Mutex<BTreeMap<RepositoryId, u32>>,
 }
 
-impl<O, C, E> DirectoryRelay<O, C, E> {
+impl<E> DirectoryRelay<E> {
     /// A relay over `outbox` and `changes`. [`Delivery::deliver`] waits at most `creation_wait`.
-    pub const fn new(
-        outbox: Arc<O>,
-        changes: Arc<C>,
+    pub fn new(
+        outbox: Arc<dyn DirectoryOutbox>,
+        changes: Arc<dyn DirectoryChanges>,
         environment: Arc<E>,
         creation_wait: Duration,
     ) -> Self {
@@ -108,10 +110,8 @@ fn seconds(duration: Duration) -> i64 {
     i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
 }
 
-impl<O, C, E> DirectoryRelay<O, C, E>
+impl<E> DirectoryRelay<E>
 where
-    O: DirectoryOutbox + Send + Sync,
-    C: DirectoryChanges + Send + Sync,
     E: RelayEnvironment + Send + Sync,
 {
     /// Delivers pending entries until the future is dropped.
@@ -184,10 +184,9 @@ where
     }
 }
 
-impl<O, C, E> Delivery for DirectoryRelay<O, C, E>
+#[async_trait::async_trait]
+impl<E> Delivery for DirectoryRelay<E>
 where
-    O: DirectoryOutbox + Send + Sync,
-    C: DirectoryChanges + Send + Sync,
     E: RelayEnvironment + Send + Sync,
 {
     /// One pass over `repository`'s entries, left where `creation_wait` ends. The claim lasts as

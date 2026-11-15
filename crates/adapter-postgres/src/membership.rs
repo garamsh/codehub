@@ -29,6 +29,7 @@ fn repository_column(grant: &Grant) -> Result<i64, MembershipError> {
     conversion::repository_column(grant.repository).map_err(MembershipError::Backend)
 }
 
+#[async_trait::async_trait]
 impl Membership for PostgresMembership {
     async fn grant_role(
         &self,

@@ -20,30 +20,27 @@ use crate::port::driving::revert::RevertError;
 /// What a registered runner asks of the application. Each operation is refused with
 /// [`JobsError::NotRegistered`] where the caller is not registered as a runner. Each takes `now`,
 /// in seconds since 1970-01-01T00:00:00Z.
-pub trait Jobs {
+#[async_trait::async_trait]
+pub trait Jobs: Send + Sync {
     /// Takes the oldest queued job the caller's registrations match, or `None` where none is
     /// queued. The caller holds it for the service's lease, and keeps it by heartbeating.
     ///
     /// # Errors
     ///
     /// [`JobsError::NotRegistered`] where the caller is not registered as a runner.
-    fn claim(
-        &self,
-        caller: &Caller,
-        now: i64,
-    ) -> impl Future<Output = Result<Option<Claimed>, JobsError>> + Send;
+    async fn claim(&self, caller: &Caller, now: i64) -> Result<Option<Claimed>, JobsError>;
 
     /// Extends the lease on `job`, which the caller holds, or tells it to stop.
     ///
     /// # Errors
     ///
     /// [`JobsError::Queue`] with [`JobQueueError::NotFound`] where the caller does not hold `job`.
-    fn heartbeat(
+    async fn heartbeat(
         &self,
         caller: &Caller,
         job: JobId,
         now: i64,
-    ) -> impl Future<Output = Result<Heartbeat, JobsError>> + Send;
+    ) -> Result<Heartbeat, JobsError>;
 
     /// Grants uploads of those of `files` the object store lacks, for `job`, which the caller
     /// holds. A file the store has is not granted.
@@ -51,13 +48,13 @@ pub trait Jobs {
     /// # Errors
     ///
     /// [`JobsError::Queue`] with [`JobQueueError::NotFound`] where the caller does not hold `job`.
-    fn upload_grants(
+    async fn upload_grants(
         &self,
         caller: &Caller,
         job: JobId,
         files: Vec<Upload>,
         now: i64,
-    ) -> impl Future<Output = Result<Vec<UploadGrant>, JobsError>> + Send;
+    ) -> Result<Vec<UploadGrant>, JobsError>;
 
     /// Ends `job`, which the caller holds, as `result` says, with the files it left, which the
     /// caller has uploaded. A pass records the tree of the files under the check's `outputs`, and
@@ -67,14 +64,14 @@ pub trait Jobs {
     /// # Errors
     ///
     /// [`JobsError::Queue`] with [`JobQueueError::NotFound`] where the caller does not hold `job`.
-    fn report(
+    async fn report(
         &self,
         caller: &Caller,
         job: JobId,
         result: JobResult,
         produced: Produced,
         now: i64,
-    ) -> impl Future<Output = Result<(), JobsError>> + Send;
+    ) -> Result<(), JobsError>;
 }
 
 /// A file a runner wants to upload: the address of its bytes and their size.

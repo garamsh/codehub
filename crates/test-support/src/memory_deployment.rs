@@ -1,6 +1,8 @@
 //! Repositories held by the in-memory adapters, with drafts staged and landed through the driving
 //! ports, over the check definitions a [`Definitions`] names.
 
+use std::sync::Arc;
+
 use adapter_memory::{
     MemoryAuthorisationDecision, MemoryCacheRefs, MemoryChangesetLog, MemoryCheckDefinitions,
     MemoryDerivedData, MemoryDirectoryChanges, MemoryDirectoryOutbox, MemoryDraftStore,
@@ -22,7 +24,7 @@ use crate::contract::{Deployment, HeldRelay};
 /// this library depending on it.
 pub trait Definitions {
     /// The adapter.
-    type Adapter: CheckDefinitions + Send + Sync;
+    type Adapter: CheckDefinitions + 'static;
 
     /// A fresh adapter.
     fn start() -> Self::Adapter;
@@ -59,35 +61,35 @@ impl Definitions for Taught {
 /// The in-memory adapters of one deployment, holding any number of repositories.
 pub struct MemoryDeployment<K: Definitions> {
     /// The object store.
-    pub objects: MemoryObjectStore,
+    pub objects: Arc<MemoryObjectStore>,
     /// The changeset log.
-    pub log: MemoryChangesetLog,
+    pub log: Arc<MemoryChangesetLog>,
     /// The derived data.
-    pub derived: MemoryDerivedData,
+    pub derived: Arc<MemoryDerivedData>,
     /// The draft store.
-    pub drafts: MemoryDraftStore,
+    pub drafts: Arc<MemoryDraftStore>,
     /// The repository directory.
-    pub directory: MemoryRepositoryDirectory,
+    pub directory: Arc<MemoryRepositoryDirectory>,
     /// The identity verification.
-    pub identity: MemoryIdentityVerification,
+    pub identity: Arc<MemoryIdentityVerification>,
     /// The membership.
-    pub membership: MemoryMembership,
+    pub membership: Arc<MemoryMembership>,
     /// The authorisation decision, derived from the membership.
-    pub authorisation: MemoryAuthorisationDecision,
+    pub authorisation: Arc<MemoryAuthorisationDecision>,
     /// The directory changes reported.
-    pub changes: MemoryDirectoryChanges,
+    pub changes: Arc<MemoryDirectoryChanges>,
     /// The directory outbox, over the entries the repository directory writes.
-    pub outbox: MemoryDirectoryOutbox,
+    pub outbox: Arc<MemoryDirectoryOutbox>,
     /// The relay that offers each creation's entry to a receiver refusing it.
-    pub delivery: HeldRelay,
+    pub delivery: Arc<HeldRelay>,
     /// The runner registry.
-    pub registry: MemoryRunnerRegistry,
+    pub registry: Arc<MemoryRunnerRegistry>,
     /// The job queue.
-    pub queue: MemoryJobQueue,
+    pub queue: Arc<MemoryJobQueue>,
     /// The cache refs.
-    pub cache_refs: MemoryCacheRefs,
+    pub cache_refs: Arc<MemoryCacheRefs>,
     /// The check definitions.
-    pub definitions: K::Adapter,
+    pub definitions: Arc<K::Adapter>,
 }
 
 impl<K: Definitions> Default for MemoryDeployment<K> {
@@ -95,21 +97,21 @@ impl<K: Definitions> Default for MemoryDeployment<K> {
         let membership = MemoryMembership::default();
         let directory = MemoryRepositoryDirectory::default();
         Self {
-            objects: MemoryObjectStore::default(),
-            log: MemoryChangesetLog::default(),
-            derived: MemoryDerivedData::default(),
-            drafts: MemoryDraftStore::default(),
-            outbox: directory.outbox(),
-            delivery: HeldRelay::new(directory.outbox()),
-            directory,
-            identity: MemoryIdentityVerification::default(),
-            authorisation: membership.authorisation_decision(),
-            changes: MemoryDirectoryChanges::default(),
-            registry: MemoryRunnerRegistry::default(),
-            queue: MemoryJobQueue::default(),
-            cache_refs: MemoryCacheRefs::default(),
-            definitions: K::start(),
-            membership,
+            objects: Arc::default(),
+            log: Arc::default(),
+            derived: Arc::default(),
+            drafts: Arc::default(),
+            outbox: Arc::new(directory.outbox()),
+            delivery: Arc::new(HeldRelay::new(directory.outbox())),
+            directory: Arc::new(directory),
+            identity: Arc::default(),
+            authorisation: Arc::new(membership.authorisation_decision()),
+            changes: Arc::default(),
+            registry: Arc::default(),
+            queue: Arc::default(),
+            cache_refs: Arc::default(),
+            definitions: Arc::new(K::start()),
+            membership: Arc::new(membership),
         }
     }
 }
@@ -129,47 +131,47 @@ impl<K: Definitions> Deployment for MemoryDeployment<K> {
         Self::default()
     }
 
-    fn objects(&self) -> &MemoryObjectStore {
+    fn objects(&self) -> &Arc<MemoryObjectStore> {
         &self.objects
     }
 
-    fn log(&self) -> &MemoryChangesetLog {
+    fn log(&self) -> &Arc<MemoryChangesetLog> {
         &self.log
     }
 
-    fn derived(&self) -> &MemoryDerivedData {
+    fn derived(&self) -> &Arc<MemoryDerivedData> {
         &self.derived
     }
 
-    fn drafts(&self) -> &MemoryDraftStore {
+    fn drafts(&self) -> &Arc<MemoryDraftStore> {
         &self.drafts
     }
 
-    fn directory(&self) -> &MemoryRepositoryDirectory {
+    fn directory(&self) -> &Arc<MemoryRepositoryDirectory> {
         &self.directory
     }
 
-    fn identity(&self) -> &MemoryIdentityVerification {
+    fn identity(&self) -> &Arc<MemoryIdentityVerification> {
         &self.identity
     }
 
-    fn membership(&self) -> &MemoryMembership {
+    fn membership(&self) -> &Arc<MemoryMembership> {
         &self.membership
     }
 
-    fn authorisation(&self) -> &MemoryAuthorisationDecision {
+    fn authorisation(&self) -> &Arc<MemoryAuthorisationDecision> {
         &self.authorisation
     }
 
-    fn changes(&self) -> &MemoryDirectoryChanges {
+    fn changes(&self) -> &Arc<MemoryDirectoryChanges> {
         &self.changes
     }
 
-    fn outbox(&self) -> &MemoryDirectoryOutbox {
+    fn outbox(&self) -> &Arc<MemoryDirectoryOutbox> {
         &self.outbox
     }
 
-    fn delivery(&self) -> &HeldRelay {
+    fn delivery(&self) -> &Arc<HeldRelay> {
         &self.delivery
     }
 
@@ -184,19 +186,19 @@ impl<K: Definitions> RunnerDeployment for MemoryDeployment<K> {
     type CacheRefs = MemoryCacheRefs;
     type Definitions = K::Adapter;
 
-    fn registry(&self) -> &MemoryRunnerRegistry {
+    fn registry(&self) -> &Arc<MemoryRunnerRegistry> {
         &self.registry
     }
 
-    fn queue(&self) -> &MemoryJobQueue {
+    fn queue(&self) -> &Arc<MemoryJobQueue> {
         &self.queue
     }
 
-    fn cache_refs(&self) -> &MemoryCacheRefs {
+    fn cache_refs(&self) -> &Arc<MemoryCacheRefs> {
         &self.cache_refs
     }
 
-    fn definitions(&self) -> &K::Adapter {
+    fn definitions(&self) -> &Arc<K::Adapter> {
         &self.definitions
     }
 
