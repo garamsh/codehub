@@ -76,6 +76,7 @@ impl IntrospectionIdentityVerification {
     }
 }
 
+#[async_trait::async_trait]
 impl IdentityVerification for IntrospectionIdentityVerification {
     async fn verify(&self, credential: &Credential) -> Result<Principal, IdentityError> {
         let response = self

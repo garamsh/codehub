@@ -37,6 +37,7 @@ fn grant(
     }
 }
 
+#[async_trait::async_trait]
 impl ObjectStore for MemoryObjectStore {
     async fn put(
         &self,

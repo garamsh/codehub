@@ -81,6 +81,7 @@ impl MemoryRepositoryDirectory {
     }
 }
 
+#[async_trait::async_trait]
 impl RepositoryDirectory for MemoryRepositoryDirectory {
     async fn create_organisation(&self, name: &OrganisationName) -> Result<(), DirectoryError> {
         let mut directory = lock(&self.directory);

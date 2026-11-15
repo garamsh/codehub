@@ -20,6 +20,7 @@ pub mod scoping;
 pub mod workspace;
 
 use std::future::Future;
+use std::sync::Arc;
 
 use adapter_memory::{MemoryIdentityVerification, MemoryObjectStore};
 use app::domain::address::Address;
@@ -53,74 +54,53 @@ use app::use_case::source_control::{SourceControlAdapters, SourceControlService}
 /// The largest upload the deployment's source control grants.
 pub const MAX_UPLOAD_SIZE: u64 = 1024;
 
-/// The repositories service over a deployment's adapters.
-pub type Repos<'a, H> = RepositoriesService<
-    'a,
-    <H as Deployment>::Directory,
-    <H as Deployment>::Authorisation,
-    <H as Deployment>::Membership,
-    <H as Deployment>::Changes,
-    <H as Deployment>::Delivery,
->;
-
-/// The source-control service over a deployment's adapters.
-pub type Service<'a, H> = SourceControlService<
-    'a,
-    MemoryObjectStore,
-    <H as Deployment>::Log,
-    <H as Deployment>::Derived,
-    <H as Deployment>::Drafts,
-    <H as Deployment>::Directory,
-    <H as Deployment>::Authorisation,
->;
-
 /// The adapters of one deployment, holding any number of repositories. Object storage and
 /// identity verification are in memory in every deployment.
 pub trait Deployment: Sized + Send + Sync {
     /// The changeset log.
-    type Log: ChangesetLog + Sync;
+    type Log: ChangesetLog + 'static;
     /// The derived data.
-    type Derived: DerivedData + Sync;
+    type Derived: DerivedData + 'static;
     /// The draft store.
-    type Drafts: DraftStore + Sync;
+    type Drafts: DraftStore + 'static;
     /// The repository directory.
-    type Directory: RepositoryDirectory + Sync;
+    type Directory: RepositoryDirectory + 'static;
     /// The organisation membership.
-    type Membership: Membership + Sync;
+    type Membership: Membership + 'static;
     /// The authorisation decision, over the membership.
-    type Authorisation: AuthorisationDecision + Sync;
+    type Authorisation: AuthorisationDecision + 'static;
     /// The directory changes reported.
-    type Changes: DirectoryChanges + Sync;
+    type Changes: DirectoryChanges + 'static;
     /// The directory outbox.
-    type Outbox: DirectoryOutbox + Sync;
+    type Outbox: DirectoryOutbox + 'static;
     /// The delivery that follows a repository's creation.
-    type Delivery: Delivery + Sync;
+    type Delivery: Delivery + 'static;
 
     /// A deployment of its own, with no repository.
     fn start() -> impl Future<Output = Self> + Send;
 
     /// The object store.
-    fn objects(&self) -> &MemoryObjectStore;
+    fn objects(&self) -> &Arc<MemoryObjectStore>;
     /// The changeset log.
-    fn log(&self) -> &Self::Log;
+    fn log(&self) -> &Arc<Self::Log>;
     /// The derived data.
-    fn derived(&self) -> &Self::Derived;
+    fn derived(&self) -> &Arc<Self::Derived>;
     /// The draft store.
-    fn drafts(&self) -> &Self::Drafts;
+    fn drafts(&self) -> &Arc<Self::Drafts>;
     /// The repository directory.
-    fn directory(&self) -> &Self::Directory;
+    fn directory(&self) -> &Arc<Self::Directory>;
     /// The identity verification.
-    fn identity(&self) -> &MemoryIdentityVerification;
+    fn identity(&self) -> &Arc<MemoryIdentityVerification>;
     /// The membership.
-    fn membership(&self) -> &Self::Membership;
+    fn membership(&self) -> &Arc<Self::Membership>;
     /// The authorisation decision.
-    fn authorisation(&self) -> &Self::Authorisation;
+    fn authorisation(&self) -> &Arc<Self::Authorisation>;
     /// The directory changes reported.
-    fn changes(&self) -> &Self::Changes;
+    fn changes(&self) -> &Arc<Self::Changes>;
     /// The directory outbox, over the entries the repository directory writes.
-    fn outbox(&self) -> &Self::Outbox;
+    fn outbox(&self) -> &Arc<Self::Outbox>;
     /// The delivery of a repository's outbox entries to the directory changes.
-    fn delivery(&self) -> &Self::Delivery;
+    fn delivery(&self) -> &Arc<Self::Delivery>;
 
     /// Writes the entry of a further change to `repository`, as the repository directory does for
     /// a deletion once repositories can be deleted, and returns it.
@@ -131,40 +111,40 @@ pub trait Deployment: Sized + Send + Sync {
     ) -> impl Future<Output = RepositoryChange> + Send;
 
     /// The repositories port over this deployment's adapters, administered by codehub.
-    fn repositories(&self) -> Repos<'_, Self> {
+    fn repositories(&self) -> RepositoriesService {
         self.administered(Administration::BuiltIn)
     }
 
     /// The repositories port over this deployment's adapters, with members administered as
     /// `administration` says.
-    fn administered(&self, administration: Administration) -> Repos<'_, Self> {
+    fn administered(&self, administration: Administration) -> RepositoriesService {
         RepositoriesService::new(
             RepositoriesAdapters {
-                directory: self.directory(),
-                authorisation: self.authorisation(),
-                membership: self.membership(),
-                changes: self.changes(),
-                delivery: self.delivery(),
+                directory: self.directory().clone(),
+                authorisation: self.authorisation().clone(),
+                membership: self.membership().clone(),
+                changes: self.changes().clone(),
+                delivery: self.delivery().clone(),
             },
             administration,
         )
     }
 
     /// The authentication port over this deployment's identity verification.
-    fn authentication(&self) -> AuthenticationService<'_, MemoryIdentityVerification> {
-        AuthenticationService::new(self.identity())
+    fn authentication(&self) -> AuthenticationService {
+        AuthenticationService::new(self.identity().clone())
     }
 
     /// Source control over this deployment's adapters.
-    fn source_control(&self) -> Service<'_, Self> {
+    fn source_control(&self) -> SourceControlService {
         SourceControlService::new(
             SourceControlAdapters {
-                objects: self.objects(),
-                log: self.log(),
-                derived: self.derived(),
-                drafts: self.drafts(),
-                directory: self.directory(),
-                authorisation: self.authorisation(),
+                objects: self.objects().clone(),
+                log: self.log().clone(),
+                derived: self.derived().clone(),
+                drafts: self.drafts().clone(),
+                directory: self.directory().clone(),
+                authorisation: self.authorisation().clone(),
             },
             MAX_UPLOAD_SIZE,
         )
@@ -258,6 +238,7 @@ impl Holding {
     }
 }
 
+#[async_trait::async_trait]
 impl DirectoryChanges for Holding {
     async fn repository_changed(&self, _change: &RepositoryChange) -> bool {
         self.attempts
@@ -294,7 +275,7 @@ impl RelayEnvironment for Frozen {
 pub struct HeldRelay {
     /// The receiver the relay delivers to.
     pub receiver: std::sync::Arc<Holding>,
-    relay: DirectoryRelay<adapter_memory::MemoryDirectoryOutbox, Holding, Frozen>,
+    relay: DirectoryRelay<Frozen>,
 }
 
 impl HeldRelay {
@@ -303,7 +284,7 @@ impl HeldRelay {
         let receiver = std::sync::Arc::new(Holding::default());
         let relay = DirectoryRelay::new(
             std::sync::Arc::new(outbox),
-            std::sync::Arc::clone(&receiver),
+            receiver.clone(),
             std::sync::Arc::new(Frozen),
             std::time::Duration::from_secs(2),
         );
@@ -311,9 +292,10 @@ impl HeldRelay {
     }
 }
 
+#[async_trait::async_trait]
 impl Delivery for HeldRelay {
-    fn deliver(&self, repository: RepositoryId) -> impl Future<Output = ()> + Send {
-        self.relay.deliver(repository)
+    async fn deliver(&self, repository: RepositoryId) {
+        self.relay.deliver(repository).await;
     }
 }
 

@@ -3,6 +3,7 @@
 #[cfg(test)]
 pub mod common;
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use adapter_memory::MemoryObjectStore;
@@ -20,12 +21,13 @@ use test_support::contract::runner_deployment::{
 };
 
 /// An object store that answers as the memory store does and counts the reads of bytes.
-struct CountingObjects<'a> {
-    inner: &'a MemoryObjectStore,
+struct CountingObjects {
+    inner: Arc<MemoryObjectStore>,
     gets: AtomicU32,
 }
 
-impl ObjectStore for CountingObjects<'_> {
+#[async_trait::async_trait]
+impl ObjectStore for CountingObjects {
     async fn put(
         &self,
         repository: RepositoryId,
@@ -95,20 +97,20 @@ async fn a_claim_reads_no_blob_bytes_and_carries_each_files_size_and_address() {
     .await
     .unwrap();
     let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
-    let objects = CountingObjects {
-        inner: &harness.objects,
+    let objects = Arc::new(CountingObjects {
+        inner: harness.objects.clone(),
         gets: AtomicU32::new(0),
-    };
+    });
     let jobs = JobsService::new(
         JobsAdapters {
-            registry: &harness.registry,
-            queue: &harness.queue,
-            cache_refs: &harness.cache_refs,
-            objects: &objects,
-            derived: &harness.derived,
-            log: &harness.log,
-            directory: &harness.directory,
-            definitions: &harness.definitions,
+            registry: harness.registry.clone(),
+            queue: harness.queue.clone(),
+            cache_refs: harness.cache_refs.clone(),
+            objects: objects.clone(),
+            derived: harness.derived.clone(),
+            log: harness.log.clone(),
+            directory: harness.directory.clone(),
+            definitions: harness.definitions.clone(),
         },
         30,
         LandingAttempts::default(),

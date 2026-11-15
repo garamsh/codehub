@@ -154,6 +154,7 @@ impl S3ObjectStore {
     }
 }
 
+#[async_trait::async_trait]
 impl ObjectStore for S3ObjectStore {
     async fn put(
         &self,

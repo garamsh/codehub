@@ -28,7 +28,8 @@ use crate::port::driving::access::AccessError;
 /// What the outside asks of the application's source control, for a caller. A caller with no read
 /// on a repository is told it does not exist ([`AccessError::RepositoryNotFound`]), as for one
 /// that does not.
-pub trait SourceControl {
+#[async_trait::async_trait]
+pub trait SourceControl: Send + Sync {
     /// A grant to upload the `size` bytes of the object `address` to `repository`.
     ///
     /// # Errors
@@ -36,13 +37,13 @@ pub trait SourceControl {
     /// [`SourceControlError::Access`] where `caller` may not write to `repository`, and
     /// [`SourceControlError::Upload`], naming why no grant was issued; a size above the server's
     /// maximum is one.
-    fn request_upload(
+    async fn request_upload(
         &self,
         caller: &Caller,
         repository: RepositoryId,
         address: Address,
         size: u64,
-    ) -> impl Future<Output = Result<Grant, SourceControlError>> + Send;
+    ) -> Result<Grant, SourceControlError>;
 
     /// Records `change` at `path` in the caller's draft `draft`, creating the draft on `main` as it
     /// stands now where it does not exist. A file's content must already be uploaded.
@@ -52,14 +53,14 @@ pub trait SourceControl {
     /// [`SourceControlError::Access`] where `caller` may not write `path`, and
     /// [`SourceControlError::Workspace`], naming why the change was not staged; a file whose
     /// content was not uploaded is [`WorkspaceError::ObjectMissing`].
-    fn stage(
+    async fn stage(
         &self,
         caller: &Caller,
         repository: RepositoryId,
         draft: &DraftName,
         path: Path,
         change: Change,
-    ) -> impl Future<Output = Result<(), SourceControlError>> + Send;
+    ) -> Result<(), SourceControlError>;
 
     /// The caller's workspace `draft`, created with its base at `main` as it stands now, or with
     /// no base where `main` is unset, when the caller has none of that name; a workspace the caller
@@ -70,12 +71,12 @@ pub trait SourceControl {
     /// [`SourceControlError::Access`] where `caller` may not write to `repository` or may not read
     /// a path the workspace changes, and [`SourceControlError::Workspace`], naming why it could not
     /// be read.
-    fn open_workspace(
+    async fn open_workspace(
         &self,
         caller: &Caller,
         repository: RepositoryId,
         draft: &DraftName,
-    ) -> impl Future<Output = Result<Workspace, SourceControlError>> + Send;
+    ) -> Result<Workspace, SourceControlError>;
 
     /// The caller's workspace `draft`: its base, its description and each path it changes.
     ///
@@ -84,12 +85,12 @@ pub trait SourceControl {
     /// [`SourceControlError::Access`] where `caller` may not read a path the workspace changes, and
     /// [`SourceControlError::Workspace`], naming why it could not be read; a missing workspace is
     /// [`DraftStoreError::NotFound`].
-    fn workspace(
+    async fn workspace(
         &self,
         caller: &Caller,
         repository: RepositoryId,
         draft: &DraftName,
-    ) -> impl Future<Output = Result<Workspace, SourceControlError>> + Send;
+    ) -> Result<Workspace, SourceControlError>;
 
     /// Sets the description of the caller's workspace `draft`.
     ///
@@ -98,13 +99,13 @@ pub trait SourceControl {
     /// [`SourceControlError::Access`] where `caller` may not write to `repository`, and
     /// [`SourceControlError::Workspace`] with [`DraftStoreError::NotFound`] where the caller has no
     /// such workspace.
-    fn describe(
+    async fn describe(
         &self,
         caller: &Caller,
         repository: RepositoryId,
         draft: &DraftName,
         description: String,
-    ) -> impl Future<Output = Result<(), SourceControlError>> + Send;
+    ) -> Result<(), SourceControlError>;
 
     /// Applies every edit to the caller's workspace `draft`, or none of them. A file's content
     /// must already be uploaded.
@@ -114,13 +115,13 @@ pub trait SourceControl {
     /// [`SourceControlError::Access`] naming every path `caller` may not write, and
     /// [`SourceControlError::Workspace`], naming why the snapshot was not applied; a file whose
     /// content was not uploaded is [`WorkspaceError::ObjectMissing`].
-    fn snapshot(
+    async fn snapshot(
         &self,
         caller: &Caller,
         repository: RepositoryId,
         draft: &DraftName,
         edits: BTreeMap<Path, Edit>,
-    ) -> impl Future<Output = Result<(), SourceControlError>> + Send;
+    ) -> Result<(), SourceControlError>;
 
     /// Returns `path` of the caller's workspace `draft` to the base's file, or to none where the
     /// base holds none. A path the workspace does not change is left as it is.
@@ -130,13 +131,13 @@ pub trait SourceControl {
     /// [`SourceControlError::Access`] where `caller` may not write `path`, and
     /// [`SourceControlError::Workspace`] with [`DraftStoreError::NotFound`] where the caller has no
     /// such workspace.
-    fn restore(
+    async fn restore(
         &self,
         caller: &Caller,
         repository: RepositoryId,
         draft: &DraftName,
         path: &Path,
-    ) -> impl Future<Output = Result<(), SourceControlError>> + Send;
+    ) -> Result<(), SourceControlError>;
 
     /// The difference of each path the caller's workspace `draft` changes, or of `path` alone where
     /// it is given, from the base to the workspace.
@@ -145,13 +146,13 @@ pub trait SourceControl {
     ///
     /// [`SourceControlError::Access`] where `caller` may not read a path the workspace changes, and
     /// [`SourceControlError::Workspace`], naming why it could not be computed.
-    fn diff(
+    async fn diff(
         &self,
         caller: &Caller,
         repository: RepositoryId,
         draft: &DraftName,
         path: Option<&Path>,
-    ) -> impl Future<Output = Result<Vec<PathDiff>, SourceControlError>> + Send;
+    ) -> Result<Vec<PathDiff>, SourceControlError>;
 
     /// Every file under `prefix` in the changeset `changeset`, in path order.
     ///
@@ -160,13 +161,13 @@ pub trait SourceControl {
     /// [`SourceControlError::Access`] where `caller` may not read one of the files, which refuses
     /// the whole listing, and [`SourceControlError::ListFiles`], naming why it could not be made;
     /// an unknown changeset is [`DerivedDataError::NotFound`].
-    fn list_files(
+    async fn list_files(
         &self,
         caller: &Caller,
         repository: RepositoryId,
         changeset: Address,
         prefix: &Prefix,
-    ) -> impl Future<Output = Result<Vec<ListedFile>, SourceControlError>> + Send;
+    ) -> Result<Vec<ListedFile>, SourceControlError>;
 
     /// Lands the caller's draft `draft` on `main`, removes it, and returns the landed changeset's
     /// identifier. The caller is the changeset's author; a landing with an empty message takes the
@@ -178,13 +179,13 @@ pub trait SourceControl {
     /// [`AccessError::PathsDenied`] naming every path the draft changes that `caller` may not
     /// write; nothing moves `main` on an error, except that a failure to remove the draft is
     /// reported after `main` advanced.
-    fn land(
+    async fn land(
         &self,
         caller: &Caller,
         repository: RepositoryId,
         draft: &DraftName,
         landing: Landing,
-    ) -> impl Future<Output = Result<Address, SourceControlError>> + Send;
+    ) -> Result<Address, SourceControlError>;
 
     /// The file at `path` in `main`: its kind and a grant to download its content.
     ///
@@ -192,12 +193,12 @@ pub trait SourceControl {
     ///
     /// [`SourceControlError::Access`] where `caller` may not read `path`, and
     /// [`SourceControlError::ReadFile`], naming why the file could not be read.
-    fn read_file(
+    async fn read_file(
         &self,
         caller: &Caller,
         repository: RepositoryId,
         path: &Path,
-    ) -> impl Future<Output = Result<FileContent, SourceControlError>> + Send;
+    ) -> Result<FileContent, SourceControlError>;
 
     /// The versions of `path` as of the changeset `at`, or as of `main` where `at` is `None`,
     /// newest first, each with its changeset's landing message.
@@ -206,13 +207,13 @@ pub trait SourceControl {
     ///
     /// [`SourceControlError::Access`] where `caller` may not read `path`, and
     /// [`SourceControlError::History`], naming why the history could not be read.
-    fn history(
+    async fn history(
         &self,
         caller: &Caller,
         repository: RepositoryId,
         at: Option<Address>,
         path: &Path,
-    ) -> impl Future<Output = Result<Vec<Version>, SourceControlError>> + Send;
+    ) -> Result<Vec<Version>, SourceControlError>;
 }
 
 /// Why source control did not do what it was asked.

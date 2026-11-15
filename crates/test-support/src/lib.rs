@@ -31,7 +31,7 @@ pub use deployment::assert_contract;
 pub use keycloak::{introspection_settings, keycloak_token, token_endpoint};
 pub use memory_deployment::{Definitions, MemoryDeployment, Taught};
 pub use server::{Server, pairs};
-pub use stores::{Stores, StoresAssembly};
+pub use stores::Stores;
 
 /// How long a start, a shutdown or one run of `ch` may take.
 const BOUND: Duration = Duration::from_secs(60);

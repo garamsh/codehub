@@ -2,6 +2,8 @@
 //! the membership and the directory changes it is given, and the delivery of a repository's outbox
 //! entries once its creation has committed (ADR 0044).
 
+use std::sync::Arc;
+
 use crate::domain::name::{OrganisationName, RepositoryName};
 use crate::domain::principal::Caller;
 use crate::domain::repository::RepositoryId;
@@ -18,47 +20,37 @@ use crate::use_case::administration::Administration;
 use crate::use_case::relay::Delivery;
 
 /// The driven ports the repositories are built over.
-pub struct RepositoriesAdapters<'a, R, A, M, C, D> {
+pub struct RepositoriesAdapters {
     /// Keeps organisations and repositories.
-    pub directory: &'a R,
+    pub directory: Arc<dyn RepositoryDirectory>,
     /// Says what callers may do.
-    pub authorisation: &'a A,
+    pub authorisation: Arc<dyn AuthorisationDecision>,
     /// Keeps members and their grants.
-    pub membership: &'a M,
+    pub membership: Arc<dyn Membership>,
     /// Receives each organisation creation.
-    pub changes: &'a C,
+    pub changes: Arc<dyn DirectoryChanges>,
     /// Delivers the entries of a repository's creation once it has committed.
-    pub delivery: &'a D,
+    pub delivery: Arc<dyn Delivery>,
 }
 
 /// Organisations and repositories kept in the directory the composition site passes to it, for
 /// the callers the authorisation decision allows, each organisation creation reported to the
 /// directory changes and each repository creation followed by the delivery of its entries.
-pub struct RepositoriesService<'a, R, A, M, C, D> {
-    directory: &'a R,
-    authorisation: &'a A,
-    membership: &'a M,
-    changes: &'a C,
-    delivery: &'a D,
+#[derive(Clone)]
+pub struct RepositoriesService {
+    directory: Arc<dyn RepositoryDirectory>,
+    authorisation: Arc<dyn AuthorisationDecision>,
+    membership: Arc<dyn Membership>,
+    changes: Arc<dyn DirectoryChanges>,
+    delivery: Arc<dyn Delivery>,
     administration: Administration,
 }
 
-impl<R, A, M, C, D> Clone for RepositoriesService<'_, R, A, M, C, D> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<R, A, M, C, D> Copy for RepositoriesService<'_, R, A, M, C, D> {}
-
-impl<'a, R, A, M, C, D> RepositoriesService<'a, R, A, M, C, D> {
+impl RepositoriesService {
     /// Repositories over `adapters`. Where `administration` is built-in, the creator of an
     /// organisation is made its admin in the membership; where it is external, no grant is
     /// written and an organisation missing from the directory is created on first use.
-    pub const fn new(
-        adapters: RepositoriesAdapters<'a, R, A, M, C, D>,
-        administration: Administration,
-    ) -> Self {
+    pub fn new(adapters: RepositoriesAdapters, administration: Administration) -> Self {
         let RepositoriesAdapters {
             directory,
             authorisation,
@@ -77,13 +69,7 @@ impl<'a, R, A, M, C, D> RepositoriesService<'a, R, A, M, C, D> {
     }
 }
 
-impl<R, A, M, C, D> RepositoriesService<'_, R, A, M, C, D>
-where
-    R: RepositoryDirectory + Sync,
-    A: AuthorisationDecision + Sync,
-    C: DirectoryChanges + Sync,
-    D: Delivery + Sync,
-{
+impl RepositoriesService {
     /// Creates `organisation`, which the directory did not hold (`missing`), where `caller` may
     /// create it; otherwise returns `missing`. An organisation a concurrent creator made first
     /// counts as created and is not reported.
@@ -95,7 +81,7 @@ where
     ) -> Result<(), RepositoriesError> {
         let resource = Resource::Organisation(organisation.clone());
         let may_create = allowed(
-            self.authorisation,
+            &*self.authorisation,
             caller.principal(),
             Action::CreateOrganisation,
             &resource,
@@ -118,21 +104,15 @@ where
     }
 }
 
-impl<R, A, M, C, D> Repositories for RepositoriesService<'_, R, A, M, C, D>
-where
-    R: RepositoryDirectory + Sync,
-    A: AuthorisationDecision + Sync,
-    M: Membership + Sync,
-    C: DirectoryChanges + Sync,
-    D: Delivery + Sync,
-{
+#[async_trait::async_trait]
+impl Repositories for RepositoriesService {
     async fn create_organisation(
         &self,
         caller: &Caller,
         name: &OrganisationName,
     ) -> Result<(), RepositoriesError> {
         require(
-            self.authorisation,
+            &*self.authorisation,
             caller.principal(),
             Action::CreateOrganisation,
             &Resource::Organisation(name.clone()),
@@ -157,7 +137,7 @@ where
         repository: &RepositoryName,
     ) -> Result<RepositoryId, RepositoriesError> {
         require(
-            self.authorisation,
+            &*self.authorisation,
             caller.principal(),
             Action::CreateRepository,
             &Resource::Organisation(organisation.clone()),

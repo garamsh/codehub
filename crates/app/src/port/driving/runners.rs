@@ -12,7 +12,8 @@ use crate::port::driving::access::AccessError;
 
 /// What the outside asks of an organisation's runners. Each operation needs the caller to be
 /// allowed to administer the organisation's runners.
-pub trait Runners {
+#[async_trait::async_trait]
+pub trait Runners: Send + Sync {
     /// Registers `principal` as a runner of `organisation` offering `labels`, for the checks of
     /// `repository` or, where it is `None`, of every repository of the organisation. Returns the
     /// registration's identifier.
@@ -22,14 +23,14 @@ pub trait Runners {
     /// [`RunnersError::Access`] where `caller` may not administer the runners of `organisation`,
     /// and [`RunnersError::Directory`] with [`DirectoryError::RepositoryNotFound`] where
     /// `organisation` holds no such repository.
-    fn register(
+    async fn register(
         &self,
         caller: &Caller,
         organisation: &OrganisationName,
         repository: Option<&RepositoryName>,
         principal: &Principal,
         labels: BTreeSet<Label>,
-    ) -> impl Future<Output = Result<RegistrationId, RunnersError>> + Send;
+    ) -> Result<RegistrationId, RunnersError>;
 
     /// Removes the registration `id` of `organisation`.
     ///
@@ -38,23 +39,23 @@ pub trait Runners {
     /// [`RunnersError::Access`] where `caller` may not administer the runners of `organisation`,
     /// and [`RunnersError::Registry`] with [`RunnerRegistryError::NotFound`] where it has no such
     /// registration.
-    fn remove(
+    async fn remove(
         &self,
         caller: &Caller,
         organisation: &OrganisationName,
         id: RegistrationId,
-    ) -> impl Future<Output = Result<(), RunnersError>> + Send;
+    ) -> Result<(), RunnersError>;
 
     /// The registrations of `organisation`, oldest first.
     ///
     /// # Errors
     ///
     /// [`RunnersError::Access`] where `caller` may not administer the runners of `organisation`.
-    fn list(
+    async fn list(
         &self,
         caller: &Caller,
         organisation: &OrganisationName,
-    ) -> impl Future<Output = Result<Vec<Registration>, RunnersError>> + Send;
+    ) -> Result<Vec<Registration>, RunnersError>;
 }
 
 /// Why the runners were not changed or listed.

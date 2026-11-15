@@ -19,39 +19,40 @@ pub enum Ref {
 
 /// Holds the changesets of each repository and moves its refs. Each operation reads or writes the
 /// log of the repository it is given.
-pub trait ChangesetLog {
+#[async_trait::async_trait]
+pub trait ChangesetLog: Send + Sync {
     /// Appends `changeset` and returns its identifier, its address. Appending moves no ref.
     ///
     /// # Errors
     ///
     /// [`ChangesetLogError::Encode`] where the changeset has no encoding.
-    fn append(
+    async fn append(
         &self,
         repository: RepositoryId,
         changeset: Changeset,
-    ) -> impl Future<Output = Result<Address, ChangesetLogError>> + Send;
+    ) -> Result<Address, ChangesetLogError>;
 
     /// The changeset identified by `id`.
     ///
     /// # Errors
     ///
     /// [`ChangesetLogError::NotFound`] where the log holds no such changeset.
-    fn get(
+    async fn get(
         &self,
         repository: RepositoryId,
         id: Address,
-    ) -> impl Future<Output = Result<Changeset, ChangesetLogError>> + Send;
+    ) -> Result<Changeset, ChangesetLogError>;
 
     /// The changeset `name` points at; `None` before it is first set.
     ///
     /// # Errors
     ///
     /// The log's [`ChangesetLogError`].
-    fn read_ref(
+    async fn read_ref(
         &self,
         repository: RepositoryId,
         name: Ref,
-    ) -> impl Future<Output = Result<Option<Address>, ChangesetLogError>> + Send;
+    ) -> Result<Option<Address>, ChangesetLogError>;
 
     /// Points `name` at `new` where it still points at `expected`, and leaves it unchanged
     /// otherwise.
@@ -59,13 +60,13 @@ pub trait ChangesetLog {
     /// # Errors
     ///
     /// [`ChangesetLogError::RefMoved`] where `name` no longer points at `expected`.
-    fn compare_and_swap(
+    async fn compare_and_swap(
         &self,
         repository: RepositoryId,
         name: Ref,
         expected: Option<Address>,
         new: Address,
-    ) -> impl Future<Output = Result<(), ChangesetLogError>> + Send;
+    ) -> Result<(), ChangesetLogError>;
 }
 
 /// Why the changeset log refused or did not answer.

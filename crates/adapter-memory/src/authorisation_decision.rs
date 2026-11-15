@@ -79,6 +79,7 @@ fn permits(member: &Member, action: Action, resource: &Resource) -> bool {
     }
 }
 
+#[async_trait::async_trait]
 impl AuthorisationDecision for MemoryAuthorisationDecision {
     async fn decide(
         &self,

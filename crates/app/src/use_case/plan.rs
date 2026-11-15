@@ -2,6 +2,7 @@
 //! the post-landing queueing computes and writing nothing.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::domain::address::Address;
 use crate::domain::changeset::Change;
@@ -23,13 +24,13 @@ use crate::use_case::tree_checks::{
 };
 
 /// The driven ports a plan is made over.
-pub(crate) struct PlanPorts<'a, Q, L, O, D, C, S> {
-    pub queue: &'a Q,
-    pub log: &'a L,
-    pub objects: &'a O,
-    pub derived: &'a D,
-    pub definitions: &'a C,
-    pub drafts: &'a S,
+pub(crate) struct PlanPorts {
+    pub queue: Arc<dyn JobQueue>,
+    pub log: Arc<dyn ChangesetLog>,
+    pub objects: Arc<dyn ObjectStore>,
+    pub derived: Arc<dyn DerivedData>,
+    pub definitions: Arc<dyn CheckDefinitions>,
+    pub drafts: Arc<dyn DraftStore>,
 }
 
 /// What a check that is planned left for the checks that need it: its key and output tree where
@@ -42,32 +43,24 @@ type Cached = Option<(CheckKey, Address)>;
 /// A check whose needs all have keys has its own key computed from its input files and the keys
 /// and outputs of its needs, as queueing a landing computes it. A check one of whose needs would
 /// run has no key yet and would run.
-pub(crate) async fn plan<Q, L, O, D, C, S>(
-    ports: &PlanPorts<'_, Q, L, O, D, C, S>,
+pub(crate) async fn plan(
+    ports: &PlanPorts,
     repository: RepositoryId,
     draft: &DraftId,
-) -> Result<Plan, PlanError>
-where
-    Q: JobQueue + Sync,
-    L: ChangesetLog + Sync,
-    O: ObjectStore + Sync,
-    D: DerivedData + Sync,
-    C: CheckDefinitions + Sync,
-    S: DraftStore + Sync,
-{
+) -> Result<Plan, PlanError> {
     let staged = ports.drafts.get(repository, draft).await?;
     let main = ports.log.read_ref(repository, Ref::Main).await?;
     let before = match main {
         Some(main) => {
             let root = ports.derived.root(repository, main).await?;
-            tree_files(ports.derived, repository, root).await?
+            tree_files(&*ports.derived, repository, root).await?
         }
         None => BTreeMap::new(),
     };
     let changes = rebase(
-        ports.objects,
-        ports.log,
-        ports.derived,
+        &*ports.objects,
+        &*ports.log,
+        &*ports.derived,
         repository,
         staged.base,
         main,
@@ -90,7 +83,7 @@ where
         })
         .collect();
 
-    let definitions = read_definitions(ports.objects, ports.definitions, repository, &after)
+    let definitions = read_definitions(&*ports.objects, &*ports.definitions, repository, &after)
         .await
         .map_err(|error| match error {
             DefinitionsError::Objects(error) => PlanError::Objects(error),
@@ -102,7 +95,7 @@ where
                 reason,
             },
         })?;
-    let files = Files::<D>::Rebased(&after);
+    let files = Files::Rebased(&after);
     let mut checks = Vec::new();
     let mut settled: BTreeMap<CheckId, Cached> = BTreeMap::new();
     let mut remaining: BTreeMap<CheckId, &CheckDefinition> = definitions

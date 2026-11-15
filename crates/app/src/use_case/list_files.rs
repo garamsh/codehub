@@ -13,8 +13,8 @@ use crate::port::driven::derived_data::{DerivedData, DerivedDataError};
 /// # Errors
 ///
 /// The failure of the derived-data port, [`DerivedDataError::NotFound`] where a tree is missing.
-pub async fn files_under<D: DerivedData>(
-    derived: &D,
+pub async fn files_under(
+    derived: &dyn DerivedData,
     repository: RepositoryId,
     root: Address,
     prefix: &Prefix,

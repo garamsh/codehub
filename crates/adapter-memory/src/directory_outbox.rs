@@ -26,6 +26,7 @@ fn held(directory: &Directory, repository: RepositoryId, now: i64) -> bool {
         .any(|entry| entry.change.repository == repository && entry.lease_expires_at > now)
 }
 
+#[async_trait::async_trait]
 impl DirectoryOutbox for MemoryDirectoryOutbox {
     async fn claim(
         &self,

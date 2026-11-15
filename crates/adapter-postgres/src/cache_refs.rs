@@ -27,6 +27,7 @@ fn backend(error: impl ToString) -> CacheRefsError {
     CacheRefsError::Backend(error.to_string())
 }
 
+#[async_trait::async_trait]
 impl CacheRefs for PostgresCacheRefs {
     async fn cache_ref(
         &self,

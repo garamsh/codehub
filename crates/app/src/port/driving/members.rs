@@ -12,19 +12,20 @@ use crate::port::driving::access::AccessError;
 /// What the outside asks of an organisation's members. Each operation needs an admin of the
 /// organisation, and each is refused with [`MembersError::ExternallyAdministered`] where members
 /// are administered outside codehub.
-pub trait Members {
+#[async_trait::async_trait]
+pub trait Members: Send + Sync {
     /// Makes `principal` a member of `organisation` in `role`, replacing the role it held.
     ///
     /// # Errors
     ///
     /// [`MembersError::Access`] where `caller` is not an admin of `organisation`.
-    fn add_member(
+    async fn add_member(
         &self,
         caller: &Caller,
         organisation: &OrganisationName,
         principal: &Principal,
         role: Role,
-    ) -> impl Future<Output = Result<(), MembersError>> + Send;
+    ) -> Result<(), MembersError>;
 
     /// Removes `principal` from `organisation` with its grants.
     ///
@@ -33,12 +34,12 @@ pub trait Members {
     /// [`MembersError::Access`] where `caller` is not an admin of `organisation`, and
     /// [`MembersError::Membership`] with [`MembershipError::NotAMember`] where `principal` is
     /// not a member.
-    fn remove_member(
+    async fn remove_member(
         &self,
         caller: &Caller,
         organisation: &OrganisationName,
         principal: &Principal,
-    ) -> impl Future<Output = Result<(), MembersError>> + Send;
+    ) -> Result<(), MembersError>;
 
     /// Gives the member `principal` `access` on the paths under `prefix` in `repository`.
     ///
@@ -48,7 +49,7 @@ pub trait Members {
     /// [`MembersError::Directory`] with [`DirectoryError::RepositoryNotFound`] where the
     /// organisation holds no such repository, and [`MembersError::Membership`] with
     /// [`MembershipError::NotAMember`] where `principal` is not a member.
-    fn add_grant(
+    async fn add_grant(
         &self,
         caller: &Caller,
         organisation: &OrganisationName,
@@ -56,14 +57,14 @@ pub trait Members {
         repository: &RepositoryName,
         prefix: Prefix,
         access: Access,
-    ) -> impl Future<Output = Result<(), MembersError>> + Send;
+    ) -> Result<(), MembersError>;
 
     /// Takes that grant from the member `principal`; a grant not held is not an error.
     ///
     /// # Errors
     ///
     /// As [`Members::add_grant`].
-    fn remove_grant(
+    async fn remove_grant(
         &self,
         caller: &Caller,
         organisation: &OrganisationName,
@@ -71,7 +72,7 @@ pub trait Members {
         repository: &RepositoryName,
         prefix: Prefix,
         access: Access,
-    ) -> impl Future<Output = Result<(), MembersError>> + Send;
+    ) -> Result<(), MembersError>;
 }
 
 /// Why the members were not changed.

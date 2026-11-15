@@ -25,6 +25,7 @@ use test_support::contract::{Deployment, RealTime};
 struct Switch(AtomicBool);
 
 #[cfg(test)]
+#[async_trait::async_trait]
 impl DirectoryChanges for Switch {
     async fn repository_changed(&self, _change: &RepositoryChange) -> bool {
         self.0.load(Ordering::SeqCst)
@@ -35,14 +36,11 @@ impl DirectoryChanges for Switch {
 
 /// A relay over a pool of its own to the harness's database, as a restarted server makes one.
 #[cfg(test)]
-async fn restarted(
-    harness: &Harness,
-    receiver: &Arc<Switch>,
-) -> DirectoryRelay<PostgresDirectoryOutbox, Switch, RealTime> {
+async fn restarted(harness: &Harness, receiver: &Arc<Switch>) -> DirectoryRelay<RealTime> {
     let database = Database::connect(&harness.url(), 2).await.unwrap();
     DirectoryRelay::new(
         Arc::new(PostgresDirectoryOutbox::new(&database)),
-        Arc::clone(receiver),
+        receiver.clone(),
         Arc::new(RealTime),
         Duration::from_secs(2),
     )

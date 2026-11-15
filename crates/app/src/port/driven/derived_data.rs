@@ -12,41 +12,42 @@ use crate::domain::tree::Tree;
 
 /// Holds each derived type's value for a changeset and the objects its steps wrote, per
 /// repository.
-pub trait DerivedData {
+#[async_trait::async_trait]
+pub trait DerivedData: Send + Sync {
     /// Records `root` as `changeset`'s root tree, and stores `trees` by address.
     ///
     /// # Errors
     ///
     /// The store's [`DerivedDataError`].
-    fn put_trees(
+    async fn put_trees(
         &self,
         repository: RepositoryId,
         changeset: Address,
         root: Address,
         trees: BTreeMap<Address, Tree>,
-    ) -> impl Future<Output = Result<(), DerivedDataError>> + Send;
+    ) -> Result<(), DerivedDataError>;
 
     /// The address of `changeset`'s root tree.
     ///
     /// # Errors
     ///
     /// [`DerivedDataError::NotFound`] where no root is recorded for `changeset`.
-    fn root(
+    async fn root(
         &self,
         repository: RepositoryId,
         changeset: Address,
-    ) -> impl Future<Output = Result<Address, DerivedDataError>> + Send;
+    ) -> Result<Address, DerivedDataError>;
 
     /// The tree stored under `address`.
     ///
     /// # Errors
     ///
     /// [`DerivedDataError::NotFound`] where no tree is stored under `address`.
-    fn tree(
+    async fn tree(
         &self,
         repository: RepositoryId,
         address: Address,
-    ) -> impl Future<Output = Result<Tree, DerivedDataError>> + Send;
+    ) -> Result<Tree, DerivedDataError>;
 
     /// Records `value` as `changeset`'s file-version nodes by path, and stores `nodes` by
     /// address.
@@ -54,35 +55,35 @@ pub trait DerivedData {
     /// # Errors
     ///
     /// The store's [`DerivedDataError`].
-    fn put_file_versions(
+    async fn put_file_versions(
         &self,
         repository: RepositoryId,
         changeset: Address,
         value: BTreeMap<Path, Address>,
         nodes: BTreeMap<Address, FileVersionNode>,
-    ) -> impl Future<Output = Result<(), DerivedDataError>> + Send;
+    ) -> Result<(), DerivedDataError>;
 
     /// `changeset`'s file-version nodes by path; `None` where they have not been derived.
     ///
     /// # Errors
     ///
     /// The store's [`DerivedDataError`].
-    fn file_versions(
+    async fn file_versions(
         &self,
         repository: RepositoryId,
         changeset: Address,
-    ) -> impl Future<Output = Result<Option<BTreeMap<Path, Address>>, DerivedDataError>> + Send;
+    ) -> Result<Option<BTreeMap<Path, Address>>, DerivedDataError>;
 
     /// The file-version node stored under `address`.
     ///
     /// # Errors
     ///
     /// [`DerivedDataError::NotFound`] where no node is stored under `address`.
-    fn file_version_node(
+    async fn file_version_node(
         &self,
         repository: RepositoryId,
         address: Address,
-    ) -> impl Future<Output = Result<FileVersionNode, DerivedDataError>> + Send;
+    ) -> Result<FileVersionNode, DerivedDataError>;
 }
 
 /// Why derived data did not answer.

@@ -38,41 +38,42 @@ pub struct Grant {
 }
 
 /// Holds the roles and grants of each organisation's members.
-pub trait Membership {
+#[async_trait::async_trait]
+pub trait Membership: Send + Sync {
     /// Makes `principal` a member of `organisation` in `role`, replacing the role it held.
     ///
     /// # Errors
     ///
     /// The store's [`MembershipError`].
-    fn grant_role(
+    async fn grant_role(
         &self,
         organisation: &OrganisationName,
         principal: &Principal,
         role: Role,
-    ) -> impl Future<Output = Result<(), MembershipError>> + Send;
+    ) -> Result<(), MembershipError>;
 
     /// Removes `principal` from `organisation`, with every grant it held there.
     ///
     /// # Errors
     ///
     /// [`MembershipError::NotAMember`] where `principal` holds no role in `organisation`.
-    fn revoke_role(
+    async fn revoke_role(
         &self,
         organisation: &OrganisationName,
         principal: &Principal,
-    ) -> impl Future<Output = Result<(), MembershipError>> + Send;
+    ) -> Result<(), MembershipError>;
 
     /// Gives the member `principal` of `organisation` the grant `grant`.
     ///
     /// # Errors
     ///
     /// [`MembershipError::NotAMember`] where `principal` holds no role in `organisation`.
-    fn add_grant(
+    async fn add_grant(
         &self,
         organisation: &OrganisationName,
         principal: &Principal,
         grant: Grant,
-    ) -> impl Future<Output = Result<(), MembershipError>> + Send;
+    ) -> Result<(), MembershipError>;
 
     /// Takes the grant `grant` from the member `principal` of `organisation`; a grant not held
     /// is not an error.
@@ -80,12 +81,12 @@ pub trait Membership {
     /// # Errors
     ///
     /// [`MembershipError::NotAMember`] where `principal` holds no role in `organisation`.
-    fn remove_grant(
+    async fn remove_grant(
         &self,
         organisation: &OrganisationName,
         principal: &Principal,
         grant: &Grant,
-    ) -> impl Future<Output = Result<(), MembershipError>> + Send;
+    ) -> Result<(), MembershipError>;
 }
 
 /// Why membership refused or did not answer.

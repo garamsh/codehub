@@ -9,7 +9,8 @@ use crate::domain::path::{Path, Prefix};
 
 /// Reads the check definitions a repository holds in the files of its tree. The format of the
 /// files is the adapter's.
-pub trait CheckDefinitions {
+#[async_trait::async_trait]
+pub trait CheckDefinitions: Send + Sync {
     /// The path, relative to a folder, of the file that holds the check definitions of the folder.
     fn file(&self) -> &Path;
 

@@ -3,6 +3,8 @@
 #[cfg(test)]
 pub mod common;
 
+use std::sync::Arc;
+
 use adapter_memory::MemoryJobQueue;
 use app::domain::address::Address;
 use app::domain::changeset::Changeset;
@@ -30,9 +32,10 @@ const LOG_DOWN: &str = "log down";
 const RECORDING_DOWN: &str = "queue is down";
 
 /// A log that fails every move of `main` and otherwise is the one it wraps.
-struct FailsMainSwap<'a>(&'a adapter_memory::MemoryChangesetLog);
+struct FailsMainSwap(Arc<adapter_memory::MemoryChangesetLog>);
 
-impl ChangesetLog for FailsMainSwap<'_> {
+#[async_trait::async_trait]
+impl ChangesetLog for FailsMainSwap {
     async fn append(
         &self,
         repository: RepositoryId,
@@ -75,9 +78,10 @@ impl ChangesetLog for FailsMainSwap<'_> {
 
 /// A queue that refuses to record a failed revert and does everything else as [`MemoryJobQueue`]
 /// does.
-struct RecordRefusingQueue<'a>(&'a MemoryJobQueue);
+struct RecordRefusingQueue(Arc<MemoryJobQueue>);
 
-impl JobQueue for RecordRefusingQueue<'_> {
+#[async_trait::async_trait]
+impl JobQueue for RecordRefusingQueue {
     async fn queue(&self, jobs: Vec<NewJob>) -> Result<Vec<JobId>, JobQueueError> {
         self.0.queue(jobs).await
     }
@@ -178,18 +182,18 @@ async fn a_failed_revert_that_cannot_be_recorded_returns_both_failures() {
         .await
         .unwrap();
     let job = harness.jobs().claim(&bot, 0).await.unwrap().unwrap().job.id;
-    let log = FailsMainSwap(&harness.log);
-    let queue = RecordRefusingQueue(&harness.queue);
+    let log = Arc::new(FailsMainSwap(harness.log.clone()));
+    let queue = Arc::new(RecordRefusingQueue(harness.queue.clone()));
     let service = JobsService::new(
         JobsAdapters {
-            registry: &harness.registry,
-            queue: &queue,
-            cache_refs: &harness.cache_refs,
-            objects: &harness.objects,
-            derived: &harness.derived,
-            log: &log,
-            directory: &harness.directory,
-            definitions: &harness.definitions,
+            registry: harness.registry.clone(),
+            queue,
+            cache_refs: harness.cache_refs.clone(),
+            objects: harness.objects.clone(),
+            derived: harness.derived.clone(),
+            log,
+            directory: harness.directory.clone(),
+            definitions: harness.definitions.clone(),
         },
         30,
         LandingAttempts::default(),

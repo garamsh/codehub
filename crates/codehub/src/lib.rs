@@ -22,15 +22,9 @@ use adapter_postgres::{
     PostgresJobQueue, PostgresMembership, PostgresRepositoryDirectory, PostgresRunnerRegistry,
 };
 use adapter_s3::S3ObjectStore;
-use app::domain::credential::Credential;
 use app::domain::path::PathError;
-use app::domain::principal::Principal;
-use app::port::driven::authorisation_decision::{
-    Action, AuthorisationDecision, AuthorisationError, Decision, Resource,
-};
-use app::port::driven::directory_changes::{
-    DirectoryChanges, OrganisationChange, RepositoryChange,
-};
+use app::port::driven::authorisation_decision::{AuthorisationDecision, AuthorisationError};
+use app::port::driven::directory_changes::DirectoryChanges;
 use app::port::driven::identity_verification::{IdentityError, IdentityVerification};
 use app::port::driven::object_store::ObjectStoreError;
 use app::use_case::assembly::Assembly;
@@ -142,48 +136,6 @@ fn pause(duration: Duration) -> Pause {
     Box::pin(tokio::time::sleep(duration))
 }
 
-/// The adapters of the deployment.
-struct Adapters {
-    objects: S3ObjectStore,
-    log: PostgresChangesetLog,
-    derived: PostgresDerivedData,
-    drafts: PostgresDraftStore,
-    directory: PostgresRepositoryDirectory,
-    membership: PostgresMembership,
-    registry: PostgresRunnerRegistry,
-    queue: PostgresJobQueue,
-    cache_refs: PostgresCacheRefs,
-    definitions: TomlCheckDefinitions,
-    authorisation: Decider,
-    identity: Verifier,
-    changes: Arc<Changes>,
-    relay: Arc<DirectoryRelay<PostgresDirectoryOutbox, Changes, ServerEnvironment>>,
-}
-
-/// Where the directory changes go, as the configuration selected.
-enum Changes {
-    /// Nowhere: every repository change is accepted at once.
-    Nowhere,
-    /// garam's `ApplyEntityChanges`.
-    Garam(Box<GaramDirectoryChanges>),
-}
-
-impl DirectoryChanges for Changes {
-    async fn repository_changed(&self, change: &RepositoryChange) -> bool {
-        match self {
-            Self::Nowhere => ().repository_changed(change).await,
-            Self::Garam(changes) => changes.repository_changed(change).await,
-        }
-    }
-
-    async fn organisation_changed(&self, change: &OrganisationChange) {
-        match self {
-            Self::Nowhere => ().organisation_changed(change).await,
-            Self::Garam(changes) => changes.organisation_changed(change).await,
-        }
-    }
-}
-
 /// What the relay takes from the process: the system clock, the runtime's timer and stderr.
 struct ServerEnvironment;
 
@@ -206,62 +158,18 @@ impl RelayEnvironment for ServerEnvironment {
     }
 }
 
-/// The identity verification the configuration selected.
-enum Verifier {
-    Oidc(Box<OidcIdentityVerification>),
-    Introspection(IntrospectionIdentityVerification),
-}
-
-impl IdentityVerification for Verifier {
-    async fn verify(&self, credential: &Credential) -> Result<Principal, IdentityError> {
-        match self {
-            Self::Oidc(verifier) => verifier.verify(credential).await,
-            Self::Introspection(verifier) => verifier.verify(credential).await,
-        }
-    }
-}
-
-/// The authorisation decision the configuration selected.
-enum Decider {
-    Postgres(PostgresAuthorisationDecision),
-    Authzen(Box<AuthzenAuthorisationDecision>),
-}
-
-impl AuthorisationDecision for Decider {
-    async fn decide(
-        &self,
-        subject: &Principal,
-        action: Action,
-        resource: &Resource,
-    ) -> Result<Decision, AuthorisationError> {
-        match self {
-            Self::Postgres(decider) => decider.decide(subject, action, resource).await,
-            Self::Authzen(decider) => decider.decide(subject, action, resource).await,
-        }
-    }
-
-    async fn decide_all(
-        &self,
-        subject: &Principal,
-        action: Action,
-        resources: &[Resource],
-    ) -> Result<Vec<Decision>, AuthorisationError> {
-        match self {
-            Self::Postgres(decider) => decider.decide_all(subject, action, resources).await,
-            Self::Authzen(decider) => decider.decide_all(subject, action, resources).await,
-        }
-    }
-}
-
 /// Builds the identity verification `selection` names.
-fn verifier(selection: IdentityMode<'_>, config: &Config) -> Result<Verifier, Error> {
+fn verifier(
+    selection: IdentityMode<'_>,
+    config: &Config,
+) -> Result<Arc<dyn IdentityVerification>, Error> {
     match selection {
         IdentityMode::Oidc { issuer, audience } => OidcIdentityVerification::new(
             issuer,
             audience,
             Duration::from_secs(config.jwks_min_refetch_seconds),
         )
-        .map(|verifier| Verifier::Oidc(Box::new(verifier))),
+        .map(|verifier| Arc::new(verifier) as Arc<dyn IdentityVerification>),
         IdentityMode::Introspection {
             endpoint,
             client_id,
@@ -275,18 +183,18 @@ fn verifier(selection: IdentityMode<'_>, config: &Config) -> Result<Verifier, Er
             issuer,
             audience,
         )
-        .map(Verifier::Introspection),
+        .map(|verifier| Arc::new(verifier) as Arc<dyn IdentityVerification>),
     }
     .map_err(Error::Identity)
 }
 
+/// The adapters the authorisation mode selects: the decision point, and where directory changes go.
+type Selected = (Arc<dyn AuthorisationDecision>, Arc<dyn DirectoryChanges>);
+
 /// Builds the AuthZEN decision point's adapter and where the directory changes go, with the one
 /// token client they share: garam binds each token to an organisation, so the changes are sent
 /// under the `grn` profile's clients (ADR 0043).
-fn authzen(
-    mode: AuthzenMode<'_>,
-    config: &Config,
-) -> Result<(AuthzenAuthorisationDecision, Changes), Error> {
+fn authzen(mode: AuthzenMode<'_>, config: &Config) -> Result<Selected, Error> {
     let tokens = Arc::new(
         TokenClient::new(
             mode.token_endpoint,
@@ -302,13 +210,13 @@ fn authzen(
     let decider = AuthzenAuthorisationDecision::new(mode.url, Arc::clone(&tokens), profile)
         .map_err(Error::Authorisation)?
         .with_access_evaluations(config.authzen_evaluations);
-    let changes = match mode.garam_url {
-        None => Changes::Nowhere,
-        Some(url) => GaramDirectoryChanges::new(url, tokens)
-            .map(|changes| Changes::Garam(Box::new(changes)))
-            .map_err(Error::DirectoryChanges)?,
+    let changes: Arc<dyn DirectoryChanges> = match mode.garam_url {
+        None => Arc::new(()),
+        Some(url) => {
+            Arc::new(GaramDirectoryChanges::new(url, tokens).map_err(Error::DirectoryChanges)?)
+        }
     };
-    Ok((decider, changes))
+    Ok((Arc::new(decider), changes))
 }
 
 /// Connects, migrates, binds and serves until SIGTERM or SIGINT, then finishes the requests in
@@ -321,71 +229,51 @@ pub async fn run(config: Config) -> Result<(), Error> {
     let selection = config.select()?;
     let administration = selection.administration;
     let identity = verifier(selection.identity, &config)?;
-    let (authzen, changes) = match selection.authorisation {
-        AuthorisationMode::Postgres => (None, Changes::Nowhere),
-        AuthorisationMode::Authzen(mode) => {
-            let (decider, changes) = authzen(mode, &config)?;
-            (Some(decider), changes)
-        }
-    };
-    let changes = Arc::new(changes);
     let database = Database::connect(&config.postgres_url, config.postgres_pool_size)
         .await
         .map_err(Error::Database)?;
     database.migrate().await.map_err(Error::Database)?;
-    let authorisation = authzen.map_or_else(
-        || Decider::Postgres(PostgresAuthorisationDecision::new(&database)),
-        |decider| Decider::Authzen(Box::new(decider)),
-    );
+    let (authorisation, changes): Selected = match selection.authorisation {
+        AuthorisationMode::Postgres => (
+            Arc::new(PostgresAuthorisationDecision::new(&database)),
+            Arc::new(()),
+        ),
+        AuthorisationMode::Authzen(mode) => authzen(mode, &config)?,
+    };
     let relay = Arc::new(DirectoryRelay::new(
         Arc::new(PostgresDirectoryOutbox::new(&database)),
         Arc::clone(&changes),
         Arc::new(ServerEnvironment),
         Duration::from_secs(config.directory_delivery_wait),
     ));
-    let objects = S3ObjectStore::new(
-        &config.s3_endpoint,
-        &config.s3_region,
-        &config.s3_bucket,
-        &config.s3_access_key,
-        &config.s3_secret_key,
-        config.max_object_size,
-    )
-    .map_err(Error::ObjectStore)?
-    .with_expiry(Duration::from_secs(config.grant_expiry_seconds));
-    // The use cases borrow the adapters and the router holds its ports for `'static`; the
-    // adapters live as long as the process.
-    let adapters: &'static Adapters = Box::leak(Box::new(Adapters {
-        objects,
-        log: PostgresChangesetLog::new(&database),
-        derived: PostgresDerivedData::new(&database),
-        drafts: PostgresDraftStore::new(&database),
-        directory: PostgresRepositoryDirectory::new(&database),
-        membership: PostgresMembership::new(&database),
-        registry: PostgresRunnerRegistry::new(&database),
-        queue: PostgresJobQueue::new(&database),
-        cache_refs: PostgresCacheRefs::new(&database),
-        definitions: TomlCheckDefinitions::new().map_err(Error::Definitions)?,
-        authorisation,
-        identity,
-        changes,
-        relay,
-    }));
+    let objects = Arc::new(
+        S3ObjectStore::new(
+            &config.s3_endpoint,
+            &config.s3_region,
+            &config.s3_bucket,
+            &config.s3_access_key,
+            &config.s3_secret_key,
+            config.max_object_size,
+        )
+        .map_err(Error::ObjectStore)?
+        .with_expiry(Duration::from_secs(config.grant_expiry_seconds)),
+    );
+    let directory = Arc::new(PostgresRepositoryDirectory::new(&database));
     let assembly = Assembly {
-        objects: &adapters.objects,
-        log: &adapters.log,
-        derived: &adapters.derived,
-        drafts: &adapters.drafts,
-        directory: &adapters.directory,
-        authorisation: &adapters.authorisation,
-        membership: &adapters.membership,
-        queue: &adapters.queue,
-        cache_refs: &adapters.cache_refs,
-        registry: &adapters.registry,
-        definitions: &adapters.definitions,
-        changes: &*adapters.changes,
-        delivery: &*adapters.relay,
-        identity: &adapters.identity,
+        objects: objects.clone(),
+        log: Arc::new(PostgresChangesetLog::new(&database)),
+        derived: Arc::new(PostgresDerivedData::new(&database)),
+        drafts: Arc::new(PostgresDraftStore::new(&database)),
+        directory: directory.clone(),
+        authorisation,
+        membership: Arc::new(PostgresMembership::new(&database)),
+        queue: Arc::new(PostgresJobQueue::new(&database)),
+        cache_refs: Arc::new(PostgresCacheRefs::new(&database)),
+        registry: Arc::new(PostgresRunnerRegistry::new(&database)),
+        definitions: Arc::new(TomlCheckDefinitions::new().map_err(Error::Definitions)?),
+        changes,
+        delivery: relay.clone(),
+        identity,
 
         administration,
         max_upload_size: config.max_object_size,
@@ -408,10 +296,7 @@ pub async fn run(config: Config) -> Result<(), Error> {
             )),
             pause,
         },
-        Probe {
-            directory: &adapters.directory,
-            objects: &adapters.objects,
-        },
+        Probe { directory, objects },
     );
     let listener = TcpListener::bind(config.listen)
         .await
@@ -421,7 +306,6 @@ pub async fn run(config: Config) -> Result<(), Error> {
     let mut interrupt = signal(SignalKind::interrupt()).map_err(Error::Serve)?;
     // Nowhere left to report a failed stderr write.
     let _ = writeln!(std::io::stderr(), "codehub listening on {address}");
-    let relay = Arc::clone(&adapters.relay);
     let delivering = tokio::spawn(async move { relay.run().await });
     let served = axum::serve(listener, router)
         .with_graceful_shutdown(async move {

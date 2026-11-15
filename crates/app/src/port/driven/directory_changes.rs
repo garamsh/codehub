@@ -42,19 +42,21 @@ pub enum OrganisationChange {
 }
 
 /// Receives the changes.
-pub trait DirectoryChanges {
+#[async_trait::async_trait]
+pub trait DirectoryChanges: Send + Sync {
     /// Delivers `change`. Answers whether the receiver accepted it; an adapter that cannot deliver
     /// it, or whose receiver refuses it, answers `false`, and the relay delivers it again. A
     /// change can arrive more than once.
-    fn repository_changed(&self, change: &RepositoryChange) -> impl Future<Output = bool> + Send;
+    async fn repository_changed(&self, change: &RepositoryChange) -> bool;
 
     /// Reports `change`, after it succeeded and never on failure. Delivery is at most once: an
     /// adapter that fails to deliver keeps that to itself, and the caller neither waits on nor
     /// retries it.
-    fn organisation_changed(&self, change: &OrganisationChange) -> impl Future<Output = ()> + Send;
+    async fn organisation_changed(&self, change: &OrganisationChange);
 }
 
 /// Delivers nowhere: every repository change is accepted at once.
+#[async_trait::async_trait]
 impl DirectoryChanges for () {
     async fn repository_changed(&self, _change: &RepositoryChange) -> bool {
         true

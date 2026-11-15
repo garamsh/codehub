@@ -64,7 +64,7 @@ async fn refuses_a_request_without_a_valid_token() {
 
 #[cfg(test)]
 fn router_for(api: &Api) -> axum::Router {
-    router(api.stores, Administration::BuiltIn)
+    router(&api.stores, Administration::BuiltIn)
 }
 
 #[tokio::test]
@@ -456,7 +456,7 @@ async fn rejects_a_removal_with_a_missing_or_malformed_query_parameter() {
 /// A router in the external administration mode, over the stores of `api`.
 #[cfg(test)]
 fn external_router(api: &Api) -> axum::Router {
-    router(api.stores, Administration::External)
+    router(&api.stores, Administration::External)
 }
 
 #[tokio::test]
@@ -532,6 +532,7 @@ async fn refuses_every_member_operation_in_external_mode_with_403_saying_so() {
 /// A repositories port whose directory fails with a description that must stay inside.
 struct Failing;
 
+#[async_trait::async_trait]
 impl Repositories for Failing {
     async fn create_organisation(
         &self,
@@ -571,7 +572,7 @@ fn failure() -> RepositoriesError {
 async fn answers_a_backend_failure_with_500_and_no_internals() {
     let api = Api::new();
     let ada = api.token("ada");
-    let router = router_with(api.stores, Administration::BuiltIn, Failing);
+    let router = router_with(&api.stores, Administration::BuiltIn, Failing);
 
     let reply = send(
         router,

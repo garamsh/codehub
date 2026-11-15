@@ -10,7 +10,8 @@ use crate::port::driven::repository_directory::DirectoryError;
 use crate::port::driving::access::AccessError;
 
 /// What the outside asks of the application's organisations and repositories.
-pub trait Repositories {
+#[async_trait::async_trait]
+pub trait Repositories: Send + Sync {
     /// Creates the organisation `name`; where codehub administers members, `caller` becomes its
     /// admin.
     ///
@@ -18,11 +19,11 @@ pub trait Repositories {
     ///
     /// [`RepositoriesError::Directory`] with [`DirectoryError::OrganisationExists`] where `name`
     /// is taken.
-    fn create_organisation(
+    async fn create_organisation(
         &self,
         caller: &Caller,
         name: &OrganisationName,
-    ) -> impl Future<Output = Result<(), RepositoriesError>> + Send;
+    ) -> Result<(), RepositoriesError>;
 
     /// Creates the repository `repository` in `organisation` and returns its identifier.
     ///
@@ -34,12 +35,12 @@ pub trait Repositories {
     /// [`DirectoryError::RepositoryExists`] where it already holds a repository of that name, and
     /// with [`DirectoryError::OrganisationNotFound`] where it does not exist and `caller` may not
     /// create it.
-    fn create_repository(
+    async fn create_repository(
         &self,
         caller: &Caller,
         organisation: &OrganisationName,
         repository: &RepositoryName,
-    ) -> impl Future<Output = Result<RepositoryId, RepositoriesError>> + Send;
+    ) -> Result<RepositoryId, RepositoriesError>;
 
     /// The identifier of the repository `organisation`/`repository`.
     ///
@@ -47,12 +48,12 @@ pub trait Repositories {
     ///
     /// [`RepositoriesError::Directory`] with [`DirectoryError::RepositoryNotFound`] where there is
     /// no such repository, or `caller` holds no read on it.
-    fn find_repository(
+    async fn find_repository(
         &self,
         caller: &Caller,
         organisation: &OrganisationName,
         repository: &RepositoryName,
-    ) -> impl Future<Output = Result<RepositoryId, RepositoriesError>> + Send;
+    ) -> Result<RepositoryId, RepositoriesError>;
 }
 
 /// Why the organisations and repositories did not do what they were asked.

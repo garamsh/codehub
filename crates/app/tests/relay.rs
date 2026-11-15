@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use adapter_memory::MemoryDirectoryOutbox;
 use app::domain::repository::RepositoryId;
 use app::port::driven::directory_changes::{
     DirectoryChanges, OrganisationChange, RepositoryChange,
@@ -110,20 +109,28 @@ impl Receiver {
     fn attempts(&self) -> Vec<(RepositoryId, u64)> {
         self.attempts.lock().unwrap().clone()
     }
-}
 
-#[cfg(test)]
-impl DirectoryChanges for Receiver {
-    async fn repository_changed(&self, change: &RepositoryChange) -> bool {
+    fn record(&self, change: &RepositoryChange) {
         self.attempts
             .lock()
             .unwrap()
             .push((change.repository, change.sequence));
+    }
+
+    fn refuses(&self, repository: RepositoryId) -> bool {
+        self.refused.lock().unwrap().contains(&repository)
+    }
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl DirectoryChanges for Receiver {
+    async fn repository_changed(&self, change: &RepositoryChange) -> bool {
+        self.record(change);
         if self.hangs.load(Ordering::SeqCst) {
             std::future::pending::<()>().await;
         }
-        !self.down.load(Ordering::SeqCst)
-            && !self.refused.lock().unwrap().contains(&change.repository)
+        !self.down.load(Ordering::SeqCst) && !self.refuses(change.repository)
     }
 
     async fn organisation_changed(&self, _change: &OrganisationChange) {}
@@ -134,6 +141,7 @@ impl DirectoryChanges for Receiver {
 struct Unreachable;
 
 #[cfg(test)]
+#[async_trait::async_trait]
 impl DirectoryOutbox for Unreachable {
     async fn claim(
         &self,
@@ -167,10 +175,10 @@ fn relay(
     harness: &Harness,
     receiver: &Arc<Receiver>,
     clock: &Arc<Manual>,
-) -> DirectoryRelay<MemoryDirectoryOutbox, Receiver, Manual> {
+) -> DirectoryRelay<Manual> {
     DirectoryRelay::new(
         Arc::new(harness.directory.outbox()),
-        Arc::clone(receiver),
+        receiver.clone(),
         Arc::clone(clock),
         WAIT,
     )
@@ -298,7 +306,7 @@ async fn logs_an_outbox_that_cannot_be_claimed_from_and_reports_it() {
     let clock = Manual::new();
     let relay = DirectoryRelay::new(
         Arc::new(Unreachable),
-        Arc::clone(&receiver),
+        receiver.clone(),
         Arc::clone(&clock),
         WAIT,
     );

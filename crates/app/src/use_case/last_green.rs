@@ -22,8 +22,8 @@ pub(crate) fn blocking_checks_passed(jobs: &[Job]) -> bool {
 /// # Errors
 ///
 /// The failure of the changeset log.
-pub(crate) async fn advance<L: ChangesetLog>(
-    log: &L,
+pub(crate) async fn advance(
+    log: &dyn ChangesetLog,
     repository: RepositoryId,
     candidate: Address,
 ) -> Result<(), ChangesetLogError> {

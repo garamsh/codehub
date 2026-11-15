@@ -135,6 +135,7 @@ fn body(change: &RepositoryChange) -> Value {
     json!({"changes": [entry]})
 }
 
+#[async_trait::async_trait]
 impl DirectoryChanges for GaramDirectoryChanges {
     async fn repository_changed(&self, change: &RepositoryChange) -> bool {
         match self.send(change.organisation.as_str(), &body(change)).await {

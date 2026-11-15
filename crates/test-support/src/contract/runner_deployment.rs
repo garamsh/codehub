@@ -2,8 +2,8 @@
 //! runner and check scenarios run against.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
-use adapter_memory::{MemoryIdentityVerification, MemoryObjectStore};
 use app::domain::address::Address;
 use app::domain::check::{CheckDefinition, Command, Need, Pattern, Timeout};
 use app::domain::name::{Label, OrganisationName};
@@ -23,64 +23,6 @@ use app::use_case::runners::RunnersService;
 
 use super::{Deployment, MAX_UPLOAD_SIZE, Repo, draft};
 
-/// Source control that queues the checks of what it lands, over a deployment's adapters.
-pub type Checked<'a, H> = ShippedSourceControl<
-    'a,
-    MemoryObjectStore,
-    <H as Deployment>::Log,
-    <H as Deployment>::Derived,
-    <H as Deployment>::Drafts,
-    <H as Deployment>::Directory,
-    <H as Deployment>::Authorisation,
-    <H as RunnerDeployment>::Queue,
-    <H as RunnerDeployment>::Definitions,
->;
-
-/// The jobs service over a deployment's adapters.
-pub type JobsOf<'a, H> = JobsService<
-    'a,
-    <H as RunnerDeployment>::Registry,
-    <H as RunnerDeployment>::Queue,
-    <H as RunnerDeployment>::CacheRefs,
-    MemoryObjectStore,
-    <H as Deployment>::Derived,
-    <H as Deployment>::Log,
-    <H as Deployment>::Directory,
-    <H as RunnerDeployment>::Definitions,
->;
-
-/// The checks service over a deployment's adapters.
-pub type ChecksOf<'a, H> = ChecksService<
-    'a,
-    <H as RunnerDeployment>::Queue,
-    <H as Deployment>::Log,
-    <H as Deployment>::Directory,
-    <H as Deployment>::Authorisation,
-    MemoryObjectStore,
-    <H as Deployment>::Derived,
-    <H as RunnerDeployment>::Definitions,
-    <H as Deployment>::Drafts,
->;
-
-/// The driving ports over a deployment's adapters.
-pub type AssemblyOf<'a, H> = Assembly<
-    'a,
-    MemoryObjectStore,
-    <H as Deployment>::Log,
-    <H as Deployment>::Derived,
-    <H as Deployment>::Drafts,
-    <H as Deployment>::Directory,
-    <H as Deployment>::Authorisation,
-    <H as Deployment>::Membership,
-    <H as RunnerDeployment>::Queue,
-    <H as RunnerDeployment>::CacheRefs,
-    <H as RunnerDeployment>::Registry,
-    <H as RunnerDeployment>::Definitions,
-    <H as Deployment>::Changes,
-    <H as Deployment>::Delivery,
-    MemoryIdentityVerification,
->;
-
 /// How long a claim or a heartbeat holds a job, in seconds.
 pub const LEASE: i64 = 30;
 
@@ -88,22 +30,22 @@ pub const LEASE: i64 = 30;
 /// deployment, over the adapters of its [`Deployment`].
 pub trait RunnerDeployment: Deployment {
     /// The runner registry.
-    type Registry: RunnerRegistry + Sync;
+    type Registry: RunnerRegistry + 'static;
     /// The job queue.
-    type Queue: JobQueue + Sync;
+    type Queue: JobQueue + 'static;
     /// The cache refs.
-    type CacheRefs: CacheRefs + Sync;
+    type CacheRefs: CacheRefs + 'static;
     /// The check definitions.
-    type Definitions: CheckDefinitions + Sync;
+    type Definitions: CheckDefinitions + 'static;
 
     /// The runner registry.
-    fn registry(&self) -> &Self::Registry;
+    fn registry(&self) -> &Arc<Self::Registry>;
     /// The job queue.
-    fn queue(&self) -> &Self::Queue;
+    fn queue(&self) -> &Arc<Self::Queue>;
     /// The cache refs.
-    fn cache_refs(&self) -> &Self::CacheRefs;
+    fn cache_refs(&self) -> &Arc<Self::CacheRefs>;
     /// The check definitions.
-    fn definitions(&self) -> &Self::Definitions;
+    fn definitions(&self) -> &Arc<Self::Definitions>;
 
     /// Makes the check definitions read the file content `text` as `outcome`. A deployment whose
     /// definitions parse the file format itself ignores `outcome`, so `text` is always in that
@@ -112,22 +54,22 @@ pub trait RunnerDeployment: Deployment {
 
     /// The driving ports over this deployment's adapters, assembled as the application ships
     /// them, with the lease [`LEASE`].
-    fn assembly(&self) -> AssemblyOf<'_, Self> {
+    fn assembly(&self) -> Assembly {
         Assembly {
-            objects: self.objects(),
-            log: self.log(),
-            derived: self.derived(),
-            drafts: self.drafts(),
-            directory: self.directory(),
-            authorisation: self.authorisation(),
-            membership: self.membership(),
-            queue: self.queue(),
-            cache_refs: self.cache_refs(),
-            registry: self.registry(),
-            definitions: self.definitions(),
-            changes: self.changes(),
-            delivery: self.delivery(),
-            identity: self.identity(),
+            objects: self.objects().clone(),
+            log: self.log().clone(),
+            derived: self.derived().clone(),
+            drafts: self.drafts().clone(),
+            directory: self.directory().clone(),
+            authorisation: self.authorisation().clone(),
+            membership: self.membership().clone(),
+            queue: self.queue().clone(),
+            cache_refs: self.cache_refs().clone(),
+            registry: self.registry().clone(),
+            definitions: self.definitions().clone(),
+            changes: self.changes().clone(),
+            delivery: self.delivery().clone(),
+            identity: self.identity().clone(),
 
             administration: Administration::BuiltIn,
             max_upload_size: MAX_UPLOAD_SIZE,
@@ -137,22 +79,22 @@ pub trait RunnerDeployment: Deployment {
     }
 
     /// The runners port over this deployment's adapters.
-    fn runners(&self) -> RunnersService<'_, Self::Registry, Self::Directory, Self::Authorisation> {
+    fn runners(&self) -> RunnersService {
         self.assembly().runners()
     }
 
     /// The jobs port over this deployment's adapters, with the lease [`LEASE`].
-    fn jobs(&self) -> JobsOf<'_, Self> {
+    fn jobs(&self) -> JobsService {
         self.assembly().jobs()
     }
 
     /// The checks port over this deployment's adapters.
-    fn checks(&self) -> ChecksOf<'_, Self> {
+    fn checks(&self) -> ChecksService {
         self.assembly().checks()
     }
 
     /// Source control that queues the checks of what it lands.
-    fn checked_source_control(&self) -> Checked<'_, Self> {
+    fn checked_source_control(&self) -> ShippedSourceControl {
         self.assembly().source_control()
     }
 }

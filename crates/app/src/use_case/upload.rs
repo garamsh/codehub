@@ -12,8 +12,8 @@ use crate::port::driving::source_control::UploadError;
 ///
 /// [`UploadError::TooLarge`] where `size` exceeds `max_size`, and otherwise the failure of the
 /// object store.
-pub async fn request_upload<O: ObjectStore>(
-    objects: &O,
+pub async fn request_upload(
+    objects: &dyn ObjectStore,
     repository: RepositoryId,
     address: Address,
     size: u64,

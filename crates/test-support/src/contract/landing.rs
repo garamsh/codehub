@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -154,20 +155,23 @@ pub async fn a_file_where_main_made_a_directory_is_rejected_naming_the_file<H: D
 /// A changeset log that, at each compare-and-swap it is asked for, first lands the next of
 /// `rivals`, so `main` moves between a landing's read of it and its compare-and-swap. Once the
 /// rivals are spent it passes the compare-and-swap through. It counts the compare-and-swaps asked.
-struct RivalsLandFirst<'a, H> {
-    repo: &'a Repo<'a, H>,
+struct RivalsLandFirst {
+    inner: Arc<dyn ChangesetLog>,
+    source_control: SourceControlService,
+    repository: RepositoryId,
     rivals: Vec<DraftName>,
-    caller: &'a Caller,
+    caller: Caller,
     asked: AtomicU32,
 }
 
-impl<H: Deployment> ChangesetLog for RivalsLandFirst<'_, H> {
+#[async_trait::async_trait]
+impl ChangesetLog for RivalsLandFirst {
     async fn append(
         &self,
         repository: RepositoryId,
         changeset: Changeset,
     ) -> Result<Address, ChangesetLogError> {
-        self.repo.harness.log().append(repository, changeset).await
+        self.inner.append(repository, changeset).await
     }
 
     async fn get(
@@ -175,7 +179,7 @@ impl<H: Deployment> ChangesetLog for RivalsLandFirst<'_, H> {
         repository: RepositoryId,
         id: Address,
     ) -> Result<Changeset, ChangesetLogError> {
-        self.repo.harness.log().get(repository, id).await
+        self.inner.get(repository, id).await
     }
 
     async fn read_ref(
@@ -183,7 +187,7 @@ impl<H: Deployment> ChangesetLog for RivalsLandFirst<'_, H> {
         repository: RepositoryId,
         name: Ref,
     ) -> Result<Option<Address>, ChangesetLogError> {
-        self.repo.harness.log().read_ref(repository, name).await
+        self.inner.read_ref(repository, name).await
     }
 
     async fn compare_and_swap(
@@ -198,23 +202,29 @@ impl<H: Deployment> ChangesetLog for RivalsLandFirst<'_, H> {
             .ok()
             .and_then(|index| self.rivals.get(index))
         {
-            self.repo.land(self.caller, rival, "rival").await.unwrap();
+            let landing = Landing {
+                message: "rival".to_owned(),
+                timestamp: 0,
+            };
+            self.source_control
+                .land(&self.caller, self.repository, rival, landing)
+                .await
+                .unwrap();
         }
-        self.repo
-            .harness
-            .log()
+        self.inner
             .compare_and_swap(repository, name, expected, new)
             .await
     }
 }
 
 /// An authorisation decision that counts the decisions asked of the one it wraps.
-struct CountsDecisions<'a, A> {
-    inner: &'a A,
+struct CountsDecisions {
+    inner: Arc<dyn AuthorisationDecision>,
     asked: AtomicU32,
 }
 
-impl<A: AuthorisationDecision + Sync> AuthorisationDecision for CountsDecisions<'_, A> {
+#[async_trait::async_trait]
+impl AuthorisationDecision for CountsDecisions {
     async fn decide(
         &self,
         subject: &Principal,
@@ -232,19 +242,19 @@ async fn land_through<H: Deployment>(
     repo: &Repo<'_, H>,
     caller: &Caller,
     draft: &DraftName,
-    log: &RivalsLandFirst<'_, H>,
-    authorisation: &CountsDecisions<'_, H::Authorisation>,
+    log: &Arc<RivalsLandFirst>,
+    authorisation: &Arc<CountsDecisions>,
     attempts: u32,
 ) -> Result<Address, SourceControlError> {
     let harness = repo.harness;
     SourceControlService::new(
         SourceControlAdapters {
-            objects: harness.objects(),
-            log,
-            derived: harness.derived(),
-            drafts: harness.drafts(),
-            directory: harness.directory(),
-            authorisation,
+            objects: harness.objects().clone(),
+            log: log.clone(),
+            derived: harness.derived().clone(),
+            drafts: harness.drafts().clone(),
+            directory: harness.directory().clone(),
+            authorisation: authorisation.clone(),
         },
         MAX_UPLOAD_SIZE,
     )
@@ -262,25 +272,27 @@ async fn land_through<H: Deployment>(
 }
 
 /// A double that lets `rivals` land first, one at each compare-and-swap.
-fn racing<'a, H: Deployment>(
-    repo: &'a Repo<'a, H>,
-    caller: &'a Caller,
+fn racing<H: Deployment>(
+    repo: &Repo<'_, H>,
+    caller: &Caller,
     rivals: &[&DraftName],
-) -> RivalsLandFirst<'a, H> {
-    RivalsLandFirst {
-        repo,
+) -> Arc<RivalsLandFirst> {
+    Arc::new(RivalsLandFirst {
+        inner: repo.harness.log().clone(),
+        source_control: repo.harness.source_control(),
+        repository: repo.id,
         rivals: rivals.iter().map(|rival| (*rival).clone()).collect(),
-        caller,
+        caller: caller.clone(),
         asked: AtomicU32::new(0),
-    }
+    })
 }
 
 /// A counter over `harness`'s authorisation decision.
-fn counting<H: Deployment>(harness: &H) -> CountsDecisions<'_, H::Authorisation> {
-    CountsDecisions {
-        inner: harness.authorisation(),
+fn counting<H: Deployment>(harness: &H) -> Arc<CountsDecisions> {
+    Arc::new(CountsDecisions {
+        inner: harness.authorisation().clone(),
         asked: AtomicU32::new(0),
-    }
+    })
 }
 
 /// Stages `count` rival drafts, each writing a path of its own, and returns their names.
@@ -443,14 +455,15 @@ const OVERLAP_WAIT: Duration = Duration::from_secs(1);
 /// A changeset log that holds the first landing between its read of `main` and its compare-and-swap
 /// until a second landing has read `main` too, or `OVERLAP_WAIT` has passed. It counts the landings
 /// in that window, and the most there were at once.
-struct CountsLandingsInFlight<'a, L> {
-    inner: &'a L,
+struct CountsLandingsInFlight {
+    inner: Arc<dyn ChangesetLog>,
     in_flight: AtomicU32,
     most: AtomicU32,
     held: AtomicBool,
 }
 
-impl<L: ChangesetLog + Sync> ChangesetLog for CountsLandingsInFlight<'_, L> {
+#[async_trait::async_trait]
+impl ChangesetLog for CountsLandingsInFlight {
     async fn append(
         &self,
         repository: RepositoryId,
@@ -507,20 +520,20 @@ async fn most_landing_at_once<H: Deployment>(
     caller: &Caller,
     landings: [(RepositoryId, &DraftName); 2],
 ) -> u32 {
-    let log = CountsLandingsInFlight {
-        inner: harness.log(),
+    let log = Arc::new(CountsLandingsInFlight {
+        inner: harness.log().clone(),
         in_flight: AtomicU32::new(0),
         most: AtomicU32::new(0),
         held: AtomicBool::new(false),
-    };
+    });
     let service = SourceControlService::new(
         SourceControlAdapters {
-            objects: harness.objects(),
-            log: &log,
-            derived: harness.derived(),
-            drafts: harness.drafts(),
-            directory: harness.directory(),
-            authorisation: harness.authorisation(),
+            objects: harness.objects().clone(),
+            log: log.clone(),
+            derived: harness.derived().clone(),
+            drafts: harness.drafts().clone(),
+            directory: harness.directory().clone(),
+            authorisation: harness.authorisation().clone(),
         },
         MAX_UPLOAD_SIZE,
     );

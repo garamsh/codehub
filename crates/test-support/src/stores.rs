@@ -1,11 +1,15 @@
 //! The adapters one served API runs over: the in-memory ones, and an object store of the caller's
 //! choice.
 
+use std::sync::Arc;
+
 use adapter_memory::{
     MemoryAuthorisationDecision, MemoryCacheRefs, MemoryChangesetLog, MemoryCheckDefinitions,
     MemoryDerivedData, MemoryDraftStore, MemoryIdentityVerification, MemoryJobQueue,
     MemoryMembership, MemoryRepositoryDirectory, MemoryRunnerRegistry,
 };
+use app::port::driven::identity_verification::IdentityVerification;
+use app::port::driven::object_store::ObjectStore;
 use app::use_case::administration::Administration;
 use app::use_case::assembly::Assembly;
 use app::use_case::landing_attempts::LandingAttempts;
@@ -16,101 +20,81 @@ const LEASE: i64 = 60;
 /// The adapters of one deployment: `objects` of the caller's choice, and the others in memory.
 pub struct Stores<O> {
     /// The object store.
-    pub objects: O,
+    pub objects: Arc<O>,
     /// The changeset log.
-    pub log: MemoryChangesetLog,
+    pub log: Arc<MemoryChangesetLog>,
     /// The derived data.
-    pub derived: MemoryDerivedData,
+    pub derived: Arc<MemoryDerivedData>,
     /// The draft store.
-    pub drafts: MemoryDraftStore,
+    pub drafts: Arc<MemoryDraftStore>,
     /// The repository directory.
-    pub directory: MemoryRepositoryDirectory,
+    pub directory: Arc<MemoryRepositoryDirectory>,
     /// Identity verification, where tokens are registered.
-    pub identity: MemoryIdentityVerification,
+    pub identity: Arc<MemoryIdentityVerification>,
     /// Membership.
-    pub membership: MemoryMembership,
+    pub membership: Arc<MemoryMembership>,
     /// The authorisation decision over `membership`.
-    pub authorisation: MemoryAuthorisationDecision,
+    pub authorisation: Arc<MemoryAuthorisationDecision>,
     /// The runner registry.
-    pub registry: MemoryRunnerRegistry,
+    pub registry: Arc<MemoryRunnerRegistry>,
     /// The job queue.
-    pub queue: MemoryJobQueue,
+    pub queue: Arc<MemoryJobQueue>,
     /// The cache refs.
-    pub cache_refs: MemoryCacheRefs,
+    pub cache_refs: Arc<MemoryCacheRefs>,
     /// The check definitions.
-    pub definitions: MemoryCheckDefinitions,
+    pub definitions: Arc<MemoryCheckDefinitions>,
 }
 
-/// The driving ports over the adapters of [`Stores`].
-pub type StoresAssembly<'a, O, I> = Assembly<
-    'a,
-    O,
-    MemoryChangesetLog,
-    MemoryDerivedData,
-    MemoryDraftStore,
-    MemoryRepositoryDirectory,
-    MemoryAuthorisationDecision,
-    MemoryMembership,
-    MemoryJobQueue,
-    MemoryCacheRefs,
-    MemoryRunnerRegistry,
-    MemoryCheckDefinitions,
-    (),
-    (),
-    I,
->;
-
-impl<O: 'static> Stores<O> {
-    /// Fresh adapters around `objects`, which live as long as the process: the services borrow
-    /// them, and a router holds its ports for `'static`.
+impl<O: ObjectStore + 'static> Stores<O> {
+    /// Fresh adapters around `objects`.
     ///
     /// # Panics
     ///
     /// Panics if the check file path is not valid, which it always is.
     #[must_use]
-    pub fn leaked(objects: O) -> &'static Self {
+    pub fn new(objects: O) -> Self {
         let membership = MemoryMembership::default();
-        Box::leak(Box::new(Self {
-            objects,
-            log: MemoryChangesetLog::default(),
-            derived: MemoryDerivedData::default(),
-            drafts: MemoryDraftStore::default(),
-            directory: MemoryRepositoryDirectory::default(),
-            identity: MemoryIdentityVerification::default(),
-            authorisation: membership.authorisation_decision(),
-            membership,
-            registry: MemoryRunnerRegistry::default(),
-            queue: MemoryJobQueue::default(),
-            cache_refs: MemoryCacheRefs::default(),
-            definitions: MemoryCheckDefinitions::new(".codehub/checks.toml".parse().unwrap()),
-        }))
+        Self {
+            objects: Arc::new(objects),
+            log: Arc::default(),
+            derived: Arc::default(),
+            drafts: Arc::default(),
+            directory: Arc::default(),
+            identity: Arc::default(),
+            authorisation: Arc::new(membership.authorisation_decision()),
+            membership: Arc::new(membership),
+            registry: Arc::default(),
+            queue: Arc::default(),
+            cache_refs: Arc::default(),
+            definitions: Arc::new(MemoryCheckDefinitions::new(
+                ".codehub/checks.toml".parse().unwrap(),
+            )),
+        }
     }
-}
 
-impl<O> Stores<O> {
     /// The driving ports over these adapters, verifying credentials with `identity`, with members
     /// administered as `administration` says and uploads up to `max_upload_size` bytes.
     #[must_use]
-    pub fn assembly<'a, I>(
-        &'a self,
-        identity: &'a I,
+    pub fn assembly(
+        &self,
+        identity: Arc<dyn IdentityVerification>,
         administration: Administration,
         max_upload_size: u64,
-    ) -> StoresAssembly<'a, O, I> {
+    ) -> Assembly {
         Assembly {
-            objects: &self.objects,
-            log: &self.log,
-            derived: &self.derived,
-            drafts: &self.drafts,
-            directory: &self.directory,
-            authorisation: &self.authorisation,
-            membership: &self.membership,
-            queue: &self.queue,
-            cache_refs: &self.cache_refs,
-            registry: &self.registry,
-            definitions: &self.definitions,
-            changes: &(),
-            delivery: &(),
+            objects: self.objects.clone(),
+            log: self.log.clone(),
+            derived: self.derived.clone(),
+            drafts: self.drafts.clone(),
+            directory: self.directory.clone(),
+            authorisation: self.authorisation.clone(),
+            membership: self.membership.clone(),
+            queue: self.queue.clone(),
+            cache_refs: self.cache_refs.clone(),
+            registry: self.registry.clone(),
+            definitions: self.definitions.clone(),
+            changes: Arc::new(()),
+            delivery: Arc::new(()),
             identity,
 
             administration,

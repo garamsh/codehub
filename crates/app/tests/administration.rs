@@ -4,7 +4,7 @@
 #[cfg(test)]
 pub mod common;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use adapter_memory::{MemoryRepositoryDirectory, ReceivedChange};
 use app::domain::name::{OrganisationName, RepositoryName};
@@ -82,6 +82,7 @@ async fn may_create_repositories(harness: &Harness, caller: &Caller, name: &str)
 struct Unreachable;
 
 #[cfg(test)]
+#[async_trait::async_trait]
 impl AuthorisationDecision for Unreachable {
     async fn decide(
         &self,
@@ -101,6 +102,14 @@ struct Recording {
 }
 
 #[cfg(test)]
+impl Recording {
+    fn record(&self, resource: &Resource) {
+        self.resources.lock().unwrap().push(resource.clone());
+    }
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
 impl AuthorisationDecision for Recording {
     async fn decide(
         &self,
@@ -108,7 +117,7 @@ impl AuthorisationDecision for Recording {
         _action: Action,
         resource: &Resource,
     ) -> Result<Decision, AuthorisationError> {
-        self.resources.lock().unwrap().push(resource.clone());
+        self.record(resource);
         Ok(Decision::Allow)
     }
 }
@@ -121,6 +130,7 @@ struct Racing {
 }
 
 #[cfg(test)]
+#[async_trait::async_trait]
 impl RepositoryDirectory for Racing {
     async fn create_organisation(&self, name: &OrganisationName) -> Result<(), DirectoryError> {
         self.inner.create_organisation(name).await?;
@@ -153,18 +163,18 @@ impl RepositoryDirectory for Racing {
 
 /// Every members operation, as `caller` asking for `member`, over `authorisation`.
 #[cfg(test)]
-async fn every_members_operation<A: AuthorisationDecision + Sync>(
+async fn every_members_operation(
     harness: &Harness,
-    authorisation: &A,
+    authorisation: Arc<dyn AuthorisationDecision>,
     administration: Administration,
     caller: &Caller,
     member: &Principal,
 ) -> Vec<Result<(), MembersError>> {
     let members = MembersService::new(
         MembersAdapters {
-            directory: &harness.directory,
+            directory: harness.directory.clone(),
             authorisation,
-            membership: &harness.membership,
+            membership: harness.membership.clone(),
         },
         administration,
     );
@@ -189,7 +199,7 @@ async fn refuses_every_members_operation_in_external_mode_before_asking_the_deci
     let operation = |administration| {
         every_members_operation(
             &harness,
-            &Unreachable,
+            Arc::new(Unreachable),
             administration,
             &ada,
             bob.principal(),
@@ -219,7 +229,7 @@ async fn writes_no_member_when_refusing_a_members_operation_in_external_mode() {
 
     let refused = every_members_operation(
         &harness,
-        &harness.authorisation,
+        harness.authorisation.clone(),
         Administration::External,
         &ada,
         bob.principal(),
@@ -235,9 +245,9 @@ async fn writes_no_member_when_refusing_a_members_operation_in_external_mode() {
     // refusal's.
     MembersService::new(
         MembersAdapters {
-            directory: &harness.directory,
-            authorisation: &harness.authorisation,
-            membership: &harness.membership,
+            directory: harness.directory.clone(),
+            authorisation: harness.authorisation.clone(),
+            membership: harness.membership.clone(),
         },
         Administration::BuiltIn,
     )
@@ -364,14 +374,14 @@ async fn counts_an_organisation_a_concurrent_creator_made_as_created_and_does_no
     harness
         .authorisation
         .answer(Action::CreateRepository, Decision::Allow);
-    let directory = Racing::default();
+    let directory = Arc::new(Racing::default());
     let repositories = RepositoriesService::new(
         RepositoriesAdapters {
-            directory: &directory,
-            authorisation: &harness.authorisation,
-            membership: &harness.membership,
-            changes: &harness.changes,
-            delivery: &harness.delivery,
+            directory: directory.clone(),
+            authorisation: harness.authorisation.clone(),
+            membership: harness.membership.clone(),
+            changes: harness.changes.clone(),
+            delivery: harness.delivery.clone(),
         },
         Administration::External,
     );
@@ -515,16 +525,16 @@ async fn names_the_repository_in_each_resource_it_asks_the_decision_about() {
     let harness = Harness::default();
     let ada = harness.caller("ada").await;
     let id = harness.repository(&ada, "acme").await.id;
-    let recording = Recording::default();
+    let recording = Arc::new(Recording::default());
     let path: Path = "src/a.txt".parse().unwrap();
 
     RepositoriesService::new(
         RepositoriesAdapters {
-            directory: &harness.directory,
-            authorisation: &recording,
-            membership: &harness.membership,
-            changes: &harness.changes,
-            delivery: &harness.delivery,
+            directory: harness.directory.clone(),
+            authorisation: recording.clone(),
+            membership: harness.membership.clone(),
+            changes: harness.changes.clone(),
+            delivery: harness.delivery.clone(),
         },
         Administration::BuiltIn,
     )
@@ -535,12 +545,12 @@ async fn names_the_repository_in_each_resource_it_asks_the_decision_about() {
     drop(
         SourceControlService::new(
             SourceControlAdapters {
-                objects: &harness.objects,
-                log: &harness.log,
-                derived: &harness.derived,
-                drafts: &harness.drafts,
-                directory: &harness.directory,
-                authorisation: &recording,
+                objects: harness.objects.clone(),
+                log: harness.log.clone(),
+                derived: harness.derived.clone(),
+                drafts: harness.drafts.clone(),
+                directory: harness.directory.clone(),
+                authorisation: recording.clone(),
             },
             MAX_UPLOAD_SIZE,
         )

@@ -53,6 +53,7 @@ fn columns<T>(
     Ok((addresses, encodings))
 }
 
+#[async_trait::async_trait]
 impl DerivedData for PostgresDerivedData {
     async fn put_trees(
         &self,

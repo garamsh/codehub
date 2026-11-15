@@ -12,7 +12,8 @@ use crate::domain::repository::RepositoryId;
 use crate::port::driven::directory_changes::RepositoryChange;
 
 /// Holds the entries.
-pub trait DirectoryOutbox {
+#[async_trait::async_trait]
+pub trait DirectoryOutbox: Send + Sync {
     /// Claims every pending entry of one repository for `lease` seconds from `now`, and returns
     /// them in sequence order. The repository is `repository` where given, and otherwise the one
     /// whose oldest entry was written first. A repository is claimable where none of its entries is
@@ -22,12 +23,12 @@ pub trait DirectoryOutbox {
     /// # Errors
     ///
     /// [`DirectoryOutboxError::Backend`] where the outbox fails; nothing is then claimed.
-    fn claim(
+    async fn claim(
         &self,
         repository: Option<RepositoryId>,
         now: i64,
         lease: i64,
-    ) -> impl Future<Output = Result<Vec<RepositoryChange>, DirectoryOutboxError>> + Send;
+    ) -> Result<Vec<RepositoryChange>, DirectoryOutboxError>;
 
     /// Ends the claim on `repository`'s entries, which can be claimed again from `until`: a time
     /// not after `now` makes them claimable at once, and a later one holds them back.
@@ -35,11 +36,11 @@ pub trait DirectoryOutbox {
     /// # Errors
     ///
     /// [`DirectoryOutboxError::Backend`] where the outbox fails.
-    fn release(
+    async fn release(
         &self,
         repository: RepositoryId,
         until: i64,
-    ) -> impl Future<Output = Result<(), DirectoryOutboxError>> + Send;
+    ) -> Result<(), DirectoryOutboxError>;
 
     /// Deletes the entry of `repository` with `sequence`, which was delivered. Deleting an entry
     /// that is not there is not an error.
@@ -47,11 +48,11 @@ pub trait DirectoryOutbox {
     /// # Errors
     ///
     /// [`DirectoryOutboxError::Backend`] where the outbox fails.
-    fn delete(
+    async fn delete(
         &self,
         repository: RepositoryId,
         sequence: u64,
-    ) -> impl Future<Output = Result<(), DirectoryOutboxError>> + Send;
+    ) -> Result<(), DirectoryOutboxError>;
 }
 
 /// Why the outbox did not answer.

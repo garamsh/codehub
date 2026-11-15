@@ -1,5 +1,7 @@
 //! A changeset whose blocking check failed or timed out is reverted by a new changeset on `main`.
 
+use std::sync::Arc;
+
 use crate::contract::runner_deployment::{
     LEASE, RunnerDeployment, Spec, check, land, land_checks, organisation, runner, text,
 };
@@ -26,9 +28,10 @@ use app::use_case::landing_attempts::LandingAttempts;
 const BACKEND_DOWN: &str = "log down";
 
 /// A log that fails every move of `main` as its backend failing, and otherwise is the one it wraps.
-struct FailsMainSwap<'a, L>(&'a L);
+struct FailsMainSwap(Arc<dyn ChangesetLog>);
 
-impl<L: ChangesetLog + Sync> ChangesetLog for FailsMainSwap<'_, L> {
+#[async_trait::async_trait]
+impl ChangesetLog for FailsMainSwap {
     async fn append(
         &self,
         repository: RepositoryId,
@@ -78,17 +81,17 @@ async fn report_with_main_failing<H: RunnerDeployment>(
     now: i64,
 ) -> (Job, Result<(), JobsError>) {
     let claimed = harness.jobs().claim(bot, now).await.unwrap().unwrap().job;
-    let log = FailsMainSwap(harness.log());
+    let log = Arc::new(FailsMainSwap(harness.log().clone()));
     let service = JobsService::new(
         JobsAdapters {
-            registry: harness.registry(),
-            queue: harness.queue(),
-            cache_refs: harness.cache_refs(),
-            objects: harness.objects(),
-            derived: harness.derived(),
-            log: &log,
-            directory: harness.directory(),
-            definitions: harness.definitions(),
+            registry: harness.registry().clone(),
+            queue: harness.queue().clone(),
+            cache_refs: harness.cache_refs().clone(),
+            objects: harness.objects().clone(),
+            derived: harness.derived().clone(),
+            log: log.clone(),
+            directory: harness.directory().clone(),
+            definitions: harness.definitions().clone(),
         },
         LEASE,
         LandingAttempts::default(),

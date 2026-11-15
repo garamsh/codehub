@@ -1,6 +1,8 @@
 //! The checks driving port, served by the job queue, the changeset log, the repository directory
 //! and the authorisation decision it is given.
 
+use std::sync::Arc;
+
 use crate::domain::address::Address;
 use crate::domain::draft::DraftId;
 use crate::domain::job::{Job, JobId};
@@ -22,45 +24,42 @@ use crate::use_case::plan::{PlanPorts, plan};
 use crate::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
 
 /// The driven ports the checks are built over.
-pub struct ChecksAdapters<'a, Q, L, R, A, O, D, C, S> {
+pub struct ChecksAdapters {
     /// Holds the jobs.
-    pub queue: &'a Q,
+    pub queue: Arc<dyn JobQueue>,
     /// Stores changesets and `last-green`.
-    pub log: &'a L,
+    pub log: Arc<dyn ChangesetLog>,
     /// Finds a repository's organisation.
-    pub directory: &'a R,
+    pub directory: Arc<dyn RepositoryDirectory>,
     /// Says what callers may do.
-    pub authorisation: &'a A,
+    pub authorisation: Arc<dyn AuthorisationDecision>,
     /// Stores blobs.
-    pub objects: &'a O,
+    pub objects: Arc<dyn ObjectStore>,
     /// Stores derived data.
-    pub derived: &'a D,
+    pub derived: Arc<dyn DerivedData>,
     /// Reads the check definitions.
-    pub definitions: &'a C,
+    pub definitions: Arc<dyn CheckDefinitions>,
     /// Stores drafts.
-    pub drafts: &'a S,
+    pub drafts: Arc<dyn DraftStore>,
 }
 
 /// A repository's checks over the driven ports the composition site passes to it. A blocking job
 /// that times out where the checks are read has its changeset reverted.
-pub struct ChecksService<'a, Q, L, R, A, O, D, C, S> {
-    queue: &'a Q,
-    log: &'a L,
-    directory: &'a R,
-    authorisation: &'a A,
-    objects: &'a O,
-    derived: &'a D,
-    definitions: &'a C,
-    drafts: &'a S,
-    checks: PostLandChecks<'a, O, D, L, R, Q, C>,
+pub struct ChecksService {
+    queue: Arc<dyn JobQueue>,
+    log: Arc<dyn ChangesetLog>,
+    directory: Arc<dyn RepositoryDirectory>,
+    authorisation: Arc<dyn AuthorisationDecision>,
+    objects: Arc<dyn ObjectStore>,
+    derived: Arc<dyn DerivedData>,
+    definitions: Arc<dyn CheckDefinitions>,
+    drafts: Arc<dyn DraftStore>,
+    checks: PostLandChecks,
 }
 
-impl<'a, Q, L, R, A, O, D, C, S> ChecksService<'a, Q, L, R, A, O, D, C, S> {
+impl ChecksService {
     /// Checks over `adapters`, each revert tried at most `attempts` times.
-    pub const fn new(
-        adapters: ChecksAdapters<'a, Q, L, R, A, O, D, C, S>,
-        attempts: LandingAttempts,
-    ) -> Self {
+    pub fn new(adapters: ChecksAdapters, attempts: LandingAttempts) -> Self {
         let ChecksAdapters {
             queue,
             log,
@@ -72,13 +71,13 @@ impl<'a, Q, L, R, A, O, D, C, S> ChecksService<'a, Q, L, R, A, O, D, C, S> {
             drafts,
         } = adapters;
         Self {
-            queue,
-            log,
-            directory,
+            queue: Arc::clone(&queue),
+            log: Arc::clone(&log),
+            directory: Arc::clone(&directory),
             authorisation,
-            objects,
-            derived,
-            definitions,
+            objects: Arc::clone(&objects),
+            derived: Arc::clone(&derived),
+            definitions: Arc::clone(&definitions),
             drafts,
             checks: PostLandChecks::new(
                 PostLandChecksAdapters {
@@ -95,17 +94,8 @@ impl<'a, Q, L, R, A, O, D, C, S> ChecksService<'a, Q, L, R, A, O, D, C, S> {
     }
 }
 
-impl<Q, L, R, A, O, D, C, S> Checks for ChecksService<'_, Q, L, R, A, O, D, C, S>
-where
-    Q: JobQueue + Sync,
-    L: ChangesetLog + Sync,
-    R: RepositoryDirectory + Sync,
-    A: AuthorisationDecision + Sync,
-    O: ObjectStore + Sync,
-    D: DerivedData + Sync,
-    C: CheckDefinitions + Sync,
-    S: DraftStore + Sync,
-{
+#[async_trait::async_trait]
+impl Checks for ChecksService {
     async fn jobs_of(
         &self,
         caller: &Caller,
@@ -114,8 +104,8 @@ where
         now: i64,
     ) -> Result<Vec<Job>, ChecksError> {
         readable_repository(
-            self.directory,
-            self.authorisation,
+            &*self.directory,
+            &*self.authorisation,
             caller.principal(),
             repository,
         )
@@ -131,8 +121,8 @@ where
         name: Ref,
     ) -> Result<Option<Address>, ChecksError> {
         readable_repository(
-            self.directory,
-            self.authorisation,
+            &*self.directory,
+            &*self.authorisation,
             caller.principal(),
             repository,
         )
@@ -147,14 +137,14 @@ where
         job: JobId,
     ) -> Result<Job, ChecksError> {
         let (organisation, _) = readable_repository(
-            self.directory,
-            self.authorisation,
+            &*self.directory,
+            &*self.authorisation,
             caller.principal(),
             repository,
         )
         .await?;
         require(
-            self.authorisation,
+            &*self.authorisation,
             caller.principal(),
             Action::AdministerRunners,
             &Resource::Organisation(organisation.clone()),
@@ -175,8 +165,8 @@ where
         draft: &DraftName,
     ) -> Result<Plan, ChecksError> {
         readable_repository(
-            self.directory,
-            self.authorisation,
+            &*self.directory,
+            &*self.authorisation,
             caller.principal(),
             repository,
         )
@@ -186,12 +176,12 @@ where
             name: draft.clone(),
         };
         let ports = PlanPorts {
-            queue: self.queue,
-            log: self.log,
-            objects: self.objects,
-            derived: self.derived,
-            definitions: self.definitions,
-            drafts: self.drafts,
+            queue: Arc::clone(&self.queue),
+            log: Arc::clone(&self.log),
+            objects: Arc::clone(&self.objects),
+            derived: Arc::clone(&self.derived),
+            definitions: Arc::clone(&self.definitions),
+            drafts: Arc::clone(&self.drafts),
         };
         Ok(plan(&ports, repository, &draft).await?)
     }

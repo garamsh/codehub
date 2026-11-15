@@ -22,9 +22,9 @@ use crate::port::driving::source_control::{HistoryError, Version};
 ///
 /// The failure of a port, or [`HistoryError::FileVersions`] where a changeset's nodes cannot be
 /// derived.
-pub async fn history<L: ChangesetLog, D: DerivedData>(
-    log: &L,
-    derived: &D,
+pub async fn history(
+    log: &dyn ChangesetLog,
+    derived: &dyn DerivedData,
     repository: RepositoryId,
     at: Option<Address>,
     path: &Path,
@@ -67,9 +67,9 @@ pub async fn history<L: ChangesetLog, D: DerivedData>(
 }
 
 /// Derives the file-version nodes of `at`, after those of each ancestor that lacks them.
-async fn derive_file_versions<L: ChangesetLog, D: DerivedData>(
-    log: &L,
-    derived: &D,
+async fn derive_file_versions(
+    log: &dyn ChangesetLog,
+    derived: &dyn DerivedData,
     repository: RepositoryId,
     at: Address,
 ) -> Result<(), HistoryError> {

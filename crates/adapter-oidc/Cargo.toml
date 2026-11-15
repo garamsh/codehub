@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 app = { path = "../app" }
+async-trait.workspace = true
 futures-util = { workspace = true }
 jsonwebtoken = { workspace = true, features = ["aws_lc_rs"] }
 reqwest = { workspace = true, features = ["json", "rustls"] }

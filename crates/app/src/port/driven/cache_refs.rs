@@ -9,19 +9,20 @@ use crate::domain::path::{Path, Prefix};
 use crate::domain::repository::RepositoryId;
 
 /// Holds the cache refs.
-pub trait CacheRefs {
+#[async_trait::async_trait]
+pub trait CacheRefs: Send + Sync {
     /// The cache ref of `path`, which is relative to `folder`, in `repository`; `None` where it
     /// has none.
     ///
     /// # Errors
     ///
     /// [`CacheRefsError::Backend`] where the store fails.
-    fn cache_ref(
+    async fn cache_ref(
         &self,
         repository: RepositoryId,
         folder: &Prefix,
         path: &Path,
-    ) -> impl Future<Output = Result<Option<CacheRef>, CacheRefsError>> + Send;
+    ) -> Result<Option<CacheRef>, CacheRefsError>;
 
     /// Sets the cache ref of `path`, which is relative to `folder`, in `repository` to `to`,
     /// where it records `from` as its changeset, or none where `from` is `None`. Returns whether
@@ -30,14 +31,14 @@ pub trait CacheRefs {
     /// # Errors
     ///
     /// [`CacheRefsError::Backend`] where the store fails.
-    fn advance_cache_ref(
+    async fn advance_cache_ref(
         &self,
         repository: RepositoryId,
         folder: &Prefix,
         path: &Path,
         from: Option<Address>,
         to: CacheRef,
-    ) -> impl Future<Output = Result<bool, CacheRefsError>> + Send;
+    ) -> Result<bool, CacheRefsError>;
 }
 
 /// Why the cache refs did not answer.

@@ -1,6 +1,8 @@
 //! The members driving port, served by the directory, the authorisation decision and the
 //! membership it is given.
 
+use std::sync::Arc;
+
 use crate::domain::name::{OrganisationName, RepositoryName};
 use crate::domain::path::Prefix;
 use crate::domain::principal::{Caller, Principal};
@@ -12,31 +14,28 @@ use crate::use_case::access::require;
 use crate::use_case::administration::Administration;
 
 /// The driven ports the members are built over.
-pub struct MembersAdapters<'a, R, A, M> {
+pub struct MembersAdapters {
     /// Looks repositories up.
-    pub directory: &'a R,
+    pub directory: Arc<dyn RepositoryDirectory>,
     /// Says what callers may do.
-    pub authorisation: &'a A,
+    pub authorisation: Arc<dyn AuthorisationDecision>,
     /// Keeps members and their grants.
-    pub membership: &'a M,
+    pub membership: Arc<dyn Membership>,
 }
 
 /// Members kept in the membership the composition site passes to it, administered by the callers
 /// the authorisation decision allows.
-pub struct MembersService<'a, R, A, M> {
-    directory: &'a R,
-    authorisation: &'a A,
-    membership: &'a M,
+pub struct MembersService {
+    directory: Arc<dyn RepositoryDirectory>,
+    authorisation: Arc<dyn AuthorisationDecision>,
+    membership: Arc<dyn Membership>,
     administration: Administration,
 }
 
-impl<'a, R, A, M> MembersService<'a, R, A, M> {
+impl MembersService {
     /// Members over `adapters`, where `administration` says whether members are kept here at
     /// all.
-    pub const fn new(
-        adapters: MembersAdapters<'a, R, A, M>,
-        administration: Administration,
-    ) -> Self {
+    pub fn new(adapters: MembersAdapters, administration: Administration) -> Self {
         let MembersAdapters {
             directory,
             authorisation,
@@ -51,11 +50,7 @@ impl<'a, R, A, M> MembersService<'a, R, A, M> {
     }
 }
 
-impl<R, A, M> MembersService<'_, R, A, M>
-where
-    R: RepositoryDirectory + Sync,
-    A: AuthorisationDecision + Sync,
-{
+impl MembersService {
     /// Requires that members are kept here and that `caller` administers them in `organisation`.
     async fn require_admin(
         &self,
@@ -67,7 +62,7 @@ where
         }
         let resource = Resource::Organisation(organisation.clone());
         Ok(require(
-            self.authorisation,
+            &*self.authorisation,
             caller.principal(),
             Action::AdministerMembers,
             &resource,
@@ -93,12 +88,8 @@ where
     }
 }
 
-impl<R, A, M> Members for MembersService<'_, R, A, M>
-where
-    R: RepositoryDirectory + Sync,
-    A: AuthorisationDecision + Sync,
-    M: Membership + Sync,
-{
+#[async_trait::async_trait]
+impl Members for MembersService {
     async fn add_member(
         &self,
         caller: &Caller,

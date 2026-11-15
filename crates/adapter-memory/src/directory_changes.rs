@@ -30,6 +30,7 @@ impl MemoryDirectoryChanges {
     }
 }
 
+#[async_trait::async_trait]
 impl DirectoryChanges for MemoryDirectoryChanges {
     async fn repository_changed(&self, change: &RepositoryChange) -> bool {
         lock(&self.changes).push(ReceivedChange::Repository(change.clone()));

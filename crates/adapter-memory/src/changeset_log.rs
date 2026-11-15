@@ -15,6 +15,7 @@ pub struct MemoryChangesetLog {
     refs: Mutex<BTreeMap<(RepositoryId, Ref), Address>>,
 }
 
+#[async_trait::async_trait]
 impl ChangesetLog for MemoryChangesetLog {
     async fn append(
         &self,

@@ -1,6 +1,8 @@
 //! Repositories held by the PostgreSQL adapters, each harness over a database of its own, with
 //! drafts staged and landed through the driving ports.
 
+use std::sync::Arc;
+
 use adapter_memory::{MemoryIdentityVerification, MemoryObjectStore};
 use adapter_postgres::{
     Database, PostgresAuthorisationDecision, PostgresCacheRefs, PostgresChangesetLog,
@@ -22,31 +24,35 @@ use test_support::contract::runner_deployment::RunnerDeployment;
 /// created and drops with it. The object store and identity verification stay in memory.
 pub struct Harness {
     /// Object storage, in memory.
-    pub objects: MemoryObjectStore,
+    pub objects: Arc<MemoryObjectStore>,
     /// The changeset log.
-    pub log: PostgresChangesetLog,
+    pub log: Arc<PostgresChangesetLog>,
     /// Derived data.
-    pub derived: PostgresDerivedData,
+    pub derived: Arc<PostgresDerivedData>,
     /// Staged drafts.
-    pub drafts: PostgresDraftStore,
+    pub drafts: Arc<PostgresDraftStore>,
     /// The repository directory.
-    pub directory: PostgresRepositoryDirectory,
+    pub directory: Arc<PostgresRepositoryDirectory>,
     /// The directory outbox.
-    pub outbox: PostgresDirectoryOutbox,
+    pub outbox: Arc<PostgresDirectoryOutbox>,
     /// Identity verification, in memory.
-    pub identity: MemoryIdentityVerification,
+    pub identity: Arc<MemoryIdentityVerification>,
     /// Organisation membership and grants.
-    pub membership: PostgresMembership,
+    pub membership: Arc<PostgresMembership>,
     /// The authorisation decision.
-    pub authorisation: PostgresAuthorisationDecision,
+    pub authorisation: Arc<PostgresAuthorisationDecision>,
     /// The runner registry.
-    pub registry: PostgresRunnerRegistry,
+    pub registry: Arc<PostgresRunnerRegistry>,
     /// The job queue.
-    pub queue: PostgresJobQueue,
+    pub queue: Arc<PostgresJobQueue>,
     /// The cache refs.
-    pub cache_refs: PostgresCacheRefs,
+    pub cache_refs: Arc<PostgresCacheRefs>,
     /// The check definitions, read from TOML.
-    pub definitions: TomlCheckDefinitions,
+    pub definitions: Arc<TomlCheckDefinitions>,
+    /// The directory changes reported: none.
+    pub changes: Arc<()>,
+    /// The delivery that follows a repository's creation: none.
+    pub delivery: Arc<()>,
     database: TestDatabase,
 }
 
@@ -68,19 +74,21 @@ impl Harness {
             .unwrap();
         database.migrate().await.unwrap();
         Self {
-            objects: MemoryObjectStore::default(),
-            log: PostgresChangesetLog::new(&database),
-            derived: PostgresDerivedData::new(&database),
-            drafts: PostgresDraftStore::new(&database),
-            directory: PostgresRepositoryDirectory::new(&database),
-            outbox: PostgresDirectoryOutbox::new(&database),
-            identity: MemoryIdentityVerification::default(),
-            membership: PostgresMembership::new(&database),
-            authorisation: PostgresAuthorisationDecision::new(&database),
-            registry: PostgresRunnerRegistry::new(&database),
-            queue: PostgresJobQueue::new(&database),
-            cache_refs: PostgresCacheRefs::new(&database),
-            definitions: TomlCheckDefinitions::new().unwrap(),
+            objects: Arc::new(MemoryObjectStore::default()),
+            log: Arc::new(PostgresChangesetLog::new(&database)),
+            derived: Arc::new(PostgresDerivedData::new(&database)),
+            drafts: Arc::new(PostgresDraftStore::new(&database)),
+            directory: Arc::new(PostgresRepositoryDirectory::new(&database)),
+            outbox: Arc::new(PostgresDirectoryOutbox::new(&database)),
+            identity: Arc::new(MemoryIdentityVerification::default()),
+            membership: Arc::new(PostgresMembership::new(&database)),
+            authorisation: Arc::new(PostgresAuthorisationDecision::new(&database)),
+            registry: Arc::new(PostgresRunnerRegistry::new(&database)),
+            queue: Arc::new(PostgresJobQueue::new(&database)),
+            cache_refs: Arc::new(PostgresCacheRefs::new(&database)),
+            definitions: Arc::new(TomlCheckDefinitions::new().unwrap()),
+            changes: Arc::new(()),
+            delivery: Arc::new(()),
             database: test_database,
         }
     }
@@ -106,48 +114,48 @@ impl Deployment for Harness {
         Self::new().await
     }
 
-    fn objects(&self) -> &MemoryObjectStore {
+    fn objects(&self) -> &Arc<MemoryObjectStore> {
         &self.objects
     }
 
-    fn log(&self) -> &PostgresChangesetLog {
+    fn log(&self) -> &Arc<PostgresChangesetLog> {
         &self.log
     }
 
-    fn derived(&self) -> &PostgresDerivedData {
+    fn derived(&self) -> &Arc<PostgresDerivedData> {
         &self.derived
     }
 
-    fn drafts(&self) -> &PostgresDraftStore {
+    fn drafts(&self) -> &Arc<PostgresDraftStore> {
         &self.drafts
     }
 
-    fn directory(&self) -> &PostgresRepositoryDirectory {
+    fn directory(&self) -> &Arc<PostgresRepositoryDirectory> {
         &self.directory
     }
 
-    fn identity(&self) -> &MemoryIdentityVerification {
+    fn identity(&self) -> &Arc<MemoryIdentityVerification> {
         &self.identity
     }
 
-    fn membership(&self) -> &PostgresMembership {
+    fn membership(&self) -> &Arc<PostgresMembership> {
         &self.membership
     }
 
-    fn authorisation(&self) -> &PostgresAuthorisationDecision {
+    fn authorisation(&self) -> &Arc<PostgresAuthorisationDecision> {
         &self.authorisation
     }
 
-    fn changes(&self) -> &() {
-        &()
+    fn changes(&self) -> &Arc<()> {
+        &self.changes
     }
 
-    fn outbox(&self) -> &PostgresDirectoryOutbox {
+    fn outbox(&self) -> &Arc<PostgresDirectoryOutbox> {
         &self.outbox
     }
 
-    fn delivery(&self) -> &() {
-        &()
+    fn delivery(&self) -> &Arc<()> {
+        &self.delivery
     }
 
     async fn write_change(&self, repository: RepositoryId, kind: ChangeKind) -> RepositoryChange {
@@ -185,19 +193,19 @@ impl RunnerDeployment for Harness {
     type CacheRefs = PostgresCacheRefs;
     type Definitions = TomlCheckDefinitions;
 
-    fn registry(&self) -> &PostgresRunnerRegistry {
+    fn registry(&self) -> &Arc<PostgresRunnerRegistry> {
         &self.registry
     }
 
-    fn queue(&self) -> &PostgresJobQueue {
+    fn queue(&self) -> &Arc<PostgresJobQueue> {
         &self.queue
     }
 
-    fn cache_refs(&self) -> &PostgresCacheRefs {
+    fn cache_refs(&self) -> &Arc<PostgresCacheRefs> {
         &self.cache_refs
     }
 
-    fn definitions(&self) -> &TomlCheckDefinitions {
+    fn definitions(&self) -> &Arc<TomlCheckDefinitions> {
         &self.definitions
     }
 

@@ -368,6 +368,7 @@ impl AuthzenAuthorisationDecision {
     }
 }
 
+#[async_trait::async_trait]
 impl AuthorisationDecision for AuthzenAuthorisationDecision {
     async fn decide(
         &self,

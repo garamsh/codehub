@@ -6,16 +6,14 @@ use crate::domain::credential::Credential;
 use crate::domain::principal::Principal;
 
 /// Turns a credential presented with a request into the principal it names.
-pub trait IdentityVerification {
+#[async_trait::async_trait]
+pub trait IdentityVerification: Send + Sync {
     /// The principal `credential` identifies.
     ///
     /// # Errors
     ///
     /// [`IdentityError::Rejected`] where the credential does not identify anyone.
-    fn verify(
-        &self,
-        credential: &Credential,
-    ) -> impl Future<Output = Result<Principal, IdentityError>> + Send;
+    async fn verify(&self, credential: &Credential) -> Result<Principal, IdentityError>;
 }
 
 /// Why identity verification refused or did not answer.
