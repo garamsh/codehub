@@ -7,6 +7,7 @@ edition = "2024"
 rust-version = "1.99.1"
 
 [workspace.dependencies]
+async-trait = "0.1.92"
 aws-lc-rs = "1.19.0"
 axum = { version = "0.8.9", default-features = false }
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }

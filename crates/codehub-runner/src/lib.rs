@@ -16,18 +16,19 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub use crate::config::Config;
 use crate::config::{CheckExecutor, Command, ExecutorKind, GaonConfig};
 use crate::core::Mode;
-use crate::executor::ExecutorError;
+use crate::executor::{Executor, ExecutorError};
 use crate::gaon::GaonExecutor;
 use crate::gaon::api::Api;
 use crate::gaon::results::Results;
 use crate::host::HostExecutor;
 use crate::http_source::HttpJobSource;
-use crate::job_source::SourceError;
+use crate::job_source::{JobSource, SourceError};
 use crate::token::{ClientCredentials, Secret, TokenSource};
 
 /// Why the runner stopped.
@@ -111,27 +112,22 @@ pub async fn run(config: Config) -> Result<ExitCode, Error> {
         (None, None) => TokenSource::File(PathBuf::new()),
     };
     let server = config.server.ok_or(Error::Missing("--server"))?;
-    let source = HttpJobSource::new(http.clone(), &server, tokens);
+    let source: Arc<dyn JobSource> = Arc::new(HttpJobSource::new(http.clone(), &server, tokens));
     let mode = if config.once {
         Mode::Once
     } else {
         Mode::Forever
     };
-    match config.executor {
+    let executor: Arc<dyn Executor> = match config.executor {
         ExecutorKind::Host => {
             let work_dir = config.work_dir.unwrap_or_else(std::env::temp_dir);
-            let executor = HostExecutor::new(work_dir, http, hidden);
-            core::run(&source, &executor, mode)
-                .await
-                .map_err(Error::Claim)?;
+            Arc::new(HostExecutor::new(work_dir, http, hidden))
         }
-        ExecutorKind::Gaon => {
-            let executor = gaon_executor(config.gaon).await?;
-            core::run(&source, &executor, mode)
-                .await
-                .map_err(Error::Claim)?;
-        }
-    }
+        ExecutorKind::Gaon => Arc::new(gaon_executor(config.gaon).await?),
+    };
+    core::run(&*source, &*executor, mode)
+        .await
+        .map_err(Error::Claim)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -139,18 +135,24 @@ pub async fn run(config: Config) -> Result<ExitCode, Error> {
 /// server and no token, runs one job through it, and prints how it ended.
 async fn check_executor(check: CheckExecutor) -> Result<ExitCode, Error> {
     let timeout = Duration::from_secs(check.timeout);
-    let outcome = match check.executor {
+    let executor: Result<Arc<dyn Executor>, Error> = match check.executor {
         ExecutorKind::Host => {
             let work_dir = check.work_dir.unwrap_or_else(std::env::temp_dir);
-            let executor = HostExecutor::new(work_dir, reqwest::Client::new(), None);
-            check_executor::run(&executor, &check.command, timeout).await
+            Ok(Arc::new(HostExecutor::new(
+                work_dir,
+                reqwest::Client::new(),
+                None,
+            )))
         }
-        ExecutorKind::Gaon => match gaon_executor(check.gaon).await {
-            Ok(executor) => check_executor::run(&executor, &check.command, timeout).await,
-            // Listing gaon at start is the executor's setup failing, which is what the check reports.
-            Err(Error::Gaon(error)) => check_executor::Outcome::of(Err(error)),
-            Err(error) => return Err(error),
-        },
+        ExecutorKind::Gaon => gaon_executor(check.gaon)
+            .await
+            .map(|executor| Arc::new(executor) as Arc<dyn Executor>),
+    };
+    let outcome = match executor {
+        Ok(executor) => check_executor::run(&*executor, &check.command, timeout).await,
+        // Listing gaon at start is the executor's setup failing, which is what the check reports.
+        Err(Error::Gaon(error)) => check_executor::Outcome::of(Err(error)),
+        Err(error) => return Err(error),
     };
     Ok(outcome.finish())
 }

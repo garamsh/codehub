@@ -1,10 +1,11 @@
 //! The job source port: the runner's conversation with a server about jobs.
 
 use std::fmt;
-use std::future::Future;
 use std::path::{Component, Path};
 use std::str::FromStr;
 use std::time::Duration;
+
+use async_trait::async_trait;
 
 /// Names a job on the server.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -279,13 +280,14 @@ impl fmt::Display for SourceError {
 impl std::error::Error for SourceError {}
 
 /// The claim, heartbeat and report conversation with a server.
-pub trait JobSource {
+#[async_trait]
+pub trait JobSource: Send + Sync {
     /// Waits for the server to hand out a job; `None` where it held the request and had none.
     ///
     /// # Errors
     ///
     /// A [`SourceError`] where the conversation failed.
-    fn claim(&self) -> impl Future<Output = Result<Option<Job>, SourceError>> + Send;
+    async fn claim(&self) -> Result<Option<Job>, SourceError>;
 
     /// Tells the server `job` is still running, and returns whether to go on.
     ///
@@ -293,7 +295,7 @@ pub trait JobSource {
     ///
     /// A [`SourceError`] where the conversation failed; [`SourceError::NotHeld`] where the
     /// server no longer holds the job for this runner.
-    fn heartbeat(&self, job: JobId) -> impl Future<Output = Result<Heartbeat, SourceError>> + Send;
+    async fn heartbeat(&self, job: JobId) -> Result<Heartbeat, SourceError>;
 
     /// Reports how `job` ended, which ends it on the server. Uploads the files of the report the
     /// server lacks first; where that fails, reports anyway, and the server ends a passed job
@@ -302,11 +304,7 @@ pub trait JobSource {
     /// # Errors
     ///
     /// A [`SourceError`] where the conversation failed.
-    fn report(
-        &self,
-        job: JobId,
-        report: &Report,
-    ) -> impl Future<Output = Result<(), SourceError>> + Send;
+    async fn report(&self, job: JobId, report: &Report) -> Result<(), SourceError>;
 }
 
 #[cfg(test)]

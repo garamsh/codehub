@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use async_trait::async_trait;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
@@ -297,6 +298,7 @@ impl HttpJobSource {
     }
 }
 
+#[async_trait]
 impl JobSource for HttpJobSource {
     async fn claim(&self) -> Result<Option<Job>, SourceError> {
         let response = self

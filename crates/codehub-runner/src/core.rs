@@ -31,9 +31,9 @@ pub enum Mode {
 ///
 /// A [`SourceError`] where a claim failed in [`Mode::Once`]. In [`Mode::Forever`] a failed claim
 /// is logged and tried again after [`RETRY_PAUSE`], and the function does not return.
-pub async fn run<S: JobSource, E: Executor>(
-    source: &S,
-    executor: &E,
+pub async fn run(
+    source: &dyn JobSource,
+    executor: &dyn Executor,
     mode: Mode,
 ) -> Result<(), SourceError> {
     loop {
@@ -52,7 +52,7 @@ pub async fn run<S: JobSource, E: Executor>(
     }
 }
 
-async fn run_job<S: JobSource, E: Executor>(source: &S, executor: &E, job: &Job) {
+async fn run_job(source: &dyn JobSource, executor: &dyn Executor, job: &Job) {
     eprintln!(
         "job {} started: {} check {} of {} in repository {}",
         job.id, job.check, job.changeset, job.organisation, job.repository
@@ -72,7 +72,7 @@ async fn run_job<S: JobSource, E: Executor>(source: &S, executor: &E, job: &Job)
 }
 
 /// Heartbeats for as long as it is polled, and passes on a stop the server asks for.
-async fn keep_alive<S: JobSource>(source: &S, job: &Job, signal: &StopSignal) -> Infallible {
+async fn keep_alive(source: &dyn JobSource, job: &Job, signal: &StopSignal) -> Infallible {
     let every = job.heartbeat_interval.max(MIN_HEARTBEAT);
     let mut ticks = interval_at(tokio::time::Instant::now() + every, every);
     ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -130,6 +130,8 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
+    use async_trait::async_trait;
+
     use crate::job_source::{Address, JobId};
 
     use super::*;
@@ -175,6 +177,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl JobSource for Source {
         async fn claim(&self) -> Result<Option<Job>, SourceError> {
             let next = self.claims.lock().unwrap().pop_front();
@@ -206,6 +209,7 @@ mod tests {
         end: Result<End, String>,
     }
 
+    #[async_trait]
     impl Executor for Executes {
         async fn run(&self, _: &Job, mut stop: Stop) -> Result<Execution, ExecutorError> {
             tokio::select! {

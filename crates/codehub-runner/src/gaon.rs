@@ -6,6 +6,7 @@ pub mod results;
 
 use std::time::Duration;
 
+use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use rustix::rand::{GetRandomFlags, getrandom};
@@ -233,6 +234,7 @@ impl GaonExecutor {
     }
 }
 
+#[async_trait]
 impl Executor for GaonExecutor {
     async fn run(&self, job: &Job, mut stop: Stop) -> Result<Execution, ExecutorError> {
         let id = job.id.value();
