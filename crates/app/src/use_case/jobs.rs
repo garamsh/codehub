@@ -1,5 +1,5 @@
-//! The jobs driving port, served by the runner registry, the job queue, the object store, derived
-//! data and the changeset log it is given.
+//! The jobs driving port, served by the runner registry, the job queue, the cache refs, the object
+//! store, derived data and the changeset log it is given.
 
 use std::collections::BTreeMap;
 
@@ -7,7 +7,7 @@ use crate::domain::address::Address;
 use crate::domain::changeset::Change;
 use crate::domain::file::File;
 use crate::domain::job::{
-    CacheRef, Heartbeat, Job, JobId, JobResult, Outcome, Produced, ProducedFile, empty_output_tree,
+    Heartbeat, Job, JobId, JobResult, Outcome, Produced, ProducedFile, empty_output_tree,
     output_tail,
 };
 use crate::domain::path::{Path, PathError, Prefix};
@@ -15,25 +15,28 @@ use crate::domain::principal::{Caller, Principal};
 use crate::domain::repository::RepositoryId;
 use crate::domain::runner::{Registration, RegistrationId};
 use crate::domain::tree::{Tree, derive};
+use crate::port::driven::cache_refs::{CacheRefs, CacheRefsError};
 use crate::port::driven::changeset_log::ChangesetLog;
 use crate::port::driven::check_definitions::CheckDefinitions;
 use crate::port::driven::derived_data::DerivedData;
-use crate::port::driven::job_queue::JobQueue;
+use crate::port::driven::job_queue::{JobQueue, JobQueueError};
 use crate::port::driven::object_store::ObjectStore;
 use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driven::runner_registry::RunnerRegistry;
 use crate::port::driving::jobs::{Claimed, ClaimedFile, Jobs, JobsError, Upload, UploadGrant};
-use crate::use_case::first_parent::advance_forward;
+use crate::use_case::cache_refs::advance;
 use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
 use crate::use_case::tree_checks::{Resolved, dependencies, walk_files};
 
 /// The driven ports the jobs are built over.
-pub struct JobsAdapters<'a, G, Q, O, D, L, R, C> {
+pub struct JobsAdapters<'a, G, Q, F, O, D, L, R, C> {
     /// Finds the callers' registrations.
     pub registry: &'a G,
     /// Holds the jobs.
     pub queue: &'a Q,
+    /// Holds the cache refs.
+    pub cache_refs: &'a F,
     /// Stores blobs.
     pub objects: &'a O,
     /// Stores derived data.
@@ -48,9 +51,10 @@ pub struct JobsAdapters<'a, G, Q, O, D, L, R, C> {
 
 /// Jobs served to registered runners, each claim holding its job for `lease` seconds. A blocking
 /// job that ends in failure or in a timeout has its changeset reverted.
-pub struct JobsService<'a, G, Q, O, D, L, R, C> {
+pub struct JobsService<'a, G, Q, F, O, D, L, R, C> {
     registry: &'a G,
     queue: &'a Q,
+    cache_refs: &'a F,
     objects: &'a O,
     derived: &'a D,
     log: &'a L,
@@ -58,17 +62,18 @@ pub struct JobsService<'a, G, Q, O, D, L, R, C> {
     lease: i64,
 }
 
-impl<'a, G, Q, O, D, L, R, C> JobsService<'a, G, Q, O, D, L, R, C> {
+impl<'a, G, Q, F, O, D, L, R, C> JobsService<'a, G, Q, F, O, D, L, R, C> {
     /// Jobs over `adapters`, where a claim or a heartbeat holds a job for `lease` seconds and each
     /// revert is tried at most `attempts` times.
     pub const fn new(
-        adapters: JobsAdapters<'a, G, Q, O, D, L, R, C>,
+        adapters: JobsAdapters<'a, G, Q, F, O, D, L, R, C>,
         lease: i64,
         attempts: LandingAttempts,
     ) -> Self {
         let JobsAdapters {
             registry,
             queue,
+            cache_refs,
             objects,
             derived,
             log,
@@ -78,6 +83,7 @@ impl<'a, G, Q, O, D, L, R, C> JobsService<'a, G, Q, O, D, L, R, C> {
         Self {
             registry,
             queue,
+            cache_refs,
             objects,
             derived,
             log,
@@ -97,7 +103,7 @@ impl<'a, G, Q, O, D, L, R, C> JobsService<'a, G, Q, O, D, L, R, C> {
     }
 }
 
-impl<G, Q, O, D, L, R, C> JobsService<'_, G, Q, O, D, L, R, C>
+impl<G, Q, F, O, D, L, R, C> JobsService<'_, G, Q, F, O, D, L, R, C>
 where
     G: RunnerRegistry + Sync,
 {
@@ -134,9 +140,10 @@ fn covered(produced: &[ProducedFile], prefixes: &[Prefix]) -> BTreeMap<Path, Fil
         .collect()
 }
 
-impl<G, Q, O, D, L, R, C> JobsService<'_, G, Q, O, D, L, R, C>
+impl<G, Q, F, O, D, L, R, C> JobsService<'_, G, Q, F, O, D, L, R, C>
 where
     Q: JobQueue + Sync,
+    F: CacheRefs + Sync,
     O: ObjectStore + Sync,
     D: DerivedData + Sync,
     L: ChangesetLog + Sync,
@@ -169,7 +176,7 @@ where
         let caches = job.check.caches.iter().zip(job.cache_prefixes());
         for (declared, prefix) in caches {
             let Some(cache) = self
-                .queue
+                .cache_refs
                 .cache_ref(job.repository, &job.check.folder, declared)
                 .await?
             else {
@@ -261,37 +268,27 @@ where
                 .filter_map(|(file, content)| Some((relative(&prefix, file)?, *content)))
                 .collect();
             let tree = self.store_tree(job.repository, files).await?;
-            advance_forward(
+            advance::<_, _, JobsError>(
+                self.cache_refs,
                 self.log,
                 job.repository,
+                &job.check.folder,
+                path,
                 job.changeset,
-                || async {
-                    let current = self
-                        .queue
-                        .cache_ref(job.repository, &job.check.folder, path)
-                        .await?;
-                    Ok::<_, JobsError>(current.map(|current| current.changeset))
-                },
-                |current| async move {
-                    Ok::<_, JobsError>(
-                        self.queue
-                            .advance_cache_ref(
-                                job.repository,
-                                &job.check.folder,
-                                path,
-                                current,
-                                CacheRef {
-                                    tree,
-                                    changeset: job.changeset,
-                                },
-                            )
-                            .await?,
-                    )
-                },
+                tree,
             )
             .await?;
         }
         Ok(())
+    }
+}
+
+/// A failure of the cache refs reaches the runner as the failure of the job queue, which held
+/// them before they had a port of their own.
+impl From<CacheRefsError> for JobsError {
+    fn from(error: CacheRefsError) -> Self {
+        let CacheRefsError::Backend(description) = error;
+        Self::Queue(JobQueueError::Backend(description))
     }
 }
 
@@ -302,10 +299,11 @@ fn ids(registrations: &[Registration]) -> Vec<RegistrationId> {
         .collect()
 }
 
-impl<G, Q, O, D, L, R, C> Jobs for JobsService<'_, G, Q, O, D, L, R, C>
+impl<G, Q, F, O, D, L, R, C> Jobs for JobsService<'_, G, Q, F, O, D, L, R, C>
 where
     G: RunnerRegistry + Sync,
     Q: JobQueue + Sync,
+    F: CacheRefs + Sync,
     O: ObjectStore + Sync,
     D: DerivedData + Sync,
     L: ChangesetLog + Sync,

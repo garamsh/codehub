@@ -83,6 +83,7 @@ async fn report_with_main_failing<H: RunnerDeployment>(
         JobsAdapters {
             registry: harness.registry(),
             queue: harness.queue(),
+            cache_refs: harness.cache_refs(),
             objects: harness.objects(),
             derived: harness.derived(),
             log: &log,

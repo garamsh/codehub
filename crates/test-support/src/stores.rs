@@ -2,9 +2,9 @@
 //! choice.
 
 use adapter_memory::{
-    MemoryAuthorisationDecision, MemoryChangesetLog, MemoryCheckDefinitions, MemoryDerivedData,
-    MemoryDraftStore, MemoryIdentityVerification, MemoryJobQueue, MemoryMembership,
-    MemoryRepositoryDirectory, MemoryRunnerRegistry,
+    MemoryAuthorisationDecision, MemoryCacheRefs, MemoryChangesetLog, MemoryCheckDefinitions,
+    MemoryDerivedData, MemoryDraftStore, MemoryIdentityVerification, MemoryJobQueue,
+    MemoryMembership, MemoryRepositoryDirectory, MemoryRunnerRegistry,
 };
 use app::use_case::administration::Administration;
 use app::use_case::assembly::Assembly;
@@ -35,6 +35,8 @@ pub struct Stores<O> {
     pub registry: MemoryRunnerRegistry,
     /// The job queue.
     pub queue: MemoryJobQueue,
+    /// The cache refs.
+    pub cache_refs: MemoryCacheRefs,
     /// The check definitions.
     pub definitions: MemoryCheckDefinitions,
 }
@@ -50,6 +52,7 @@ pub type StoresAssembly<'a, O, I> = Assembly<
     MemoryAuthorisationDecision,
     MemoryMembership,
     MemoryJobQueue,
+    MemoryCacheRefs,
     MemoryRunnerRegistry,
     MemoryCheckDefinitions,
     (),
@@ -78,6 +81,7 @@ impl<O: 'static> Stores<O> {
             membership,
             registry: MemoryRunnerRegistry::default(),
             queue: MemoryJobQueue::default(),
+            cache_refs: MemoryCacheRefs::default(),
             definitions: MemoryCheckDefinitions::new(".codehub/checks.toml".parse().unwrap()),
         }))
     }
@@ -102,6 +106,7 @@ impl<O> Stores<O> {
             authorisation: &self.authorisation,
             membership: &self.membership,
             queue: &self.queue,
+            cache_refs: &self.cache_refs,
             registry: &self.registry,
             definitions: &self.definitions,
             changes: &(),

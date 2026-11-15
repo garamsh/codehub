@@ -7,11 +7,8 @@ use adapter_memory::MemoryJobQueue;
 use app::domain::address::Address;
 use app::domain::changeset::Changeset;
 use app::domain::check::CheckKey;
-use app::domain::job::{
-    CacheRef, Heartbeat, Job, JobId, JobResult, NewJob, Outcome, Produced, Resolution,
-};
+use app::domain::job::{Heartbeat, Job, JobId, JobResult, NewJob, Outcome, Produced, Resolution};
 use app::domain::name::OrganisationName;
-use app::domain::path::{Path, Prefix};
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
 use app::domain::runner::{Registration, RegistrationId};
@@ -161,28 +158,6 @@ impl JobQueue for RecordRefusingQueue<'_> {
         self.0.of_changeset(repository, changeset).await
     }
 
-    async fn cache_ref(
-        &self,
-        repository: RepositoryId,
-        folder: &Prefix,
-        path: &Path,
-    ) -> Result<Option<CacheRef>, JobQueueError> {
-        self.0.cache_ref(repository, folder, path).await
-    }
-
-    async fn advance_cache_ref(
-        &self,
-        repository: RepositoryId,
-        folder: &Prefix,
-        path: &Path,
-        from: Option<Address>,
-        to: CacheRef,
-    ) -> Result<bool, JobQueueError> {
-        self.0
-            .advance_cache_ref(repository, folder, path, from, to)
-            .await
-    }
-
     async fn expire(&self, now: i64) -> Result<Vec<Job>, JobQueueError> {
         self.0.expire(now).await
     }
@@ -209,6 +184,7 @@ async fn a_failed_revert_that_cannot_be_recorded_returns_both_failures() {
         JobsAdapters {
             registry: &harness.registry,
             queue: &queue,
+            cache_refs: &harness.cache_refs,
             objects: &harness.objects,
             derived: &harness.derived,
             log: &log,

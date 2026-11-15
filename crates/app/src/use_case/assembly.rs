@@ -15,7 +15,7 @@ use crate::use_case::source_control::{SourceControlAdapters, SourceControlServic
 /// The driving ports as the application ships them, over the driven ports it is given: source
 /// control queues the checks of each landing, and the jobs and the checks revert a changeset
 /// whose blocking check failed. Its fields are what the driving ports are built over.
-pub struct Assembly<'a, O, L, D, S, R, A, M, Q, G, C, X, V, I> {
+pub struct Assembly<'a, O, L, D, S, R, A, M, Q, F, G, C, X, V, I> {
     /// Stores blobs.
     pub objects: &'a O,
     /// Stores changesets and the refs.
@@ -32,6 +32,8 @@ pub struct Assembly<'a, O, L, D, S, R, A, M, Q, G, C, X, V, I> {
     pub membership: &'a M,
     /// Holds the jobs.
     pub queue: &'a Q,
+    /// Holds the cache refs.
+    pub cache_refs: &'a F,
     /// Finds the callers' registrations.
     pub registry: &'a G,
     /// Reads the check definitions.
@@ -56,8 +58,8 @@ pub struct Assembly<'a, O, L, D, S, R, A, M, Q, G, C, X, V, I> {
 pub type ShippedSourceControl<'a, O, L, D, S, R, A, Q, C> =
     SourceControlService<'a, O, L, D, S, R, A, PostLandChecks<'a, O, D, L, R, Q, C>>;
 
-impl<'a, O, L, D, S, R, A, M, Q, G, C, X, V, I>
-    Assembly<'a, O, L, D, S, R, A, M, Q, G, C, X, V, I>
+impl<'a, O, L, D, S, R, A, M, Q, F, G, C, X, V, I>
+    Assembly<'a, O, L, D, S, R, A, M, Q, F, G, C, X, V, I>
 {
     /// The authentication port.
     pub const fn authentication(&self) -> AuthenticationService<'a, I> {
@@ -127,11 +129,12 @@ impl<'a, O, L, D, S, R, A, M, Q, G, C, X, V, I>
     }
 
     /// The jobs port.
-    pub const fn jobs(&self) -> JobsService<'a, G, Q, O, D, L, R, C> {
+    pub const fn jobs(&self) -> JobsService<'a, G, Q, F, O, D, L, R, C> {
         JobsService::new(
             JobsAdapters {
                 registry: self.registry,
                 queue: self.queue,
+                cache_refs: self.cache_refs,
                 objects: self.objects,
                 derived: self.derived,
                 log: self.log,
