@@ -2,7 +2,7 @@
 # Brings up the garam stack (dev/garam/compose.yaml) with fresh throwaway keys, runs the end-to-end
 # test against it (e2e/tests/garam.rs) and removes the stack, its volumes and the keys at every
 # exit, whatever the test's result. Run from the repository root by `make e2e-garam`.
-# Arguments pass to `cargo test`, after the test selection. Every wait is bounded, so a stalled
+# Arguments pass to `cargo nextest run`, after the test selection. Every wait is bounded, so a stalled
 # service fails the run instead of hanging it.
 set -eu
 
@@ -44,4 +44,4 @@ CODEHUB_GARAM_E2E_CA=$dir/ca.crt
 export CODEHUB_GARAM_E2E_CA
 
 cd "$root"
-TEST_SELECTOR="-p e2e --test garam" sh scripts/test-count.sh "$@"
+cargo nextest run -p e2e --locked --no-tests=fail --test garam "$@"

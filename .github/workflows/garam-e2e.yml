@@ -32,6 +32,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # Mover: Dependabot's github-actions updates (.github/dependabot.yml), merged by the PM.
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-nextest
+
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ env.AWS_ROLE }}

@@ -1,7 +1,7 @@
 # Dex identity provider for the check services (compose.yaml, service "dex").
 # The issuer URL must equal CODEHUB_TEST_OIDC_ISSUER: Dex puts it in every token.
 # Passwords below are fixtures for local and CI checks only; the bcrypt hashes
-# match the CODEHUB_TEST_OIDC_PASSWORD_* values in dev/check-env.sh.
+# match the CODEHUB_TEST_OIDC_PASSWORD_* values in dev/test.env.
 issuer: http://127.0.0.1:18080/dex
 
 storage:

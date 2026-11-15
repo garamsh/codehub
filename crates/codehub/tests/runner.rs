@@ -1,5 +1,5 @@
 //! The shipped `codehub` binary and the runner's composition site against the services the
-//! checks run (`dev/check-env.sh`): a landing queues a check, a runner registered through the
+//! checks run (`dev/test.env`): a landing queues a check, a runner registered through the
 //! API claims it, runs it on this machine and reports how it ended.
 //!
 //! The runner runs in the test process, through the function the `codehub-runner` binary calls:

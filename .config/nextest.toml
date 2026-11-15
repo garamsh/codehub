@@ -1,0 +1,2 @@
+# The oldest nextest the entry points run with; an older binary refuses to start.
+nextest-version = "0.9.152"

@@ -29,19 +29,19 @@ The output of steps 1 to 4 was produced on 2026-11-11 from the commit `e4fe6227e
 make services
 ```
 
-This runs `docker compose up --detach --wait`, creates the object-store bucket `CODEHUB_TEST_S3_BUCKET` names (`scripts/services-up.sh`), and smoke-tests the five services (`scripts/check-services.sh`). Without `make`, run `docker compose up --detach --wait` and create the bucket yourself with the signed `PUT` that `scripts/services-up.sh` sends.
+This runs `docker compose --env-file dev/test.env up --detach --wait --wait-timeout 180`, which returns once the five services are healthy and the one-shot `s3-init` service has created the object-store bucket `CODEHUB_TEST_S3_BUCKET` names, then smoke-tests the services (`scripts/check-services.sh`). Without `make`, run the `docker compose` command alone.
 
 Create a database for the server; the services start with none of its own:
 
 ```sh
-docker compose exec postgres createdb -U codehub quickstart
+docker compose --env-file dev/test.env exec postgres createdb -U codehub quickstart
 ```
 
 ## 2. Run `codehub`
 
 ```sh
 cargo build --locked -p codehub -p ch
-set -a; . dev/check-env.sh; set +a
+set -a; . dev/test.env; set +a
 export CODEHUB_POSTGRES_URL="${CODEHUB_TEST_POSTGRES_URL%/*}/quickstart"
 export CODEHUB_S3_ENDPOINT=$CODEHUB_TEST_S3_ENDPOINT
 export CODEHUB_S3_REGION=$CODEHUB_TEST_S3_REGION
@@ -77,7 +77,7 @@ To log in, open http://127.0.0.1:18080/dex/device and enter the code RLVT-BLNF
 Or open http://127.0.0.1:18080/dex/device?user_code=RLVT-BLNF
 ```
 
-Open the address in a browser, enter the code, and log in as `alice@example.test` with the password `CODEHUB_TEST_OIDC_PASSWORD_ALICE` holds in `dev/check-env.sh` (the account is in `dev/dex/config.yaml`). The command then prints the subject and issuer of the principal, and exits 0:
+Open the address in a browser, enter the code, and log in as `alice@example.test` with the password `CODEHUB_TEST_OIDC_PASSWORD_ALICE` holds in `dev/test.env` (the account is in `dev/dex/config.yaml`). The command then prints the subject and issuer of the principal, and exits 0:
 
 ```text
 logged in as CiQwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGExMWMSBWxvY2Fs at http://127.0.0.1:18080/dex
@@ -173,7 +173,7 @@ The command exits 2.
 
 ## Stop and clean up
 
-Stop `codehub` with Ctrl-C. The services keep running; stop them and delete their data with `make services-down`. To start over against the same services, drop the database with `docker compose exec postgres dropdb -U codehub quickstart` and create it again.
+Stop `codehub` with Ctrl-C. The services keep running; stop them and delete their data with `make services-down`. To start over against the same services, drop the database with `docker compose --env-file dev/test.env exec postgres dropdb -U codehub quickstart` and create it again.
 
 ## Federated mode
 
@@ -186,9 +186,9 @@ The output below was produced on 2026-11-12 from the commit `ccd033a216e799dd232
 Stop the standalone `codehub` first if it still runs, then create a separate database and start the server from the repository root:
 
 ```sh
-docker compose exec postgres createdb -U codehub federated
+docker compose --env-file dev/test.env exec postgres createdb -U codehub federated
 cargo build --locked -p codehub -p ch
-set -a; . dev/check-env.sh; set +a
+set -a; . dev/test.env; set +a
 export CODEHUB_POSTGRES_URL="${CODEHUB_TEST_POSTGRES_URL%/*}/federated"
 export CODEHUB_S3_ENDPOINT=$CODEHUB_TEST_S3_ENDPOINT
 export CODEHUB_S3_REGION=$CODEHUB_TEST_S3_REGION
@@ -222,7 +222,7 @@ The audience is `codehub`: Keycloak puts it in the `aud` claim of the tokens of 
 In a second terminal, from the repository root. A separate configuration directory keeps this run's `ch` state apart from the standalone one. The token is obtained as alice with the password grant of the client `codehub-test` and kept in a file; `ch` reads the file on every command, so it never logs in:
 
 ```sh
-set -a; . dev/check-env.sh; set +a
+set -a; . dev/test.env; set +a
 export PATH=$PWD/target/debug:$PATH
 export XDG_CONFIG_HOME=$(mktemp -d)
 export CH_SERVER=http://127.0.0.1:8080
@@ -296,9 +296,9 @@ exit 0
 
 The output below was produced on 2026-11-13 from the commit `76660678f22722c791083986a3b82208c5561ff8` plus this file's change, except step 6, produced on 2026-11-14 from the commit `972693a32fd6f8e3eb0f4e55878a295b4b8d35d7` plus this change; changeset identifiers contain a timestamp, so yours differ, and every other line is the same. Cerbos reads `dev/cerbos/policies` when it starts, so a `make services` started before the policy granted `administer_runners` answers `ch: the action is not allowed` to step 1 until the services are started again.
 
-A runner is a principal registered to claim the jobs of an organisation's checks; `codehub-runner` claims them and runs each command on this machine. This section runs in federated mode, with the second terminal's `ch` configured as above and `acme/app` selected, against `codehub` started with either of the identity settings above. The runner authenticates with a token file, the same way `ch` does: bob's token from the password grant of the client `codehub-test`, because that client and bob's password are already in `dev/check-env.sh` and compose, so no client has to be created in Keycloak to get one. The other way, a token endpoint with the client-credentials grant (`--token-endpoint`, `--client-id`, `--client-secret-env`), needs a Keycloak client with a service account, which `dev/keycloak/codehub-realm.json` does not have.
+A runner is a principal registered to claim the jobs of an organisation's checks; `codehub-runner` claims them and runs each command on this machine. This section runs in federated mode, with the second terminal's `ch` configured as above and `acme/app` selected, against `codehub` started with either of the identity settings above. The runner authenticates with a token file, the same way `ch` does: bob's token from the password grant of the client `codehub-test`, because that client and bob's password are already in `dev/test.env` and compose, so no client has to be created in Keycloak to get one. The other way, a token endpoint with the client-credentials grant (`--token-endpoint`, `--client-id`, `--client-secret-env`), needs a Keycloak client with a service account, which `dev/keycloak/codehub-realm.json` does not have.
 
-1. Register bob as a runner of `acme`. Alice is allowed to in `acme` (`administer_runners` in `dev/cerbos/policies/organisation.yaml`). Bob's subject and the issuer are in `dev/check-env.sh`:
+1. Register bob as a runner of `acme`. Alice is allowed to in `acme` (`administer_runners` in `dev/cerbos/policies/organisation.yaml`). Bob's subject and the issuer are in `dev/test.env`:
 
    ```console
    $ ch runner register "$CODEHUB_TEST_KEYCLOAK_SUBJECT_BOB" --issuer "$CODEHUB_TEST_KEYCLOAK_ISSUER"
@@ -311,7 +311,7 @@ A runner is a principal registered to claim the jobs of an organisation's checks
 
    ```sh
    cargo build --locked -p codehub-runner
-   set -a; . dev/check-env.sh; set +a
+   set -a; . dev/test.env; set +a
    export RUNNER_TOKEN_FILE=$(mktemp)
    curl -s -u "$CODEHUB_TEST_KEYCLOAK_TEST_CLIENT_ID:$CODEHUB_TEST_KEYCLOAK_TEST_CLIENT_SECRET" \
      -d grant_type=password -d username=bob \
@@ -425,7 +425,7 @@ gaon has no scheduler or node agent here, so the tests bind a MicroVM and write 
 
 ### Stop and clean up
 
-Stop `codehub` with Ctrl-C, and the runner. To start over, drop the database with `docker compose exec postgres dropdb -U codehub federated` and create it again.
+Stop `codehub` with Ctrl-C, and the runner. To start over, drop the database with `docker compose --env-file dev/test.env exec postgres dropdb -U codehub federated` and create it again.
 
 ## garam as issuer and decision point
 

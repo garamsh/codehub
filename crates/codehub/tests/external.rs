@@ -1,6 +1,6 @@
 //! The shipped `codehub` binary in external authorisation mode: identity by introspection against
 //! the test identity provider (Keycloak), decisions from the AuthZEN decision point (Cerbos, policy
-//! in `dev/cerbos/policies`) and the services of `dev/check-env.sh`. In that policy alice may do
+//! in `dev/cerbos/policies`) and the services of `dev/test.env`. In that policy alice may do
 //! everything in `acme` and create repositories, but not organisations, in `beta`; bob may read
 //! `acme/app` and write under `docs/` in it.
 

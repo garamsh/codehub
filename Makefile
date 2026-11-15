@@ -1,3 +1,10 @@
+# The test credentials, read once here and exported to every recipe and to the compose commands.
+include dev/test.env
+export
+
+# Extra arguments for cargo nextest run in `test` and `e2e`: a filter, for instance.
+TEST_ARGS ?=
+
 .PHONY: lint format test e2e e2e-garam e2e-gaon loadtest loadtest-smoke build images ci services services-down
 
 lint:
@@ -8,16 +15,17 @@ format:
 
 # Starts the check services (compose.yaml), smoke-tests them, and runs the
 # workspace tests, without the e2e package, with the CODEHUB_TEST_* variables
-# of dev/check-env.sh.
+# of dev/test.env. A run that selects no test fails.
 # The services stay up afterwards; `make services-down` stops them.
 test: services
-	set -a && . dev/check-env.sh && set +a && sh scripts/test-count.sh
+	cargo nextest run --workspace --exclude e2e --locked --no-tests=fail $(TEST_ARGS)
+	cargo test --doc --workspace --locked
 
 # Builds the binaries the e2e tests run, then runs the e2e package against the same services
 # and variables as `test`.
 e2e: services
 	cargo build --locked -p codehub -p ch -p codehub-runner
-	set -a && . dev/check-env.sh && set +a && TEST_SELECTOR="-p e2e" sh scripts/test-count.sh -- --skip garam_
+	cargo nextest run -p e2e --locked --no-tests=fail -E 'not test(garam_)' $(TEST_ARGS)
 
 # The e2e tests whose names contain garam_ run against garam's published images (dev/garam), which
 # the garam-e2e workflow alone may pull, so `e2e` skips them and this target runs them: it starts
@@ -25,7 +33,7 @@ e2e: services
 # the local Docker image store; it is not part of `ci`.
 e2e-garam: services
 	cargo build --locked -p codehub -p ch
-	set -a && . dev/check-env.sh && set +a && sh dev/garam/run.sh
+	sh dev/garam/run.sh
 
 # The live tests of the gaon driver (crates/codehub-runner/tests/gaon_live.rs) against a gaon-apiserver
 # built from the commit pinned in dev/gaon/env.sh and run with etcd under RBAC: it builds the server
@@ -39,7 +47,7 @@ e2e-gaon:
 # scenario in the debug build, which fails on an unexpected status or a replica that dies.
 loadtest-smoke: services
 	cargo build --locked -p codehub -p loadtest
-	set -a && . dev/check-env.sh && set +a && cargo run --locked -p loadtest -- --scenario all --agents 4 --duration 5
+	cargo run --locked -p loadtest -- --scenario all --agents 4 --duration 5
 
 # The full run for the scale baseline: release binaries, 200 agents, LOADTEST_DURATION seconds per
 # scenario; the figures are also written to target/loadtest.json.
@@ -47,7 +55,7 @@ LOADTEST_DURATION ?= 60
 
 loadtest: services
 	cargo build --locked --release -p codehub -p loadtest
-	set -a && . dev/check-env.sh && set +a && cargo run --locked --release -p loadtest -- --scenario all --agents 200 --duration $(LOADTEST_DURATION) --json target/loadtest.json
+	cargo run --locked --release -p loadtest -- --scenario all --agents 200 --duration $(LOADTEST_DURATION) --json target/loadtest.json
 
 build:
 	cargo build --workspace --all-targets --locked
@@ -74,9 +82,11 @@ images:
 
 ci: lint format test e2e loadtest-smoke build
 
+# Running containers are kept; pick up a changed image or configuration with
+# `make services-down` and then `make services`.
 services:
-	sh scripts/services-up.sh
+	docker compose --env-file dev/test.env up --detach --wait --wait-timeout 180 --no-recreate
 	sh scripts/check-services.sh
 
 services-down:
-	docker compose down --volumes
+	docker compose --env-file dev/test.env down --volumes
