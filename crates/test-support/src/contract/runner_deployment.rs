@@ -1,82 +1,31 @@
-//! The deployment of the runner registry, the job queue and the check definitions, which the
-//! runner and check scenarios run against.
+//! The deployment the runner and check scenarios run against, and the scenarios' own vocabulary.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 use app::domain::address::Address;
 use app::domain::check::{CheckDefinition, Command, Need, Pattern, Timeout};
 use app::domain::name::{Label, OrganisationName};
 use app::domain::principal::Caller;
-use app::port::driven::cache_refs::CacheRefs;
 use app::port::driven::check_definitions::{CheckDefinitions, CheckFileError};
-use app::port::driven::job_queue::JobQueue;
-use app::port::driven::runner_registry::RunnerRegistry;
 use app::port::driving::runners::Runners;
 use app::port::driving::source_control::{SourceControl, SourceControlError};
-use app::use_case::administration::Administration;
-use app::use_case::assembly::{Assembly, ShippedSourceControl};
+use app::use_case::assembly::ShippedSourceControl;
 use app::use_case::checks::ChecksService;
 use app::use_case::jobs::JobsService;
-use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::runners::RunnersService;
 
-use super::{Deployment, MAX_UPLOAD_SIZE, Repo, draft};
+use super::{Deployment, Repo, draft};
 
 /// How long a claim or a heartbeat holds a job, in seconds.
 pub const LEASE: i64 = 30;
 
-/// The adapters of the runner registry, the job queue, the cache refs and the check definitions of one
-/// deployment, over the adapters of its [`Deployment`].
+/// A deployment whose check definitions the scenarios can make read a file as a given outcome,
+/// with the driving ports of the runners and the checks over its adapters.
 pub trait RunnerDeployment: Deployment {
-    /// The runner registry.
-    type Registry: RunnerRegistry + 'static;
-    /// The job queue.
-    type Queue: JobQueue + 'static;
-    /// The cache refs.
-    type CacheRefs: CacheRefs + 'static;
-    /// The check definitions.
-    type Definitions: CheckDefinitions + 'static;
-
-    /// The runner registry.
-    fn registry(&self) -> &Arc<Self::Registry>;
-    /// The job queue.
-    fn queue(&self) -> &Arc<Self::Queue>;
-    /// The cache refs.
-    fn cache_refs(&self) -> &Arc<Self::CacheRefs>;
-    /// The check definitions.
-    fn definitions(&self) -> &Arc<Self::Definitions>;
-
     /// Makes the check definitions read the file content `text` as `outcome`. A deployment whose
     /// definitions parse the file format itself ignores `outcome`, so `text` is always in that
     /// format and `outcome` is what it reads as.
     fn teach(&self, text: &str, outcome: Result<Vec<CheckDefinition>, CheckFileError>);
-
-    /// The driving ports over this deployment's adapters, assembled as the application ships
-    /// them, with the lease [`LEASE`].
-    fn assembly(&self) -> Assembly {
-        Assembly {
-            objects: self.objects().clone(),
-            log: self.log().clone(),
-            derived: self.derived().clone(),
-            drafts: self.drafts().clone(),
-            directory: self.directory().clone(),
-            authorisation: self.authorisation().clone(),
-            membership: self.membership().clone(),
-            queue: self.queue().clone(),
-            cache_refs: self.cache_refs().clone(),
-            registry: self.registry().clone(),
-            definitions: self.definitions().clone(),
-            changes: self.changes().clone(),
-            delivery: self.delivery().clone(),
-            identity: self.identity().clone(),
-
-            administration: Administration::BuiltIn,
-            max_upload_size: MAX_UPLOAD_SIZE,
-            attempts: LandingAttempts::default(),
-            lease: LEASE,
-        }
-    }
 
     /// The runners port over this deployment's adapters.
     fn runners(&self) -> RunnersService {

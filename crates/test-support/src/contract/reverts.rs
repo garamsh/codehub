@@ -271,7 +271,11 @@ pub async fn a_failing_blocking_check_reverts_its_changeset_as_a_new_changeset<
     assert_eq!(repo.read("a").await.as_deref(), Some(BASE));
     assert_eq!(repo.read("b").await.as_deref(), Some("b\n"));
     assert_eq!(repo.read("c").await, None);
-    assert_eq!(repo.read(".codehub/checks").await, None);
+    assert_eq!(
+        repo.read(&repo.harness.definitions().file().to_string())
+            .await,
+        None
+    );
     let job = job_of(&repo, &ada, bad, "unit").await;
     assert_eq!(job.id, ended.id);
     assert_eq!(job.state, JobState::Failed);

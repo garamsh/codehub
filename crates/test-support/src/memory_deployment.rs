@@ -39,6 +39,9 @@ pub trait Definitions {
     );
 }
 
+/// The file the in-memory check definitions read, as the TOML reader names it.
+const CHECK_FILE: &str = ".codehub/checks.toml";
+
 /// The in-memory check definitions, which read a file as whatever they are taught.
 pub struct Taught;
 
@@ -46,7 +49,7 @@ impl Definitions for Taught {
     type Adapter = MemoryCheckDefinitions;
 
     fn start() -> MemoryCheckDefinitions {
-        MemoryCheckDefinitions::new(".codehub/checks".parse().unwrap())
+        MemoryCheckDefinitions::new(CHECK_FILE.parse().unwrap())
     }
 
     fn teach(
@@ -126,6 +129,10 @@ impl<K: Definitions> Deployment for MemoryDeployment<K> {
     type Changes = MemoryDirectoryChanges;
     type Outbox = MemoryDirectoryOutbox;
     type Delivery = HeldRelay;
+    type Registry = MemoryRunnerRegistry;
+    type Queue = MemoryJobQueue;
+    type CacheRefs = MemoryCacheRefs;
+    type Definitions = K::Adapter;
 
     async fn start() -> Self {
         Self::default()
@@ -175,17 +182,6 @@ impl<K: Definitions> Deployment for MemoryDeployment<K> {
         &self.delivery
     }
 
-    async fn write_change(&self, repository: RepositoryId, kind: ChangeKind) -> RepositoryChange {
-        self.directory.record_change(repository, kind).unwrap()
-    }
-}
-
-impl<K: Definitions> RunnerDeployment for MemoryDeployment<K> {
-    type Registry = MemoryRunnerRegistry;
-    type Queue = MemoryJobQueue;
-    type CacheRefs = MemoryCacheRefs;
-    type Definitions = K::Adapter;
-
     fn registry(&self) -> &Arc<MemoryRunnerRegistry> {
         &self.registry
     }
@@ -202,6 +198,12 @@ impl<K: Definitions> RunnerDeployment for MemoryDeployment<K> {
         &self.definitions
     }
 
+    async fn write_change(&self, repository: RepositoryId, kind: ChangeKind) -> RepositoryChange {
+        self.directory.record_change(repository, kind).unwrap()
+    }
+}
+
+impl<K: Definitions> RunnerDeployment for MemoryDeployment<K> {
     fn teach(&self, text: &str, outcome: Result<Vec<CheckDefinition>, CheckFileError>) {
         K::teach(&self.definitions, text, outcome);
     }

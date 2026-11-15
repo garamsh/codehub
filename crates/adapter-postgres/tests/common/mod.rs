@@ -109,6 +109,10 @@ impl Deployment for Harness {
     type Changes = ();
     type Outbox = PostgresDirectoryOutbox;
     type Delivery = ();
+    type Registry = PostgresRunnerRegistry;
+    type Queue = PostgresJobQueue;
+    type CacheRefs = PostgresCacheRefs;
+    type Definitions = TomlCheckDefinitions;
 
     async fn start() -> Self {
         Self::new().await
@@ -158,6 +162,22 @@ impl Deployment for Harness {
         &self.delivery
     }
 
+    fn registry(&self) -> &Arc<PostgresRunnerRegistry> {
+        &self.registry
+    }
+
+    fn queue(&self) -> &Arc<PostgresJobQueue> {
+        &self.queue
+    }
+
+    fn cache_refs(&self) -> &Arc<PostgresCacheRefs> {
+        &self.cache_refs
+    }
+
+    fn definitions(&self) -> &Arc<TomlCheckDefinitions> {
+        &self.definitions
+    }
+
     async fn write_change(&self, repository: RepositoryId, kind: ChangeKind) -> RepositoryChange {
         let mut connection = PgConnection::connect(&self.url()).await.unwrap();
         let id = i64::try_from(repository.value()).unwrap();
@@ -188,27 +208,6 @@ impl Deployment for Harness {
 }
 
 impl RunnerDeployment for Harness {
-    type Registry = PostgresRunnerRegistry;
-    type Queue = PostgresJobQueue;
-    type CacheRefs = PostgresCacheRefs;
-    type Definitions = TomlCheckDefinitions;
-
-    fn registry(&self) -> &Arc<PostgresRunnerRegistry> {
-        &self.registry
-    }
-
-    fn queue(&self) -> &Arc<PostgresJobQueue> {
-        &self.queue
-    }
-
-    fn cache_refs(&self) -> &Arc<PostgresCacheRefs> {
-        &self.cache_refs
-    }
-
-    fn definitions(&self) -> &Arc<TomlCheckDefinitions> {
-        &self.definitions
-    }
-
     fn teach(&self, _text: &str, _outcome: Result<Vec<CheckDefinition>, CheckFileError>) {
         // The reader parses the file itself, so there is nothing to teach it.
     }

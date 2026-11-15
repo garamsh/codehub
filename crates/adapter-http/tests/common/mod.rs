@@ -3,7 +3,6 @@
 //! Every helper panics when a reply is not the one expected, as a failed assertion does.
 
 use adapter_http::{Pause, RunnerSettings};
-use adapter_memory::MemoryObjectStore;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,20 +18,17 @@ use app::port::driven::object_store::ObjectStore;
 use app::port::driven::repository_directory::RepositoryDirectory;
 use app::port::driving::repositories::Repositories;
 use app::use_case::administration::Administration;
+use app::use_case::assembly::Assembly;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use serde_json::{Value, json};
+use test_support::contract::Deployment;
+use test_support::{MemoryDeployment, Taught};
 use tower::ServiceExt;
-
-/// The largest upload the fixture's source control grants.
-pub const MAX_UPLOAD_SIZE: u64 = 1024;
 
 /// How long the fixture holds a claim that finds no job.
 pub const HOLD: Duration = Duration::from_millis(300);
-
-/// The in-memory adapters of one deployment.
-pub type Stores = test_support::Stores<MemoryObjectStore>;
 
 /// What the router answered.
 pub struct Reply {
@@ -47,13 +43,20 @@ pub struct Reply {
 /// A router over fresh in-memory adapters.
 pub struct Api {
     /// The adapters behind the router.
-    pub stores: Arc<Stores>,
+    pub stores: Arc<MemoryDeployment<Taught>>,
     router: Router,
 }
 
+/// The driving ports over `stores`, with members administered as `administration` says.
+fn assembly(stores: &MemoryDeployment<Taught>, administration: Administration) -> Assembly {
+    let mut assembly = stores.assembly();
+    assembly.administration = administration;
+    assembly
+}
+
 /// The router over `stores`, with members administered as `administration` says.
-pub fn router(stores: &Stores, administration: Administration) -> Router {
-    let assembly = stores.assembly(stores.identity.clone(), administration, MAX_UPLOAD_SIZE);
+pub fn router(stores: &MemoryDeployment<Taught>, administration: Administration) -> Router {
+    let assembly = assembly(stores, administration);
     adapter_http::api_router(
         assembly.authentication(),
         assembly.repositories(),
@@ -69,11 +72,15 @@ pub fn router(stores: &Stores, administration: Administration) -> Router {
 
 /// The router over `stores`, with the repositories port replaced by `repositories`. It serves the
 /// source-control routes alone.
-pub fn router_with<R>(stores: &Stores, administration: Administration, repositories: R) -> Router
+pub fn router_with<R>(
+    stores: &MemoryDeployment<Taught>,
+    administration: Administration,
+    repositories: R,
+) -> Router
 where
     R: Repositories + Send + Sync + 'static,
 {
-    let assembly = stores.assembly(stores.identity.clone(), administration, MAX_UPLOAD_SIZE);
+    let assembly = assembly(stores, administration);
     adapter_http::router(
         assembly.authentication(),
         repositories,
@@ -97,7 +104,7 @@ fn settings() -> RunnerSettings {
 
 impl Default for Api {
     fn default() -> Self {
-        let stores = Arc::new(Stores::new(MemoryObjectStore::default()));
+        let stores = Arc::default();
         Self {
             router: router(&stores, Administration::BuiltIn),
             stores,

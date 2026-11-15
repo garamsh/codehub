@@ -21,8 +21,9 @@ use app::port::driven::changeset_log::ChangesetLog;
 use app::port::driven::identity_verification::IdentityVerification;
 use app::port::driven::job_queue::JobQueue;
 use app::port::driven::repository_directory::RepositoryDirectory;
-use app::use_case::administration::Administration;
 use serde_json::json;
+use test_support::contract::Deployment;
+use test_support::{MemoryDeployment, Taught};
 
 pub use test_support::{ChUser, Run, env, unique};
 
@@ -32,8 +33,8 @@ const MAX_UPLOAD_SIZE: u64 = 1024 * 1024;
 /// How long the server holds a claim that finds no job.
 const HOLD: Duration = Duration::from_millis(300);
 
-/// The adapters of one server.
-type Stores = test_support::Stores<S3ObjectStore>;
+/// The adapters of one server, but for its object store, which is the S3 one.
+type Stores = MemoryDeployment<Taught>;
 
 /// A user of `ch`: a configuration directory of its own, and so a state file of its own.
 pub struct User(ChUser);
@@ -74,7 +75,7 @@ pub struct Server {
 ///
 /// Panics when the S3 variables are not set, or the socket cannot be bound.
 pub async fn serve() -> Server {
-    let stores = new_stores();
+    let stores = Arc::new(Stores::default());
     let identity = stores.identity.clone();
     bind(stores, identity).await
 }
@@ -94,25 +95,26 @@ pub async fn serve_oidc() -> Server {
         )
         .unwrap(),
     );
-    bind(new_stores(), oidc).await
+    bind(Arc::default(), oidc).await
 }
 
-fn new_stores() -> Arc<Stores> {
-    Arc::new(Stores::new(
-        S3ObjectStore::new(
-            &env("CODEHUB_TEST_S3_ENDPOINT"),
-            &env("CODEHUB_TEST_S3_REGION"),
-            &env("CODEHUB_TEST_S3_BUCKET"),
-            &env("CODEHUB_TEST_S3_ACCESS_KEY"),
-            &env("CODEHUB_TEST_S3_SECRET_KEY"),
-            MAX_UPLOAD_SIZE,
-        )
-        .unwrap(),
-    ))
+fn objects() -> S3ObjectStore {
+    S3ObjectStore::new(
+        &env("CODEHUB_TEST_S3_ENDPOINT"),
+        &env("CODEHUB_TEST_S3_REGION"),
+        &env("CODEHUB_TEST_S3_BUCKET"),
+        &env("CODEHUB_TEST_S3_ACCESS_KEY"),
+        &env("CODEHUB_TEST_S3_SECRET_KEY"),
+        MAX_UPLOAD_SIZE,
+    )
+    .unwrap()
 }
 
 async fn bind(stores: Arc<Stores>, identity: Arc<dyn IdentityVerification>) -> Server {
-    let assembly = stores.assembly(identity, Administration::BuiltIn, MAX_UPLOAD_SIZE);
+    let mut assembly = stores.assembly();
+    assembly.objects = Arc::new(objects());
+    assembly.identity = identity;
+    assembly.max_upload_size = MAX_UPLOAD_SIZE;
     let router = adapter_http::api_router(
         assembly.authentication(),
         assembly.repositories(),
