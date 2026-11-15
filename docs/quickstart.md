@@ -29,7 +29,7 @@ The output of steps 1 to 4 was produced on 2026-11-11 from the commit `e4fe6227e
 make services
 ```
 
-This runs `docker compose --env-file dev/test.env up --detach --wait --wait-timeout 180`, which returns once the five services are healthy and the one-shot `s3-init` service has created the object-store bucket `CODEHUB_TEST_S3_BUCKET` names, then smoke-tests the services (`scripts/check-services.sh`). Without `make`, run the `docker compose` command alone.
+This runs `docker compose --env-file dev/test.env up --detach --wait --wait-timeout 180`, which returns once the five services are healthy and the one-shot `s3-init` service has created the object-store bucket `CODEHUB_TEST_S3_BUCKET` names. Without `make`, run the `docker compose` command alone.
 
 Create a database for the server; the services start with none of its own:
 
