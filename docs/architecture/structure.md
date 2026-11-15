@@ -35,7 +35,7 @@ The hexagonal structure of the system: what the unit is, what may reference what
 - Hexagonal structure was chosen in ADR 0001; the signs that it was wrong are recorded there.
 - Rust as implementation language is recorded in ADR 0002.
 - The partition of the application into a domain ring and an application ring is recorded in ADR 0014, with the reason and the signs that it was wrong.
-- Asynchronous ports dispatched statically, and the synchronous domain ring, are recorded in ADR 0018, with the alternatives not taken and the signs that it was wrong.
+- Asynchronous ports and the synchronous domain ring are recorded in ADR 0018. ADR 0050 supersedes its static dispatch: ports are held as shared trait objects through `async-trait`, because the first two of ADR 0018's signs held. Both ADRs record the alternatives not taken and the signs that they were wrong.
 
 ## Open questions
 

@@ -84,26 +84,28 @@ takes, how a caller holds a port, and which packages name the runtime.
 
 - **Nothing under `src/domain/` is `async`**, awaits, or names
   `Future`. Use cases, ports and adapters are where `async` appears.
-- **A port operation is declared as a `fn` returning
-  `impl Future<Output = …> + Send`**, and each implementation writes
-  it as an `async fn`. The `Send` bound is what lets a caller spawn the
-  future on a multi-threaded runtime (`tokio::spawn` requires
-  `F: Future + Send + 'static`, tokio 1.54.1); an implementation whose
-  future holds a non-`Send` value across `.await` does not compile. A
-  bare `async fn` in a `pub` trait raises rustc's `async_fn_in_trait`
-  warning, which fails the lint entry point, and its future cannot be
-  passed where `Send` is required. An implementation that writes the
-  declared form with an `async` block body raises
-  `clippy::manual_async_fn`.
-- **A caller holds a port as a generic type parameter**
-  (`struct Land<S: ChangesetStore>`, `fn land<S: ChangesetStore>(…)`),
-  and the composition site names the concrete type. A trait with such
-  a method is not dyn compatible (The Rust Reference, Traits, Dyn
-  compatibility: a dispatchable method must "Not be an `async fn`" and
-  must not "have a return position `impl Trait` type"), so `dyn` of a
-  port fails with `E0038`.
-- **No `async-trait` crate.** `async fn` and return-position
-  `impl Trait` in traits are native since Rust 1.75.0.
+- **A port is a trait declared with `#[async_trait::async_trait]`**,
+  with `Send + Sync` as supertraits, and its operations are written as
+  `async fn`, in the trait and in each implementation, which carries the
+  same attribute (ADR 0050). The attribute rewrites each method to
+  return `Pin<Box<dyn Future + Send + '_>>` (async-trait 0.1.89), which
+  makes the trait dyn compatible and its futures `Send`: the bound a
+  caller needs to spawn one on a multi-threaded runtime (`tokio::spawn`
+  requires `F: Future + Send + 'static`, tokio 1.54.1). An
+  implementation whose future holds a non-`Send` value across `.await`
+  does not compile. `#[async_trait(?Send)]` is not used.
+- **A caller holds a port as `Arc<dyn Port>`**, or as `&dyn Port` for
+  the length of one call, never as a generic type parameter. The
+  composition site builds each implementation once and hands out
+  clones of the `Arc`; choosing an implementation from configuration
+  builds a different `Arc<dyn Port>`, and no enum forwards a port's
+  methods to stand in for it. A trait whose methods are a native
+  `async fn` or return `impl Trait` is not dyn compatible in Rust
+  1.99.1 (The Rust Reference, Traits, Dyn compatibility), which is why
+  the attribute is used rather than the native form.
+- **An internal seam that is not a port** may stay a generic type
+  parameter while its implementation is fixed where it is built. One
+  with two implementations chosen at run time takes the port form.
 - **`tokio` is a `[dependencies]` entry only of a binary package and of
   `crates/test-support`**, and any package may name it under
   `[dev-dependencies]`. A test that

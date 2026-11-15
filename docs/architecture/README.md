@@ -24,7 +24,7 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0001-hexagonal-structure.md` — ADR 0001, the system is structured as a hexagon
 - `adr/0002-rust-implementation-language.md` — ADR 0002, Rust is the implementation language
 - `adr/0014-application-rings.md` — ADR 0014, the application is partitioned into a domain ring and an application ring
-- `adr/0018-async-ports.md` — ADR 0018, ports are asynchronous traits dispatched statically, and the domain ring is synchronous
+- `adr/0018-async-ports.md` — ADR 0018, ports are asynchronous traits dispatched statically, and the domain ring is synchronous; dispatch superseded by ADR 0050
 - `adr/0003-server-centred-source-control.md` — ADR 0003, source control is server-centred and replaces Git, with server-side landing
 - `adr/0004-organisation-workspace-tenancy.md` — ADR 0004, an organisation contains workspaces and a workspace is one codebase
 - `adr/0005-workspace-export-and-backup.md` — ADR 0005, a workspace is exported and backed up as a bundle
@@ -76,3 +76,4 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0047-runner-check-executor.md` — ADR 0047, `codehub-runner check-executor` runs one job with a given command through the configured executor, without a server
 - `adr/0048-server-workspace-and-disposable-view.md` — ADR 0048, a draft is the caller's server-side workspace, opened as a disposable view and snapshotted by each `ch` command; supersedes ADR 0025's verb list as the whole surface and its three items of local state, for views
 - `adr/0049-folder-checks-inputs-needs-outputs-and-caches.md` — ADR 0049, checks are declared per folder with file inputs, run in `needs` order, hand on their outputs, start from cache refs and are skipped when their result is cached; extends ADR 0035
+- `adr/0050-ports-dispatched-dynamically.md` — ADR 0050, ports are held as shared trait objects through async-trait; supersedes ADR 0018's dispatch
