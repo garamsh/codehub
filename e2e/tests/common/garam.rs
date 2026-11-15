@@ -1,4 +1,4 @@
-//! garam's stack (`dev/garam`, started by `make e2e-garam`) as the end-to-end tests meet it: its
+//! garam's stack (the `garam` profile of `compose.yaml`, started by `make e2e-garam`) as the end-to-end tests meet it: its
 //! organisations and people, the tokens it issues, and the policies that make its decisions.
 //!
 //! garam's console and its platform write what these helpers write directly: a person's sign-in,
@@ -25,12 +25,13 @@ const AUDIENCE: &str = "codehub";
 /// Sent with every call to garam's api.
 const CONTRACT: (&str, &str) = ("Garam-Contract-Version", "operation-authority.v1");
 
-/// The running stack, as the variables of `dev/garam/run.sh` name it.
+/// The running stack, as the variables of `make e2e-garam` and `dev/test.env` name it.
 pub struct Garam {
     http: reqwest::Client,
     issuer: String,
     dir: PathBuf,
     compose: PathBuf,
+    project: String,
 }
 
 /// A person garam holds: the owner of one organisation, and the tokens garam issues them.
@@ -49,11 +50,11 @@ pub struct Person {
 }
 
 impl Garam {
-    /// Connects to the stack `dev/garam/run.sh` started.
+    /// Connects to the stack `make e2e-garam` started.
     ///
     /// # Panics
     ///
-    /// Panics if the variables the run script sets are missing, or the certificate authority
+    /// Panics if the variables `make e2e-garam` sets are missing, or the certificate authority
     /// cannot be read.
     pub fn running() -> Self {
         let ca = std::fs::read(env("CODEHUB_GARAM_E2E_CA")).unwrap();
@@ -67,10 +68,11 @@ impl Garam {
             issuer: env("CODEHUB_GARAM_E2E_ISSUER"),
             dir: PathBuf::from(env("CODEHUB_GARAM_E2E_DIR")),
             compose: PathBuf::from(env("CODEHUB_GARAM_E2E_COMPOSE")),
+            project: env("CODEHUB_GARAM_E2E_PROJECT"),
         }
     }
 
-    /// A key file the run script wrote: `codehub.pem`, which garam holds the public half of, or
+    /// A key file `dev/garam/keys.sh` wrote: `codehub.pem`, which garam holds the public half of, or
     /// `other.pem`, which it does not.
     pub fn key(&self, name: &str) -> PathBuf {
         self.dir.join(name)
@@ -161,11 +163,12 @@ impl Garam {
         let service = if database == "policy" {
             "policy-postgres"
         } else {
-            "postgres"
+            "garam-postgres"
         };
         let out = bounded("docker")
             .args(["compose", "-f"])
             .arg(&self.compose)
+            .args(["-p", &self.project, "--profile", "garam"])
             .args(["exec", "-T", service, "psql", "-U", "garam", "-d", database])
             .args(["-v", "ON_ERROR_STOP=1", "-tAc", sql])
             .output()
