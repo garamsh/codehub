@@ -134,6 +134,7 @@ async fn report(
         JobsAdapters {
             registry: &harness.registry,
             queue: &harness.queue,
+            cache_refs: &harness.cache_refs,
             objects: &harness.objects,
             derived: &harness.derived,
             log,

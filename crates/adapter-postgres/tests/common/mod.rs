@@ -3,9 +3,9 @@
 
 use adapter_memory::{MemoryIdentityVerification, MemoryObjectStore};
 use adapter_postgres::{
-    Database, PostgresAuthorisationDecision, PostgresChangesetLog, PostgresDerivedData,
-    PostgresDirectoryOutbox, PostgresDraftStore, PostgresJobQueue, PostgresMembership,
-    PostgresRepositoryDirectory, PostgresRunnerRegistry,
+    Database, PostgresAuthorisationDecision, PostgresCacheRefs, PostgresChangesetLog,
+    PostgresDerivedData, PostgresDirectoryOutbox, PostgresDraftStore, PostgresJobQueue,
+    PostgresMembership, PostgresRepositoryDirectory, PostgresRunnerRegistry,
 };
 use adapter_toml::TomlCheckDefinitions;
 use app::domain::check::CheckDefinition;
@@ -43,6 +43,8 @@ pub struct Harness {
     pub registry: PostgresRunnerRegistry,
     /// The job queue.
     pub queue: PostgresJobQueue,
+    /// The cache refs.
+    pub cache_refs: PostgresCacheRefs,
     /// The check definitions, read from TOML.
     pub definitions: TomlCheckDefinitions,
     database: TestDatabase,
@@ -77,6 +79,7 @@ impl Harness {
             authorisation: PostgresAuthorisationDecision::new(&database),
             registry: PostgresRunnerRegistry::new(&database),
             queue: PostgresJobQueue::new(&database),
+            cache_refs: PostgresCacheRefs::new(&database),
             definitions: TomlCheckDefinitions::new().unwrap(),
             database: test_database,
         }
@@ -179,6 +182,7 @@ impl Deployment for Harness {
 impl RunnerDeployment for Harness {
     type Registry = PostgresRunnerRegistry;
     type Queue = PostgresJobQueue;
+    type CacheRefs = PostgresCacheRefs;
     type Definitions = TomlCheckDefinitions;
 
     fn registry(&self) -> &PostgresRunnerRegistry {
@@ -187,6 +191,10 @@ impl RunnerDeployment for Harness {
 
     fn queue(&self) -> &PostgresJobQueue {
         &self.queue
+    }
+
+    fn cache_refs(&self) -> &PostgresCacheRefs {
+        &self.cache_refs
     }
 
     fn definitions(&self) -> &TomlCheckDefinitions {

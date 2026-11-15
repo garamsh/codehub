@@ -8,6 +8,7 @@ use app::domain::address::Address;
 use app::domain::check::{CheckDefinition, Command, Need, Pattern, Timeout};
 use app::domain::name::{Label, OrganisationName};
 use app::domain::principal::Caller;
+use app::port::driven::cache_refs::CacheRefs;
 use app::port::driven::check_definitions::{CheckDefinitions, CheckFileError};
 use app::port::driven::job_queue::JobQueue;
 use app::port::driven::runner_registry::RunnerRegistry;
@@ -40,6 +41,7 @@ pub type JobsOf<'a, H> = JobsService<
     'a,
     <H as RunnerDeployment>::Registry,
     <H as RunnerDeployment>::Queue,
+    <H as RunnerDeployment>::CacheRefs,
     MemoryObjectStore,
     <H as Deployment>::Derived,
     <H as Deployment>::Log,
@@ -71,6 +73,7 @@ pub type AssemblyOf<'a, H> = Assembly<
     <H as Deployment>::Authorisation,
     <H as Deployment>::Membership,
     <H as RunnerDeployment>::Queue,
+    <H as RunnerDeployment>::CacheRefs,
     <H as RunnerDeployment>::Registry,
     <H as RunnerDeployment>::Definitions,
     <H as Deployment>::Changes,
@@ -81,13 +84,15 @@ pub type AssemblyOf<'a, H> = Assembly<
 /// How long a claim or a heartbeat holds a job, in seconds.
 pub const LEASE: i64 = 30;
 
-/// The adapters of the runner registry, the job queue and the check definitions of one
+/// The adapters of the runner registry, the job queue, the cache refs and the check definitions of one
 /// deployment, over the adapters of its [`Deployment`].
 pub trait RunnerDeployment: Deployment {
     /// The runner registry.
     type Registry: RunnerRegistry + Sync;
     /// The job queue.
     type Queue: JobQueue + Sync;
+    /// The cache refs.
+    type CacheRefs: CacheRefs + Sync;
     /// The check definitions.
     type Definitions: CheckDefinitions + Sync;
 
@@ -95,6 +100,8 @@ pub trait RunnerDeployment: Deployment {
     fn registry(&self) -> &Self::Registry;
     /// The job queue.
     fn queue(&self) -> &Self::Queue;
+    /// The cache refs.
+    fn cache_refs(&self) -> &Self::CacheRefs;
     /// The check definitions.
     fn definitions(&self) -> &Self::Definitions;
 
@@ -115,6 +122,7 @@ pub trait RunnerDeployment: Deployment {
             authorisation: self.authorisation(),
             membership: self.membership(),
             queue: self.queue(),
+            cache_refs: self.cache_refs(),
             registry: self.registry(),
             definitions: self.definitions(),
             changes: self.changes(),

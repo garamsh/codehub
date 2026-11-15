@@ -8,9 +8,8 @@ use std::fmt;
 
 use crate::domain::address::Address;
 use crate::domain::check::CheckKey;
-use crate::domain::job::{CacheRef, Heartbeat, Job, JobId, JobResult, NewJob, Resolution};
+use crate::domain::job::{Heartbeat, Job, JobId, JobResult, NewJob, Resolution};
 use crate::domain::name::OrganisationName;
-use crate::domain::path::{Path, Prefix};
 use crate::domain::repository::RepositoryId;
 use crate::domain::revert::Revert;
 use crate::domain::runner::{Registration, RegistrationId};
@@ -171,35 +170,6 @@ pub trait JobQueue {
         repository: RepositoryId,
         changeset: Address,
     ) -> impl Future<Output = Result<Vec<Job>, JobQueueError>> + Send;
-
-    /// The cache ref of `path`, which is relative to `folder`, in `repository`; `None` where it
-    /// has none.
-    ///
-    /// # Errors
-    ///
-    /// [`JobQueueError::Backend`] where the queue fails.
-    fn cache_ref(
-        &self,
-        repository: RepositoryId,
-        folder: &Prefix,
-        path: &Path,
-    ) -> impl Future<Output = Result<Option<CacheRef>, JobQueueError>> + Send;
-
-    /// Sets the cache ref of `path`, which is relative to `folder`, in `repository` to `to`,
-    /// where it records `from` as its changeset, or none where `from` is `None`. Returns whether
-    /// it did; `false` where the ref moved, which leaves it as it is.
-    ///
-    /// # Errors
-    ///
-    /// [`JobQueueError::Backend`] where the queue fails.
-    fn advance_cache_ref(
-        &self,
-        repository: RepositoryId,
-        folder: &Prefix,
-        path: &Path,
-        from: Option<Address>,
-        to: CacheRef,
-    ) -> impl Future<Output = Result<bool, JobQueueError>> + Send;
 
     /// Acts on time having passed to `now`. A running job past its deadline times out, and a
     /// running job whose lease lapsed before its deadline returns to the queue with no runner.

@@ -1,6 +1,7 @@
 //! The driven ports: what the application asks of the outside.
 
 pub mod authorisation_decision;
+pub mod cache_refs;
 pub mod changeset_log;
 pub mod check_definitions;
 pub mod derived_data;

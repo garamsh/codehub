@@ -17,9 +17,9 @@ use adapter_garam_directory::GaramDirectoryChanges;
 use adapter_introspection::IntrospectionIdentityVerification;
 use adapter_oidc::OidcIdentityVerification;
 use adapter_postgres::{
-    Database, DatabaseError, PostgresAuthorisationDecision, PostgresChangesetLog,
-    PostgresDerivedData, PostgresDirectoryOutbox, PostgresDraftStore, PostgresJobQueue,
-    PostgresMembership, PostgresRepositoryDirectory, PostgresRunnerRegistry,
+    Database, DatabaseError, PostgresAuthorisationDecision, PostgresCacheRefs,
+    PostgresChangesetLog, PostgresDerivedData, PostgresDirectoryOutbox, PostgresDraftStore,
+    PostgresJobQueue, PostgresMembership, PostgresRepositoryDirectory, PostgresRunnerRegistry,
 };
 use adapter_s3::S3ObjectStore;
 use app::domain::credential::Credential;
@@ -152,6 +152,7 @@ struct Adapters {
     membership: PostgresMembership,
     registry: PostgresRunnerRegistry,
     queue: PostgresJobQueue,
+    cache_refs: PostgresCacheRefs,
     definitions: TomlCheckDefinitions,
     authorisation: Decider,
     identity: Verifier,
@@ -363,6 +364,7 @@ pub async fn run(config: Config) -> Result<(), Error> {
         membership: PostgresMembership::new(&database),
         registry: PostgresRunnerRegistry::new(&database),
         queue: PostgresJobQueue::new(&database),
+        cache_refs: PostgresCacheRefs::new(&database),
         definitions: TomlCheckDefinitions::new().map_err(Error::Definitions)?,
         authorisation,
         identity,
@@ -378,6 +380,7 @@ pub async fn run(config: Config) -> Result<(), Error> {
         authorisation: &adapters.authorisation,
         membership: &adapters.membership,
         queue: &adapters.queue,
+        cache_refs: &adapters.cache_refs,
         registry: &adapters.registry,
         definitions: &adapters.definitions,
         changes: &*adapters.changes,

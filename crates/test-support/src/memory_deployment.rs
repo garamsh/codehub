@@ -2,10 +2,10 @@
 //! ports, over the check definitions a [`Definitions`] names.
 
 use adapter_memory::{
-    MemoryAuthorisationDecision, MemoryChangesetLog, MemoryCheckDefinitions, MemoryDerivedData,
-    MemoryDirectoryChanges, MemoryDirectoryOutbox, MemoryDraftStore, MemoryIdentityVerification,
-    MemoryJobQueue, MemoryMembership, MemoryObjectStore, MemoryRepositoryDirectory,
-    MemoryRunnerRegistry,
+    MemoryAuthorisationDecision, MemoryCacheRefs, MemoryChangesetLog, MemoryCheckDefinitions,
+    MemoryDerivedData, MemoryDirectoryChanges, MemoryDirectoryOutbox, MemoryDraftStore,
+    MemoryIdentityVerification, MemoryJobQueue, MemoryMembership, MemoryObjectStore,
+    MemoryRepositoryDirectory, MemoryRunnerRegistry,
 };
 use app::domain::check::CheckDefinition;
 use app::domain::repository::RepositoryId;
@@ -84,6 +84,8 @@ pub struct MemoryDeployment<K: Definitions> {
     pub registry: MemoryRunnerRegistry,
     /// The job queue.
     pub queue: MemoryJobQueue,
+    /// The cache refs.
+    pub cache_refs: MemoryCacheRefs,
     /// The check definitions.
     pub definitions: K::Adapter,
 }
@@ -105,6 +107,7 @@ impl<K: Definitions> Default for MemoryDeployment<K> {
             changes: MemoryDirectoryChanges::default(),
             registry: MemoryRunnerRegistry::default(),
             queue: MemoryJobQueue::default(),
+            cache_refs: MemoryCacheRefs::default(),
             definitions: K::start(),
             membership,
         }
@@ -178,6 +181,7 @@ impl<K: Definitions> Deployment for MemoryDeployment<K> {
 impl<K: Definitions> RunnerDeployment for MemoryDeployment<K> {
     type Registry = MemoryRunnerRegistry;
     type Queue = MemoryJobQueue;
+    type CacheRefs = MemoryCacheRefs;
     type Definitions = K::Adapter;
 
     fn registry(&self) -> &MemoryRunnerRegistry {
@@ -186,6 +190,10 @@ impl<K: Definitions> RunnerDeployment for MemoryDeployment<K> {
 
     fn queue(&self) -> &MemoryJobQueue {
         &self.queue
+    }
+
+    fn cache_refs(&self) -> &MemoryCacheRefs {
+        &self.cache_refs
     }
 
     fn definitions(&self) -> &K::Adapter {

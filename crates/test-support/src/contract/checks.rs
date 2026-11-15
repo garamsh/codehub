@@ -19,6 +19,7 @@ use app::domain::path::{Component, Path, Prefix};
 use app::domain::principal::Caller;
 use app::domain::repository::RepositoryId;
 use app::domain::tree::{Entry, Tree};
+use app::port::driven::cache_refs::CacheRefs;
 use app::port::driven::changeset_log::{ChangesetLog, Ref};
 use app::port::driven::check_definitions::CheckDefinitions;
 use app::port::driven::check_definitions::CheckFileError;
@@ -1386,7 +1387,7 @@ async fn cache_ref_of<H: RunnerDeployment>(
 ) -> Option<CacheRef> {
     let folder = Prefix::from(folder.parse::<Path>().unwrap());
     harness
-        .queue()
+        .cache_refs()
         .cache_ref(repo.id, &folder, &path.parse().unwrap())
         .await
         .unwrap()
@@ -1505,38 +1506,38 @@ pub async fn a_cache_ref_moves_only_from_the_changeset_it_records<H: RunnerDeplo
         tree: Address::of(tree),
         changeset: Address::of(changeset),
     };
-    let queue = harness.queue();
+    let refs = harness.cache_refs();
 
     let first = to(b"t1", b"c1");
-    let set = queue
+    let set = refs
         .advance_cache_ref(repo.id, &folder, &path, None, first)
         .await
         .unwrap();
     assert!(set);
     // Control: moving from the changeset it records succeeds.
     let second = to(b"t2", b"c2");
-    let moved = queue
+    let moved = refs
         .advance_cache_ref(repo.id, &folder, &path, Some(first.changeset), second)
         .await
         .unwrap();
     assert!(moved);
     // Moving from one it does not record, or from none, does not.
     let third = to(b"t3", b"c3");
-    let stale = queue
+    let stale = refs
         .advance_cache_ref(repo.id, &folder, &path, Some(first.changeset), third)
         .await
         .unwrap();
     assert!(!stale);
-    let blind = queue
+    let blind = refs
         .advance_cache_ref(repo.id, &folder, &path, None, third)
         .await
         .unwrap();
     assert!(!blind);
-    let held = queue.cache_ref(repo.id, &folder, &path).await.unwrap();
+    let held = refs.cache_ref(repo.id, &folder, &path).await.unwrap();
     assert_eq!(held, Some(second));
     // The ref is of its folder and path.
     let other = Prefix::from("app".parse::<Path>().unwrap());
-    let elsewhere = queue.cache_ref(repo.id, &other, &path).await.unwrap();
+    let elsewhere = refs.cache_ref(repo.id, &other, &path).await.unwrap();
     assert_eq!(elsewhere, None);
 }
 
@@ -1654,6 +1655,7 @@ pub async fn a_claim_reads_only_the_trees_its_inputs_reach<H: RunnerDeployment>(
         JobsAdapters {
             registry: harness.registry(),
             queue: harness.queue(),
+            cache_refs: harness.cache_refs(),
             objects: harness.objects(),
             derived: &counting,
             log: harness.log(),

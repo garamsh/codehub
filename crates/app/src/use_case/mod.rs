@@ -4,6 +4,7 @@ pub mod access;
 pub mod administration;
 pub mod assembly;
 pub mod authentication;
+pub mod cache_refs;
 pub mod checks;
 pub mod first_parent;
 pub mod history;

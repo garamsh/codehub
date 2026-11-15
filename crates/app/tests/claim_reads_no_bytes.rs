@@ -103,6 +103,7 @@ async fn a_claim_reads_no_blob_bytes_and_carries_each_files_size_and_address() {
         JobsAdapters {
             registry: &harness.registry,
             queue: &harness.queue,
+            cache_refs: &harness.cache_refs,
             objects: &objects,
             derived: &harness.derived,
             log: &harness.log,
