@@ -9,7 +9,7 @@ Append-only: once merged, the body below is not rewritten. A fact later found wr
 
 ADR 0012 moves `main` by compare-and-swap, and expects two concurrent landings that change different paths to both land without a retry. As built, a landing that loses the swap answers 409 "main moved while landing; land again", and the client lands the same draft again.
 
-The scale baseline (`docs/scale-baseline.md`, commit `1cdea4a5f773cedcc53c73c44a8e99a76ffc94d2`) measured 20 to 70 retries per landing at 200 agents against two replicas, nearly all of them lost swaps. Each retry from the client repeats a round trip, the authorisation of every staged path, the draft read and the rebase.
+The scale baseline (`docs/guide/scale-baseline.md`, commit `1cdea4a5f773cedcc53c73c44a8e99a76ffc94d2`) measured 20 to 70 retries per landing at 200 agents against two replicas, nearly all of them lost swaps. Each retry from the client repeats a round trip, the authorisation of every staged path, the draft read and the rebase.
 
 Alternatives not taken:
 

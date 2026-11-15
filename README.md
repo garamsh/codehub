@@ -7,4 +7,4 @@ A server-centred version control system for codebases worked on by people and by
 - **Execution.** A runner, `codehub-runner`, polls the server for the checks of each landing and reports their results (`docs/architecture/runner.md`).
 - **Implementation.** Rust, structured as a hexagon (`docs/architecture/structure.md`).
 
-To try it, follow `docs/quickstart.md`. To deploy the published images, read `docs/deployment.md`. Design decisions are recorded under `docs/architecture/`, and the rules contributors follow start at `AGENTS.md`.
+To try it, follow `docs/guide/quickstart.md`. To deploy the published images, read `docs/guide/deployment.md`. Design decisions are recorded under `docs/architecture/`, and the rules contributors follow start at `AGENTS.md`.
