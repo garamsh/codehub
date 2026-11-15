@@ -43,6 +43,13 @@ For each of those steps:
 2. **Verify it** per the next section before pinning.
 3. **Use it as its own documentation shows**. If no maintained component covers the step, a checked-in script is the fallback — not a license to hand-roll per-job.
 
+**Development tooling takes the same order.** This covers what a contributor runs to prepare or check the project locally: starting and readying services, providing their settings, running a suite, validating an input. None of it is a pipeline step, but it takes the same order:
+1. the tool's own mechanism: a container healthcheck with the orchestrator's wait, a test runner's own failure on an empty run, an environment file the tools read natively;
+2. a maintained component;
+3. a checked-in script, last.
+
+A script that remains is glue. It invokes tools and holds no logic a tool could hold: no polling loop, no parsing of another tool's output, no protocol spoken by hand. Logic in a script is code no suite tests. Where it cannot move into a tool, it moves into the project's own language, under its tests.
+
 ## Verify a pinned dependency before adopting it
 
 This section states what to establish before pinning and what makes a reference a pin, not which reference a given artifact takes.
