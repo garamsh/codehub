@@ -19,9 +19,8 @@ use crate::port::driven::object_store::ObjectStore;
 use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driving::checks::{Checks, ChecksError, Plan};
 use crate::use_case::access::{readable_repository, require};
-use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::plan::{PlanPorts, plan};
-use crate::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
+use crate::use_case::post_land_checks::PostLandChecks;
 
 /// The driven ports the checks are built over.
 pub struct ChecksAdapters {
@@ -54,12 +53,12 @@ pub struct ChecksService {
     derived: Arc<dyn DerivedData>,
     definitions: Arc<dyn CheckDefinitions>,
     drafts: Arc<dyn DraftStore>,
-    checks: PostLandChecks,
+    checks: Arc<PostLandChecks>,
 }
 
 impl ChecksService {
-    /// Checks over `adapters`, each revert tried at most `attempts` times.
-    pub fn new(adapters: ChecksAdapters, attempts: LandingAttempts) -> Self {
+    /// Checks over `adapters`, with the timeouts and reverts of `checks`.
+    pub fn new(adapters: ChecksAdapters, checks: Arc<PostLandChecks>) -> Self {
         let ChecksAdapters {
             queue,
             log,
@@ -71,25 +70,15 @@ impl ChecksService {
             drafts,
         } = adapters;
         Self {
-            queue: Arc::clone(&queue),
-            log: Arc::clone(&log),
-            directory: Arc::clone(&directory),
+            queue,
+            log,
+            directory,
             authorisation,
-            objects: Arc::clone(&objects),
-            derived: Arc::clone(&derived),
-            definitions: Arc::clone(&definitions),
+            objects,
+            derived,
+            definitions,
             drafts,
-            checks: PostLandChecks::new(
-                PostLandChecksAdapters {
-                    objects,
-                    derived,
-                    log,
-                    directory,
-                    queue,
-                    definitions,
-                },
-                attempts,
-            ),
+            checks,
         }
     }
 }

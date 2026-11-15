@@ -10,7 +10,7 @@ use std::future::Future;
 use crate::domain::address::Address;
 use crate::domain::check::{CheckDefinition, CheckKey, needs_fault};
 use crate::domain::file::File;
-use crate::domain::job::{Job, Needs};
+use crate::domain::job::Needs;
 use crate::domain::path::{Path, PathError, Prefix};
 use crate::domain::repository::RepositoryId;
 use crate::domain::tree::{Entry, Tree};
@@ -169,27 +169,6 @@ pub(crate) async fn resolve(
     };
     let inputs = files.selected(check).await?;
     Ok(Resolved::Ready(Dependencies { inputs, needed }))
-}
-
-/// The dependencies of `check` in the changeset at `root`, among `jobs`, the jobs of the
-/// changeset.
-///
-/// # Errors
-///
-/// The failure of derived data.
-pub(crate) async fn dependencies(
-    derived: &dyn DerivedData,
-    repository: RepositoryId,
-    root: Address,
-    check: &CheckDefinition,
-    jobs: &[Job],
-) -> Result<Resolved, DerivedDataError> {
-    let files = Files::Landed {
-        derived,
-        repository,
-        root,
-    };
-    resolve(&files, check, Needs::of(check, jobs)).await
 }
 
 /// The check definitions of a tree could not be read.

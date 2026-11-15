@@ -9,7 +9,7 @@ use crate::domain::address::Address;
 use crate::domain::changeset::{Change, Changeset};
 use crate::domain::check::CheckDefinition;
 use crate::domain::draft::Draft;
-use crate::domain::job::{Job, JobState, NewJob, Resolution};
+use crate::domain::job::{Job, JobState, Needs, NewJob, Resolution};
 use crate::domain::repository::RepositoryId;
 use crate::domain::revert::{self, AUTHOR, Revert};
 use crate::port::driven::changeset_log::ChangesetLog;
@@ -27,37 +27,10 @@ use crate::use_case::land::land;
 use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::last_green::{advance, blocking_checks_passed};
 use crate::use_case::read_file::file_at;
-use crate::use_case::source_control::AfterLanding;
+use crate::use_case::source_control::{AfterLanding, AfterLandingError};
 use crate::use_case::tree_checks::{
-    DefinitionsError, Resolved, Unreadable, dependencies, read_definitions, tree_files,
+    DefinitionsError, Files, Resolved, Unreadable, read_definitions, resolve, tree_files,
 };
-
-/// Why the post-land checks of a landing failed after it landed.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum AfterLandingError {
-    /// The checks were not queued.
-    Queue(QueueChecksError),
-    /// The definitions could not be read and the changeset was not reverted.
-    Revert(RevertError),
-}
-
-impl fmt::Display for AfterLandingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Queue(error) => write!(f, "{error}"),
-            Self::Revert(error) => write!(f, "{error}"),
-        }
-    }
-}
-
-impl std::error::Error for AfterLandingError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Queue(error) => Some(error),
-            Self::Revert(error) => Some(error),
-        }
-    }
-}
 
 /// Why an ended job was not settled.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -368,12 +341,16 @@ impl PostLandChecks {
     ) -> Result<Option<Resolution>, ProgressError> {
         let adapters = &self.adapters;
         let root = adapters.derived.root(job.repository, changeset).await?;
-        let dependencies =
-            match dependencies(&*adapters.derived, job.repository, root, &job.check, jobs).await? {
-                Resolved::Waiting => return Ok(None),
-                Resolved::Skipped => return Ok(Some(Resolution::Skip)),
-                Resolved::Ready(dependencies) => dependencies,
-            };
+        let files = Files::Landed {
+            derived: &*adapters.derived,
+            repository: job.repository,
+            root,
+        };
+        let dependencies = match resolve(&files, &job.check, Needs::of(&job.check, jobs)).await? {
+            Resolved::Waiting => return Ok(None),
+            Resolved::Skipped => return Ok(Some(Resolution::Skip)),
+            Resolved::Ready(dependencies) => dependencies,
+        };
         let key = dependencies.key(&job.check);
         Ok(Some(
             match adapters.queue.passed_with_key(job.repository, key).await? {

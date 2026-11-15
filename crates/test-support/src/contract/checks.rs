@@ -38,6 +38,7 @@ use app::use_case::administration::Administration;
 use app::use_case::jobs::{JobsAdapters, JobsService};
 use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::members::{MembersAdapters, MembersService};
+use app::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
 
 fn passed() -> JobResult {
     JobResult {
@@ -1694,6 +1695,17 @@ pub async fn a_claim_reads_only_the_trees_its_inputs_reach<H: RunnerDeployment>(
         inner: harness.derived().clone(),
         read: Mutex::new(Vec::new()),
     });
+    let checks = Arc::new(PostLandChecks::new(
+        PostLandChecksAdapters {
+            objects: harness.objects().clone(),
+            derived: counting.clone(),
+            log: harness.log().clone(),
+            directory: harness.directory().clone(),
+            queue: harness.queue().clone(),
+            definitions: harness.definitions().clone(),
+        },
+        LandingAttempts::default(),
+    ));
     let jobs = JobsService::new(
         JobsAdapters {
             registry: harness.registry().clone(),
@@ -1702,11 +1714,9 @@ pub async fn a_claim_reads_only_the_trees_its_inputs_reach<H: RunnerDeployment>(
             objects: harness.objects().clone(),
             derived: counting.clone(),
             log: harness.log().clone(),
-            directory: harness.directory().clone(),
-            definitions: harness.definitions().clone(),
         },
+        checks,
         LEASE,
-        LandingAttempts::default(),
     );
     let claimed = jobs.claim(&bot, 0).await.unwrap().unwrap();
 

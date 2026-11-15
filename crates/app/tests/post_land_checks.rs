@@ -24,10 +24,8 @@ use app::port::driving::jobs::Jobs;
 use app::port::driving::revert::{QueueChecksError, RevertError};
 use app::port::driving::source_control::{LandError, Landing, SourceControl, SourceControlError};
 use app::use_case::landing_attempts::LandingAttempts;
-use app::use_case::post_land_checks::{
-    AfterLandingError, PostLandChecks, PostLandChecksAdapters, SettleError,
-};
-use app::use_case::source_control::AfterLanding;
+use app::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters, SettleError};
+use app::use_case::source_control::{AfterLanding, AfterLandingError};
 use common::Harness;
 use test_support::contract::runner_deployment::{
     LEASE, RunnerDeployment, check, definitions, land, organisation, runner, text,

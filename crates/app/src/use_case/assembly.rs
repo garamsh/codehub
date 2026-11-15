@@ -71,7 +71,7 @@ pub struct Assembly {
 }
 
 /// The source control the application ships: the landing of checks queued after each landing.
-pub type ShippedSourceControl = SourceControlService<PostLandChecks>;
+pub type ShippedSourceControl = SourceControlService<Arc<PostLandChecks>>;
 
 impl Assembly {
     /// The authentication port.
@@ -119,7 +119,13 @@ impl Assembly {
             self.max_upload_size,
         )
         .with_landing_attempts(self.attempts)
-        .with_after_landing(PostLandChecks::new(
+        .with_after_landing(self.post_land_checks())
+    }
+
+    /// The post-land checks, the one place they are built, which source control, the jobs and the
+    /// checks are each handed.
+    fn post_land_checks(&self) -> Arc<PostLandChecks> {
+        Arc::new(PostLandChecks::new(
             PostLandChecksAdapters {
                 objects: Arc::clone(&self.objects),
                 derived: Arc::clone(&self.derived),
@@ -151,11 +157,9 @@ impl Assembly {
                 objects: Arc::clone(&self.objects),
                 derived: Arc::clone(&self.derived),
                 log: Arc::clone(&self.log),
-                directory: Arc::clone(&self.directory),
-                definitions: Arc::clone(&self.definitions),
             },
+            self.post_land_checks(),
             self.lease,
-            self.attempts,
         )
     }
 
@@ -172,7 +176,7 @@ impl Assembly {
                 definitions: Arc::clone(&self.definitions),
                 drafts: Arc::clone(&self.drafts),
             },
-            self.attempts,
+            self.post_land_checks(),
         )
     }
 }
