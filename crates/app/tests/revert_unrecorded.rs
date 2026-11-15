@@ -22,6 +22,7 @@ use app::port::driving::revert::RevertError;
 use app::port::driving::source_control::LandError;
 use app::use_case::jobs::{JobsAdapters, JobsService};
 use app::use_case::landing_attempts::LandingAttempts;
+use app::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
 use common::Harness;
 use test_support::contract::Deployment;
 use test_support::contract::runner_deployment::{
@@ -184,6 +185,17 @@ async fn a_failed_revert_that_cannot_be_recorded_returns_both_failures() {
     let job = harness.jobs().claim(&bot, 0).await.unwrap().unwrap().job.id;
     let log = Arc::new(FailsMainSwap(harness.log.clone()));
     let queue = Arc::new(RecordRefusingQueue(harness.queue.clone()));
+    let checks = Arc::new(PostLandChecks::new(
+        PostLandChecksAdapters {
+            objects: harness.objects.clone(),
+            derived: harness.derived.clone(),
+            log: log.clone(),
+            directory: harness.directory.clone(),
+            queue: queue.clone(),
+            definitions: harness.definitions.clone(),
+        },
+        LandingAttempts::default(),
+    ));
     let service = JobsService::new(
         JobsAdapters {
             registry: harness.registry.clone(),
@@ -192,11 +204,9 @@ async fn a_failed_revert_that_cannot_be_recorded_returns_both_failures() {
             objects: harness.objects.clone(),
             derived: harness.derived.clone(),
             log,
-            directory: harness.directory.clone(),
-            definitions: harness.definitions.clone(),
         },
+        checks,
         30,
-        LandingAttempts::default(),
     );
     let result = JobResult {
         outcome: Outcome::Failed,

@@ -20,6 +20,7 @@ use app::port::driving::revert::RevertError;
 use app::port::driving::source_control::LandError;
 use app::use_case::jobs::{JobsAdapters, JobsService};
 use app::use_case::landing_attempts::LandingAttempts;
+use app::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
 use common::Harness;
 use test_support::contract::runner_deployment::{
     RunnerDeployment, check, definitions, land, organisation, runner, text,
@@ -132,6 +133,17 @@ async fn report(
     job: app::domain::job::JobId,
     attempts: u32,
 ) -> Result<(), JobsError> {
+    let checks = Arc::new(PostLandChecks::new(
+        PostLandChecksAdapters {
+            objects: harness.objects.clone(),
+            derived: harness.derived.clone(),
+            log: log.clone(),
+            directory: harness.directory.clone(),
+            queue: harness.queue.clone(),
+            definitions: harness.definitions.clone(),
+        },
+        LandingAttempts::new(NonZeroU32::new(attempts).unwrap()),
+    ));
     let service = JobsService::new(
         JobsAdapters {
             registry: harness.registry.clone(),
@@ -140,11 +152,9 @@ async fn report(
             objects: harness.objects.clone(),
             derived: harness.derived.clone(),
             log: log.clone(),
-            directory: harness.directory.clone(),
-            definitions: harness.definitions.clone(),
         },
+        checks,
         30,
-        LandingAttempts::new(NonZeroU32::new(attempts).unwrap()),
     );
     let bot = harness.caller("bot").await;
     service

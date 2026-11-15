@@ -3,6 +3,7 @@
 //! authorisation decision, that the caller may do what it asks.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -21,6 +22,7 @@ use crate::port::driven::membership::Access;
 use crate::port::driven::object_store::{Grant, ObjectStore};
 use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driving::access::AccessError;
+use crate::port::driving::revert::{QueueChecksError, RevertError};
 use crate::port::driving::source_control::{
     FileContent, LandError, Landing, ListFilesError, ListedFile, PathDiff, SourceControl,
     SourceControlError, Version, Workspace, WorkspaceError,
@@ -31,7 +33,6 @@ use crate::use_case::land::land;
 use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::landing_gates::LandingGates;
 use crate::use_case::list_files::files_under;
-use crate::use_case::post_land_checks::AfterLandingError;
 use crate::use_case::read_file::read_file;
 use crate::use_case::upload::request_upload;
 use crate::use_case::workspace::{changed, diffs, require_uploaded, workspace};
@@ -52,6 +53,33 @@ pub struct SourceControlAdapters {
     pub authorisation: Arc<dyn AuthorisationDecision>,
 }
 
+/// Why the post-land checks of a landing failed after it landed.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum AfterLandingError {
+    /// The checks were not queued.
+    Queue(QueueChecksError),
+    /// The definitions could not be read and the changeset was not reverted.
+    Revert(RevertError),
+}
+
+impl fmt::Display for AfterLandingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Queue(error) => write!(f, "{error}"),
+            Self::Revert(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for AfterLandingError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Queue(error) => Some(error),
+            Self::Revert(error) => Some(error),
+        }
+    }
+}
+
 /// What happens after a changeset has landed on `main`.
 pub trait AfterLanding: Send + Sync {
     /// Acts on `landed` having landed in `repository`, with `timestamp` as the time of anything
@@ -67,6 +95,17 @@ pub trait AfterLanding: Send + Sync {
         landed: Address,
         timestamp: i64,
     ) -> impl Future<Output = Result<(), AfterLandingError>> + Send;
+}
+
+impl<T: AfterLanding + ?Sized> AfterLanding for Arc<T> {
+    async fn after_landing(
+        &self,
+        repository: RepositoryId,
+        landed: Address,
+        timestamp: i64,
+    ) -> Result<(), AfterLandingError> {
+        (**self).after_landing(repository, landed, timestamp).await
+    }
 }
 
 /// The step after a landing that does nothing.

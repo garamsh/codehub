@@ -14,6 +14,7 @@ use app::port::driven::object_store::{Grant, ObjectStore, ObjectStoreError};
 use app::port::driving::jobs::Jobs;
 use app::use_case::jobs::{JobsAdapters, JobsService};
 use app::use_case::landing_attempts::LandingAttempts;
+use app::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
 use common::Harness;
 use test_support::contract::Deployment;
 use test_support::contract::runner_deployment::{
@@ -101,6 +102,17 @@ async fn a_claim_reads_no_blob_bytes_and_carries_each_files_size_and_address() {
         inner: harness.objects.clone(),
         gets: AtomicU32::new(0),
     });
+    let checks = Arc::new(PostLandChecks::new(
+        PostLandChecksAdapters {
+            objects: objects.clone(),
+            derived: harness.derived.clone(),
+            log: harness.log.clone(),
+            directory: harness.directory.clone(),
+            queue: harness.queue.clone(),
+            definitions: harness.definitions.clone(),
+        },
+        LandingAttempts::default(),
+    ));
     let jobs = JobsService::new(
         JobsAdapters {
             registry: harness.registry.clone(),
@@ -109,11 +121,9 @@ async fn a_claim_reads_no_blob_bytes_and_carries_each_files_size_and_address() {
             objects: objects.clone(),
             derived: harness.derived.clone(),
             log: harness.log.clone(),
-            directory: harness.directory.clone(),
-            definitions: harness.definitions.clone(),
         },
+        checks,
         30,
-        LandingAttempts::default(),
     );
 
     let claimed = jobs.claim(&bot, 0).await.unwrap().unwrap();

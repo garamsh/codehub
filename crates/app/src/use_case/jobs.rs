@@ -8,7 +8,7 @@ use crate::domain::address::Address;
 use crate::domain::changeset::Change;
 use crate::domain::file::File;
 use crate::domain::job::{
-    Heartbeat, Job, JobId, JobResult, Outcome, Produced, ProducedFile, empty_output_tree,
+    Heartbeat, Job, JobId, JobResult, Needs, Outcome, Produced, ProducedFile, empty_output_tree,
     output_tail,
 };
 use crate::domain::path::{Path, PathError, Prefix};
@@ -18,17 +18,14 @@ use crate::domain::runner::{Registration, RegistrationId};
 use crate::domain::tree::{Tree, derive};
 use crate::port::driven::cache_refs::CacheRefs;
 use crate::port::driven::changeset_log::ChangesetLog;
-use crate::port::driven::check_definitions::CheckDefinitions;
 use crate::port::driven::derived_data::DerivedData;
 use crate::port::driven::job_queue::JobQueue;
 use crate::port::driven::object_store::ObjectStore;
-use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driven::runner_registry::RunnerRegistry;
 use crate::port::driving::jobs::{Claimed, ClaimedFile, Jobs, JobsError, Upload, UploadGrant};
 use crate::use_case::cache_refs::advance;
-use crate::use_case::landing_attempts::LandingAttempts;
-use crate::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
-use crate::use_case::tree_checks::{Resolved, dependencies, walk_files};
+use crate::use_case::post_land_checks::PostLandChecks;
+use crate::use_case::tree_checks::{Files, Resolved, resolve, walk_files};
 
 /// The driven ports the jobs are built over.
 pub struct JobsAdapters {
@@ -44,10 +41,6 @@ pub struct JobsAdapters {
     pub derived: Arc<dyn DerivedData>,
     /// Stores changesets and `last-green`.
     pub log: Arc<dyn ChangesetLog>,
-    /// Finds a repository's organisation.
-    pub directory: Arc<dyn RepositoryDirectory>,
-    /// Reads the check definitions.
-    pub definitions: Arc<dyn CheckDefinitions>,
 }
 
 /// Jobs served to registered runners, each claim holding its job for `lease` seconds. A blocking
@@ -59,14 +52,14 @@ pub struct JobsService {
     objects: Arc<dyn ObjectStore>,
     derived: Arc<dyn DerivedData>,
     log: Arc<dyn ChangesetLog>,
-    checks: PostLandChecks,
+    checks: Arc<PostLandChecks>,
     lease: i64,
 }
 
 impl JobsService {
-    /// Jobs over `adapters`, where a claim or a heartbeat holds a job for `lease` seconds and each
-    /// revert is tried at most `attempts` times.
-    pub fn new(adapters: JobsAdapters, lease: i64, attempts: LandingAttempts) -> Self {
+    /// Jobs over `adapters`, where a claim or a heartbeat holds a job for `lease` seconds and the
+    /// ending of a job is settled by `checks`.
+    pub fn new(adapters: JobsAdapters, checks: Arc<PostLandChecks>, lease: i64) -> Self {
         let JobsAdapters {
             registry,
             queue,
@@ -74,27 +67,15 @@ impl JobsService {
             objects,
             derived,
             log,
-            directory,
-            definitions,
         } = adapters;
         Self {
             registry,
-            queue: Arc::clone(&queue),
+            queue,
             cache_refs,
-            objects: Arc::clone(&objects),
-            derived: Arc::clone(&derived),
-            log: Arc::clone(&log),
-            checks: PostLandChecks::new(
-                PostLandChecksAdapters {
-                    objects,
-                    derived,
-                    log,
-                    directory,
-                    queue,
-                    definitions,
-                },
-                attempts,
-            ),
+            objects,
+            derived,
+            log,
+            checks,
             lease,
         }
     }
@@ -180,8 +161,13 @@ impl JobsService {
         let root = self.derived.root(job.repository, job.changeset).await?;
         // A claimed job's needs have passed, so it is ready; a job that is not grants only its
         // caches.
+        let files = Files::Landed {
+            derived: &*self.derived,
+            repository: job.repository,
+            root,
+        };
         if let Resolved::Ready(dependencies) =
-            dependencies(&*self.derived, job.repository, root, &job.check, &jobs).await?
+            resolve(&files, &job.check, Needs::of(&job.check, &jobs)).await?
         {
             for (_, output) in dependencies.needed {
                 granted.extend(self.walk(job.repository, output).await?);

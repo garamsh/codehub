@@ -23,6 +23,7 @@ use app::port::driving::revert::RevertError;
 use app::port::driving::source_control::LandError;
 use app::use_case::jobs::{JobsAdapters, JobsService};
 use app::use_case::landing_attempts::LandingAttempts;
+use app::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
 
 /// What the log that fails every move of `main` says.
 const BACKEND_DOWN: &str = "log down";
@@ -82,6 +83,17 @@ async fn report_with_main_failing<H: RunnerDeployment>(
 ) -> (Job, Result<(), JobsError>) {
     let claimed = harness.jobs().claim(bot, now).await.unwrap().unwrap().job;
     let log = Arc::new(FailsMainSwap(harness.log().clone()));
+    let checks = Arc::new(PostLandChecks::new(
+        PostLandChecksAdapters {
+            objects: harness.objects().clone(),
+            derived: harness.derived().clone(),
+            log: log.clone(),
+            directory: harness.directory().clone(),
+            queue: harness.queue().clone(),
+            definitions: harness.definitions().clone(),
+        },
+        LandingAttempts::default(),
+    ));
     let service = JobsService::new(
         JobsAdapters {
             registry: harness.registry().clone(),
@@ -90,11 +102,9 @@ async fn report_with_main_failing<H: RunnerDeployment>(
             objects: harness.objects().clone(),
             derived: harness.derived().clone(),
             log: log.clone(),
-            directory: harness.directory().clone(),
-            definitions: harness.definitions().clone(),
         },
+        checks,
         LEASE,
-        LandingAttempts::default(),
     );
     let answer = service
         .report(bot, claimed.id, result, Produced::default(), now)
