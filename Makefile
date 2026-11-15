@@ -32,8 +32,7 @@ e2e: services
 # its own, runs them, and removes the project, its volumes and the keys at every exit. Needs the
 # images in the local Docker image store; it is not part of `ci`.
 # The one shell line is make's missing "always run" step: a trap that removes the stack on any exit,
-# the test's failure and an interrupt included. dev/garam/keys.sh stays because compose cannot
-# generate keys.
+# the test's failure and an interrupt included.
 e2e-garam: export CODEHUB_GARAM_E2E_DIR := $(CURDIR)/target/garam-e2e
 e2e-garam: export CODEHUB_GARAM_E2E_CA := $(CURDIR)/target/garam-e2e/ca.crt
 e2e-garam: export CODEHUB_GARAM_E2E_COMPOSE := $(CURDIR)/compose.yaml
@@ -41,7 +40,7 @@ e2e-garam: export CODEHUB_GARAM_E2E_USER := $(shell id -u):$(shell id -g)
 e2e-garam: services
 	cargo build --locked -p codehub -p ch
 	trap 'docker compose --env-file dev/test.env -p $(CODEHUB_GARAM_E2E_PROJECT) --profile garam down --volumes --remove-orphans; rm -rf "$$CODEHUB_GARAM_E2E_DIR"' EXIT INT TERM; \
-	rm -rf "$$CODEHUB_GARAM_E2E_DIR" && mkdir -p "$$CODEHUB_GARAM_E2E_DIR" && sh dev/garam/keys.sh "$$CODEHUB_GARAM_E2E_DIR" && \
+	rm -rf "$$CODEHUB_GARAM_E2E_DIR" && mkdir -p "$$CODEHUB_GARAM_E2E_DIR" && cargo run --locked -p e2e --example garam_keys -- "$$CODEHUB_GARAM_E2E_DIR" && \
 	docker compose --env-file dev/test.env -p $(CODEHUB_GARAM_E2E_PROJECT) --profile garam up --detach --wait --wait-timeout 180 gateway && \
 	cargo nextest run -p e2e --locked --no-tests=fail --test garam
 

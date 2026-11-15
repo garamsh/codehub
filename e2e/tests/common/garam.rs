@@ -72,7 +72,7 @@ impl Garam {
         }
     }
 
-    /// A key file `dev/garam/keys.sh` wrote: `codehub.pem`, which garam holds the public half of, or
+    /// A key file the e2e example `garam_keys` wrote: `codehub.pem`, which garam holds the public half of, or
     /// `other.pem`, which it does not.
     pub fn key(&self, name: &str) -> PathBuf {
         self.dir.join(name)
