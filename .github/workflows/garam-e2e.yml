@@ -45,7 +45,7 @@ jobs:
       - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
 
       - name: Pull garam's images
-        run: sh dev/garam/pull.sh
+        run: docker compose --env-file dev/test.env --profile garam pull --policy missing migrate policy-migrate
 
       - name: Run the garam end-to-end test
         run: make e2e-garam

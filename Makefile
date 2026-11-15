@@ -26,13 +26,24 @@ e2e: services
 	cargo build --locked -p codehub -p ch -p codehub-runner
 	cargo nextest run -p e2e --locked --no-tests=fail -E 'not test(garam_)' $(TEST_ARGS)
 
-# The e2e tests whose names contain garam_ run against garam's published images (dev/garam), which
-# the garam-e2e workflow alone may pull, so `e2e` skips them and this target runs them: it starts
-# the garam stack, runs them and removes the stack and its keys at every exit. Needs the images in
-# the local Docker image store; it is not part of `ci`.
+# The e2e tests whose names contain garam_ run against garam's published images, the garam profile
+# of compose.yaml, which the garam-e2e workflow alone may pull, so `e2e` skips them and this target
+# runs them: it generates throwaway keys, brings the profile up with `up --wait` as a project of
+# its own, runs them, and removes the project, its volumes and the keys at every exit. Needs the
+# images in the local Docker image store; it is not part of `ci`.
+# The one shell line is make's missing "always run" step: a trap that removes the stack on any exit,
+# the test's failure and an interrupt included. dev/garam/keys.sh stays because compose cannot
+# generate keys.
+e2e-garam: export CODEHUB_GARAM_E2E_DIR := $(CURDIR)/target/garam-e2e
+e2e-garam: export CODEHUB_GARAM_E2E_CA := $(CURDIR)/target/garam-e2e/ca.crt
+e2e-garam: export CODEHUB_GARAM_E2E_COMPOSE := $(CURDIR)/compose.yaml
+e2e-garam: export CODEHUB_GARAM_E2E_USER := $(shell id -u):$(shell id -g)
 e2e-garam: services
 	cargo build --locked -p codehub -p ch
-	sh dev/garam/run.sh
+	trap 'docker compose --env-file dev/test.env -p $(CODEHUB_GARAM_E2E_PROJECT) --profile garam down --volumes --remove-orphans; rm -rf "$$CODEHUB_GARAM_E2E_DIR"' EXIT INT TERM; \
+	rm -rf "$$CODEHUB_GARAM_E2E_DIR" && mkdir -p "$$CODEHUB_GARAM_E2E_DIR" && sh dev/garam/keys.sh "$$CODEHUB_GARAM_E2E_DIR" && \
+	docker compose --env-file dev/test.env -p $(CODEHUB_GARAM_E2E_PROJECT) --profile garam up --detach --wait --wait-timeout 180 gateway && \
+	cargo nextest run -p e2e --locked --no-tests=fail --test garam
 
 # The live tests of the gaon driver (crates/codehub-runner/tests/gaon_live.rs) against a gaon-apiserver
 # built from the commit pinned in dev/gaon/env.sh and run with etcd under RBAC: it builds the server

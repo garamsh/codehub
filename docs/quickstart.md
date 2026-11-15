@@ -435,7 +435,7 @@ The output below was produced on 2026-11-13 from the commit `9d375124b4defdc7900
 
 ### Settings
 
-Set these on `codehub`, besides its database and object-store settings. The middle column is the value the end-to-end test gives (`e2e/tests/common/garam.rs`, with the addresses of `dev/garam/env.sh`); the right column is what an operator supplies.
+Set these on `codehub`, besides its database and object-store settings. The middle column is the value the end-to-end test gives (`e2e/tests/common/garam.rs`, with the addresses of `dev/test.env`); the right column is what an operator supplies.
 
 | Variable | End-to-end test | Operator |
 | --- | --- | --- |
@@ -464,7 +464,7 @@ The end-to-end test also sets `SSL_CERT_FILE` to its throwaway certificate autho
 $ make e2e-garam
 ```
 
-The target starts garam's stack from `dev/garam/compose.yaml` (the server and policy images pinned by digest, two PostgreSQL containers and a Caddy gateway) with keys generated for the run, runs the tests of `e2e/tests/garam.rs` against the built `codehub` and `ch`, and removes the stack, its volumes and the keys at every exit. It needs the images in the local Docker image store (`pull_policy: never`), free host ports 28081 to 28083, and is not part of `make ci`. After the services of `compose.yaml` are healthy and the build is done, its output ends:
+The target starts garam's stack from the `garam` profile of `compose.yaml` (the server and policy images pinned by digest, two PostgreSQL containers and a Caddy gateway) with keys generated for the run, runs the tests of `e2e/tests/garam.rs` against the built `codehub` and `ch`, and removes the stack, its volumes and the keys at every exit. It needs the images in the local Docker image store (`pull_policy: never`), free host ports 28081 to 28083, and is not part of `make ci`. After the services of `compose.yaml` are healthy and the build is done, its output ends:
 
 ```text
 policy feed started: 0 entities marked
