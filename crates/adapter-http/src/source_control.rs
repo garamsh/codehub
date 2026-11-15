@@ -10,13 +10,12 @@ use app::domain::principal::Caller;
 use app::domain::repository::RepositoryId;
 use app::port::driven::object_store::{Grant, GrantMethod};
 use app::port::driving::source_control::Landing;
-use app::port::driving::source_control::SourceControl;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
-use crate::Services;
+use crate::ApiState;
 use crate::extract::{Authenticated, Body, Params, Queried, find, parse};
 use crate::problem::Problem;
 
@@ -135,54 +134,46 @@ pub fn now() -> i64 {
         })
 }
 
-pub async fn request_upload<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn request_upload(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository)): Params<(String, String)>,
     Body(upload): Body<UploadBody>,
 ) -> Result<Json<GrantBody>, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
     let address = parse("address", &upload.address)?;
     let grant = ports
-        .source_control()
+        .source_control
         .request_upload(&caller, repository, address, upload.size)
         .await?;
     Ok(Json(grant.into()))
 }
 
-pub async fn stage_file<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn stage_file(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository, draft, path)): Params<(String, String, String, String)>,
     Body(file): Body<StageBody>,
 ) -> Result<StatusCode, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
     let change = Change::File(File {
         kind: file.kind.into(),
         content: parse("address", &file.content)?,
     });
-    stage(&*ports, &caller, repository, &draft, &path, change).await
+    stage(&ports, &caller, repository, &draft, &path, change).await
 }
 
-pub async fn stage_deletion<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn stage_deletion(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository, draft, path)): Params<(String, String, String, String)>,
 ) -> Result<StatusCode, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
-    stage(
-        &*ports,
-        &caller,
-        repository,
-        &draft,
-        &path,
-        Change::Deletion,
-    )
-    .await
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
+    stage(&ports, &caller, repository, &draft, &path, Change::Deletion).await
 }
 
-async fn stage<P: Services>(
-    ports: &P,
+async fn stage(
+    ports: &ApiState,
     caller: &Caller,
     repository: RepositoryId,
     draft: &str,
@@ -190,7 +181,7 @@ async fn stage<P: Services>(
     change: Change,
 ) -> Result<StatusCode, Problem> {
     ports
-        .source_control()
+        .source_control
         .stage(
             caller,
             repository,
@@ -202,19 +193,19 @@ async fn stage<P: Services>(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn land<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn land(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository, draft)): Params<(String, String, String)>,
     Body(landing): Body<LandBody>,
 ) -> Result<Json<LandedBody>, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
     let landing = Landing {
         message: landing.message.unwrap_or_default(),
         timestamp: now(),
     };
     let changeset = ports
-        .source_control()
+        .source_control
         .land(&caller, repository, &parse("draft name", &draft)?, landing)
         .await?;
     Ok(Json(LandedBody {
@@ -222,14 +213,14 @@ pub async fn land<P: Services>(
     }))
 }
 
-pub async fn read_file<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn read_file(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository, path)): Params<(String, String, String)>,
 ) -> Result<Json<FileBody>, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
     let content = ports
-        .source_control()
+        .source_control
         .read_file(&caller, repository, &parse("path", &path)?)
         .await?;
     Ok(Json(FileBody {
@@ -238,20 +229,20 @@ pub async fn read_file<P: Services>(
     }))
 }
 
-pub async fn history<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn history(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository, path)): Params<(String, String, String)>,
     Queried(query): Queried<HistoryQuery>,
 ) -> Result<Json<HistoryBody>, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
     let at = query
         .at
         .as_deref()
         .map(|at| parse::<Address>("address", at))
         .transpose()?;
     let versions = ports
-        .source_control()
+        .source_control
         .history(&caller, repository, at, &parse("path", &path)?)
         .await?;
     Ok(Json(HistoryBody {

@@ -19,6 +19,7 @@ pub(crate) struct Probe {
     pub(crate) objects: Arc<dyn ObjectStore>,
 }
 
+#[async_trait::async_trait]
 impl Readiness for Probe {
     async fn check(&self) -> Result<(), NotReady> {
         // Neither repository 0 nor the empty object need exist: a question answered "none" is

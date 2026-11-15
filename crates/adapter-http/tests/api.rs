@@ -4,6 +4,7 @@
 pub mod common;
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use app::domain::address::Address;
@@ -13,7 +14,7 @@ use app::port::driven::repository_directory::DirectoryError;
 use app::port::driving::repositories::{Repositories, RepositoriesError};
 use app::use_case::administration::Administration;
 use axum::http::{Method, StatusCode};
-use common::{Api, HOLD, Reply, router, router_with, send};
+use common::{Api, HOLD, Reply, router, router_ready, router_with, send};
 use serde_json::{Value, json};
 
 const PROBLEM: &str = "application/problem+json";
@@ -572,7 +573,7 @@ fn failure() -> RepositoriesError {
 async fn answers_a_backend_failure_with_500_and_no_internals() {
     let api = Api::new();
     let ada = api.token("ada");
-    let router = router_with(&api.stores, Administration::BuiltIn, Failing);
+    let router = router_with(&api.stores, Administration::BuiltIn, Arc::new(Failing));
 
     let reply = send(
         router,
@@ -717,6 +718,7 @@ async fn documents_every_route_and_routes_every_documented_operation() {
 struct Dependencies(Option<&'static str>);
 
 #[cfg(test)]
+#[async_trait::async_trait]
 impl adapter_http::Readiness for Dependencies {
     async fn check(&self) -> Result<(), adapter_http::NotReady> {
         self.0
@@ -726,7 +728,7 @@ impl adapter_http::Readiness for Dependencies {
 
 #[cfg(test)]
 fn health(failing: Option<&'static str>) -> axum::Router {
-    adapter_http::health_router(Dependencies(failing))
+    router_ready(&Api::new().stores, Arc::new(Dependencies(failing)))
 }
 
 #[tokio::test]

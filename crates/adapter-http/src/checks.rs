@@ -8,13 +8,13 @@ use app::domain::job::{Job, JobId, JobState};
 use app::domain::name::DraftName;
 use app::domain::revert::Revert;
 use app::port::driven::changeset_log::Ref;
-use app::port::driving::checks::{Checks, Plan, PlanOutcome, RunReason};
+use app::port::driving::checks::{Plan, PlanOutcome, RunReason};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Serialize;
 
-use crate::RunnerServices;
+use crate::ApiState;
 use crate::extract::{Authenticated, Params, find, parse};
 use crate::problem::Problem;
 use crate::source_control::now;
@@ -178,15 +178,15 @@ impl From<Job> for ListedBody {
     }
 }
 
-pub async fn list<P: RunnerServices>(
-    State(ports): State<Arc<P>>,
+pub async fn list(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository, changeset)): Params<(String, String, String)>,
 ) -> Result<Json<ChecksBody>, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
     let changeset: Address = parse("address", &changeset)?;
     let jobs = ports
-        .checks()
+        .checks
         .jobs_of(&caller, repository, changeset, now())
         .await?;
     Ok(Json(ChecksBody {
@@ -194,32 +194,32 @@ pub async fn list<P: RunnerServices>(
     }))
 }
 
-pub async fn cancel<P: RunnerServices>(
-    State(ports): State<Arc<P>>,
+pub async fn cancel(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository, job)): Params<(String, String, u64)>,
 ) -> Result<StatusCode, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
     ports
-        .checks()
+        .checks
         .cancel(&caller, repository, JobId::new(job))
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn reference<P: RunnerServices>(
-    State(ports): State<Arc<P>>,
+pub async fn reference(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository, name)): Params<(String, String, String)>,
 ) -> Result<Json<RefBody>, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
     let (name, reference) = match name.as_str() {
         "main" => ("main", Ref::Main),
         "last-green" => ("last-green", Ref::LastGreen),
         _ => return Err(Problem::not_found("no such ref")),
     };
     let changeset = ports
-        .checks()
+        .checks
         .reference(&caller, repository, reference)
         .await?;
     let changeset = changeset.ok_or_else(|| Problem::not_found("the ref is not set"))?;
@@ -229,13 +229,13 @@ pub async fn reference<P: RunnerServices>(
     }))
 }
 
-pub async fn plan<P: RunnerServices>(
-    State(ports): State<Arc<P>>,
+pub async fn plan(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository, draft)): Params<(String, String, String)>,
 ) -> Result<Json<PlanBody>, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
     let draft: DraftName = parse("draft name", &draft)?;
-    let plan = ports.checks().plan(&caller, repository, &draft).await?;
+    let plan = ports.checks.plan(&caller, repository, &draft).await?;
     Ok(Json(plan.into()))
 }

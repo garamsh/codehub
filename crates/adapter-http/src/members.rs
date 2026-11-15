@@ -3,12 +3,11 @@
 use std::sync::Arc;
 
 use app::port::driven::membership::{Access, Role};
-use app::port::driving::members::Members;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
 
-use crate::Services;
+use crate::ApiState;
 use crate::extract::{Authenticated, Body, Params, PrincipalBody, Queried, parse, parse_prefix};
 use crate::problem::Problem;
 
@@ -41,8 +40,8 @@ pub struct GrantBody {
     access: AccessBody,
 }
 
-pub async fn add_member<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn add_member(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params(organisation): Params<String>,
     Body(member): Body<MemberBody>,
@@ -53,28 +52,28 @@ pub async fn add_member<P: Services>(
         RoleBody::Member => Role::Member,
     };
     ports
-        .members()
+        .members
         .add_member(&caller, &organisation, &member.principal.principal()?, role)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn remove_member<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn remove_member(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params(organisation): Params<String>,
     Queried(member): Queried<PrincipalBody>,
 ) -> Result<StatusCode, Problem> {
     let organisation = parse("organisation name", &organisation)?;
     ports
-        .members()
+        .members
         .remove_member(&caller, &organisation, &member.principal()?)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn add_grant<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn add_grant(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository)): Params<(String, String)>,
     Body(grant): Body<GrantBody>,
@@ -82,7 +81,7 @@ pub async fn add_grant<P: Services>(
     let organisation = parse("organisation name", &organisation)?;
     let repository = parse("repository name", &repository)?;
     ports
-        .members()
+        .members
         .add_grant(
             &caller,
             &organisation,
@@ -95,8 +94,8 @@ pub async fn add_grant<P: Services>(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn remove_grant<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn remove_grant(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository)): Params<(String, String)>,
     Queried(grant): Queried<GrantBody>,
@@ -104,7 +103,7 @@ pub async fn remove_grant<P: Services>(
     let organisation = parse("organisation name", &organisation)?;
     let repository = parse("repository name", &repository)?;
     ports
-        .members()
+        .members
         .remove_grant(
             &caller,
             &organisation,

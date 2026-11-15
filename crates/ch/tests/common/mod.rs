@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use base64::Engine;
 
-use adapter_http::{Pause, RunnerSettings};
+use adapter_http::{ApiState, Pause, RunnerSettings};
 use adapter_oidc::OidcIdentityVerification;
 use adapter_s3::S3ObjectStore;
 use app::domain::check::{CheckDefinition, Command, Timeout};
@@ -115,22 +115,22 @@ async fn bind(stores: Arc<Stores>, identity: Arc<dyn IdentityVerification>) -> S
     assembly.objects = Arc::new(objects());
     assembly.identity = identity;
     assembly.max_upload_size = MAX_UPLOAD_SIZE;
-    let router = adapter_http::api_router(
-        assembly.authentication(),
-        assembly.repositories(),
-        assembly.members(),
-        assembly.source_control(),
-        assembly.runners(),
-        assembly.jobs(),
-        assembly.checks(),
-        RunnerSettings {
+    let router = adapter_http::router(ApiState {
+        authentication: Arc::new(assembly.authentication()),
+        repositories: Arc::new(assembly.repositories()),
+        members: Arc::new(assembly.members()),
+        source_control: Arc::new(assembly.source_control()),
+        runners: Arc::new(assembly.runners()),
+        jobs: Arc::new(assembly.jobs()),
+        checks: Arc::new(assembly.checks()),
+        settings: RunnerSettings {
             hold: HOLD,
             retry_interval: Duration::from_millis(50),
             heartbeat_interval: Duration::from_secs(10),
             pause,
         },
-        (),
-    );
+        readiness: Arc::new(()),
+    });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

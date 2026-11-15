@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use adapter_http::{Pause, RunnerSettings};
+use adapter_http::{ApiState, Pause, RunnerSettings};
 use adapter_toml::TomlCheckDefinitions;
 
 use adapter_authzen::{AuthzenAuthorisationDecision, Profile};
@@ -280,15 +280,15 @@ pub async fn run(config: Config) -> Result<(), Error> {
         attempts: LandingAttempts::new(config.landing_attempts),
         lease: i64::from(config.runner_lease.get()),
     };
-    let router = adapter_http::api_router(
-        assembly.authentication(),
-        assembly.repositories(),
-        assembly.members(),
-        assembly.source_control(),
-        assembly.runners(),
-        assembly.jobs(),
-        assembly.checks(),
-        RunnerSettings {
+    let router = adapter_http::router(ApiState {
+        authentication: Arc::new(assembly.authentication()),
+        repositories: Arc::new(assembly.repositories()),
+        members: Arc::new(assembly.members()),
+        source_control: Arc::new(assembly.source_control()),
+        runners: Arc::new(assembly.runners()),
+        jobs: Arc::new(assembly.jobs()),
+        checks: Arc::new(assembly.checks()),
+        settings: RunnerSettings {
             hold: Duration::from_secs(config.runner_claim_hold),
             retry_interval: CLAIM_RETRY_INTERVAL,
             heartbeat_interval: Duration::from_secs(u64::from(
@@ -296,8 +296,8 @@ pub async fn run(config: Config) -> Result<(), Error> {
             )),
             pause,
         },
-        Probe { directory, objects },
-    );
+        readiness: Arc::new(Probe { directory, objects }),
+    });
     let listener = TcpListener::bind(config.listen)
         .await
         .map_err(|error| Error::Bind(config.listen, error))?;
