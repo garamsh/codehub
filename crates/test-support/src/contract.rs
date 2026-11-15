@@ -33,29 +33,37 @@ use app::domain::principal::{Caller, Principal};
 use app::domain::repository::RepositoryId;
 use app::domain::tree::Entry;
 use app::port::driven::authorisation_decision::AuthorisationDecision;
+use app::port::driven::cache_refs::CacheRefs;
 use app::port::driven::changeset_log::{ChangesetLog, Ref};
+use app::port::driven::check_definitions::CheckDefinitions;
 use app::port::driven::derived_data::DerivedData;
 use app::port::driven::directory_changes::{ChangeKind, DirectoryChanges, RepositoryChange};
 use app::port::driven::directory_outbox::DirectoryOutbox;
 use app::port::driven::draft_store::DraftStore;
+use app::port::driven::job_queue::JobQueue;
 use app::port::driven::membership::Membership;
 use app::port::driven::object_store::ObjectStore;
 use app::port::driven::repository_directory::RepositoryDirectory;
+use app::port::driven::runner_registry::RunnerRegistry;
 use app::port::driving::authentication::Authentication;
 use app::port::driving::repositories::Repositories;
 use app::port::driving::source_control::Landing;
 use app::port::driving::source_control::{SourceControl, SourceControlError};
 use app::use_case::administration::Administration;
+use app::use_case::assembly::Assembly;
 use app::use_case::authentication::AuthenticationService;
+use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::relay::{Delivery, DirectoryRelay, RelayEnvironment};
-use app::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
+use app::use_case::repositories::RepositoriesService;
 use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
+
+use self::runner_deployment::LEASE;
 
 /// The largest upload the deployment's source control grants.
 pub const MAX_UPLOAD_SIZE: u64 = 1024;
 
-/// The adapters of one deployment, holding any number of repositories. Object storage and
-/// identity verification are in memory in every deployment.
+/// The adapters of one deployment, holding any number of repositories, and the driving ports over
+/// them. Object storage and identity verification are in memory in every deployment.
 pub trait Deployment: Sized + Send + Sync {
     /// The changeset log.
     type Log: ChangesetLog + 'static;
@@ -75,6 +83,14 @@ pub trait Deployment: Sized + Send + Sync {
     type Outbox: DirectoryOutbox + 'static;
     /// The delivery that follows a repository's creation.
     type Delivery: Delivery + 'static;
+    /// The runner registry.
+    type Registry: RunnerRegistry + 'static;
+    /// The job queue.
+    type Queue: JobQueue + 'static;
+    /// The cache refs.
+    type CacheRefs: CacheRefs + 'static;
+    /// The check definitions.
+    type Definitions: CheckDefinitions + 'static;
 
     /// A deployment of its own, with no repository.
     fn start() -> impl Future<Output = Self> + Send;
@@ -101,6 +117,14 @@ pub trait Deployment: Sized + Send + Sync {
     fn outbox(&self) -> &Arc<Self::Outbox>;
     /// The delivery of a repository's outbox entries to the directory changes.
     fn delivery(&self) -> &Arc<Self::Delivery>;
+    /// The runner registry.
+    fn registry(&self) -> &Arc<Self::Registry>;
+    /// The job queue.
+    fn queue(&self) -> &Arc<Self::Queue>;
+    /// The cache refs.
+    fn cache_refs(&self) -> &Arc<Self::CacheRefs>;
+    /// The check definitions.
+    fn definitions(&self) -> &Arc<Self::Definitions>;
 
     /// Writes the entry of a further change to `repository`, as the repository directory does for
     /// a deletion once repositories can be deleted, and returns it.
@@ -110,43 +134,63 @@ pub trait Deployment: Sized + Send + Sync {
         kind: ChangeKind,
     ) -> impl Future<Output = RepositoryChange> + Send;
 
+    /// The driving ports over this deployment's adapters, assembled as the application ships
+    /// them, with members administered by codehub, uploads up to [`MAX_UPLOAD_SIZE`] bytes and the
+    /// lease [`LEASE`].
+    fn assembly(&self) -> Assembly {
+        Assembly {
+            objects: self.objects().clone(),
+            log: self.log().clone(),
+            derived: self.derived().clone(),
+            drafts: self.drafts().clone(),
+            directory: self.directory().clone(),
+            authorisation: self.authorisation().clone(),
+            membership: self.membership().clone(),
+            queue: self.queue().clone(),
+            cache_refs: self.cache_refs().clone(),
+            registry: self.registry().clone(),
+            definitions: self.definitions().clone(),
+            changes: self.changes().clone(),
+            delivery: self.delivery().clone(),
+            identity: self.identity().clone(),
+            administration: Administration::BuiltIn,
+            max_upload_size: MAX_UPLOAD_SIZE,
+            attempts: LandingAttempts::default(),
+            lease: LEASE,
+        }
+    }
+
     /// The repositories port over this deployment's adapters, administered by codehub.
     fn repositories(&self) -> RepositoriesService {
-        self.administered(Administration::BuiltIn)
+        self.assembly().repositories()
     }
 
     /// The repositories port over this deployment's adapters, with members administered as
     /// `administration` says.
     fn administered(&self, administration: Administration) -> RepositoriesService {
-        RepositoriesService::new(
-            RepositoriesAdapters {
-                directory: self.directory().clone(),
-                authorisation: self.authorisation().clone(),
-                membership: self.membership().clone(),
-                changes: self.changes().clone(),
-                delivery: self.delivery().clone(),
-            },
-            administration,
-        )
+        let mut assembly = self.assembly();
+        assembly.administration = administration;
+        assembly.repositories()
     }
 
     /// The authentication port over this deployment's identity verification.
     fn authentication(&self) -> AuthenticationService {
-        AuthenticationService::new(self.identity().clone())
+        self.assembly().authentication()
     }
 
-    /// Source control over this deployment's adapters.
+    /// Source control over this deployment's adapters, which queues no checks after a landing.
     fn source_control(&self) -> SourceControlService {
+        let assembly = self.assembly();
         SourceControlService::new(
             SourceControlAdapters {
-                objects: self.objects().clone(),
-                log: self.log().clone(),
-                derived: self.derived().clone(),
-                drafts: self.drafts().clone(),
-                directory: self.directory().clone(),
-                authorisation: self.authorisation().clone(),
+                objects: assembly.objects,
+                log: assembly.log,
+                derived: assembly.derived,
+                drafts: assembly.drafts,
+                directory: assembly.directory,
+                authorisation: assembly.authorisation,
             },
-            MAX_UPLOAD_SIZE,
+            assembly.max_upload_size,
         )
     }
 

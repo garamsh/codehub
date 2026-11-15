@@ -1,5 +1,5 @@
 //! Helpers that the tests of more than one package share: the check environment, a fresh
-//! PostgreSQL database, the in-memory deployment and stores, a started `codehub`, a user's `ch`, a
+//! PostgreSQL database, the in-memory deployment, a started `codehub`, a user's `ch`, a
 //! token from Keycloak and the contract scenarios of the driven ports.
 //!
 //! Every helper panics when something is not as expected, as a failed assertion does, so a test
@@ -20,7 +20,6 @@ mod deployment;
 mod keycloak;
 mod memory_deployment;
 mod server;
-mod stores;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -31,7 +30,6 @@ pub use deployment::assert_contract;
 pub use keycloak::{introspection_settings, keycloak_token, token_endpoint};
 pub use memory_deployment::{Definitions, MemoryDeployment, Taught};
 pub use server::{Server, pairs};
-pub use stores::Stores;
 
 /// How long a start, a shutdown or one run of `ch` may take.
 const BOUND: Duration = Duration::from_secs(60);
