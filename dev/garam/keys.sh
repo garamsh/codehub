@@ -1,4 +1,5 @@
 #!/bin/sh
+# Glue for `make e2e-garam`, and a script because compose cannot generate keys: it only invokes openssl.
 # Writes the throwaway key material of the garam stack into the directory $1, every file readable
 # by the owner alone: garam's token signing key, the key codehub signs its client assertions with,
 # a second key no service principal holds, the service keys file that registers codehub's public
