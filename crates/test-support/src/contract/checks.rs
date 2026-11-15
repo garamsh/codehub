@@ -5,17 +5,24 @@ use crate::contract::runner_deployment::{
     LEASE, RunnerDeployment, Spec, check, land, land_checks, land_checks_in, land_checks_with,
     organisation, runner,
 };
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use app::domain::address::Address;
 use app::domain::file::{File, FileKind};
+use app::domain::file_version::FileVersionNode;
 use app::domain::job::{
     CacheRef, Heartbeat, Job, JobResult, JobState, Outcome, Produced, ProducedFile, StopReason,
     empty_output_tree,
 };
 use app::domain::path::{Component, Path, Prefix};
 use app::domain::principal::Caller;
+use app::domain::repository::RepositoryId;
+use app::domain::tree::Tree;
 use app::port::driven::changeset_log::{ChangesetLog, Ref};
 use app::port::driven::check_definitions::CheckDefinitions;
 use app::port::driven::check_definitions::CheckFileError;
+use app::port::driven::derived_data::{DerivedData, DerivedDataError};
 use app::port::driven::job_queue::{JobQueue, JobQueueError};
 use app::port::driven::membership::{Access, Role};
 use app::port::driven::object_store::ObjectStore;
@@ -27,6 +34,8 @@ use app::port::driving::jobs::{Claimed, Jobs, Upload};
 use app::port::driving::members::Members;
 use app::port::driving::source_control::LandError;
 use app::use_case::administration::Administration;
+use app::use_case::jobs::{JobsAdapters, JobsService};
+use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::members::{MembersAdapters, MembersService};
 
 fn passed() -> JobResult {
@@ -1529,4 +1538,107 @@ pub async fn a_cache_ref_moves_only_from_the_changeset_it_records<H: RunnerDeplo
     let other = Prefix::from("app".parse::<Path>().unwrap());
     let elsewhere = queue.cache_ref(repo.id, &other, &path).await.unwrap();
     assert_eq!(elsewhere, None);
+}
+
+/// Derived data that counts the trees it is asked for and otherwise answers as `inner` does.
+struct CountingTrees<'a, D> {
+    inner: &'a D,
+    trees: AtomicUsize,
+}
+
+impl<D: DerivedData> DerivedData for CountingTrees<'_, D> {
+    fn put_trees(
+        &self,
+        repository: RepositoryId,
+        changeset: Address,
+        root: Address,
+        trees: BTreeMap<Address, Tree>,
+    ) -> impl Future<Output = Result<(), DerivedDataError>> + Send {
+        self.inner.put_trees(repository, changeset, root, trees)
+    }
+
+    fn root(
+        &self,
+        repository: RepositoryId,
+        changeset: Address,
+    ) -> impl Future<Output = Result<Address, DerivedDataError>> + Send {
+        self.inner.root(repository, changeset)
+    }
+
+    fn tree(
+        &self,
+        repository: RepositoryId,
+        address: Address,
+    ) -> impl Future<Output = Result<Tree, DerivedDataError>> + Send {
+        self.trees.fetch_add(1, Ordering::SeqCst);
+        self.inner.tree(repository, address)
+    }
+
+    fn put_file_versions(
+        &self,
+        repository: RepositoryId,
+        changeset: Address,
+        value: BTreeMap<Path, Address>,
+        nodes: BTreeMap<Address, FileVersionNode>,
+    ) -> impl Future<Output = Result<(), DerivedDataError>> + Send {
+        self.inner
+            .put_file_versions(repository, changeset, value, nodes)
+    }
+
+    fn file_versions(
+        &self,
+        repository: RepositoryId,
+        changeset: Address,
+    ) -> impl Future<Output = Result<Option<BTreeMap<Path, Address>>, DerivedDataError>> + Send
+    {
+        self.inner.file_versions(repository, changeset)
+    }
+
+    fn file_version_node(
+        &self,
+        repository: RepositoryId,
+        address: Address,
+    ) -> impl Future<Output = Result<FileVersionNode, DerivedDataError>> + Send {
+        self.inner.file_version_node(repository, address)
+    }
+}
+
+/// A claim reads the trees its job's inputs can reach and no others: the trees from the root to
+/// the folders its patterns name, not the whole changeset.
+pub async fn a_claim_reads_only_the_trees_its_inputs_reach<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let folders: &[(&str, &[Spec])] = &[("web", &[check("unit").reading(&["src/**"])])];
+    let files = [
+        ("web/src/a", "1\n"),
+        ("web/notes", "1\n"),
+        ("docs/deep/er/x", "1\n"),
+        ("docs/y", "1\n"),
+    ];
+    land_checks_with(&repo, &ada, "first", folders, &files).await;
+
+    let counting = CountingTrees {
+        inner: harness.derived(),
+        trees: AtomicUsize::new(0),
+    };
+    let jobs = JobsService::new(
+        JobsAdapters {
+            registry: harness.registry(),
+            queue: harness.queue(),
+            objects: harness.objects(),
+            derived: &counting,
+            log: harness.log(),
+            directory: harness.directory(),
+            definitions: harness.definitions(),
+        },
+        LEASE,
+        LandingAttempts::default(),
+    );
+    let claimed = jobs.claim(&bot, 0).await.unwrap().unwrap();
+
+    assert_eq!(granted(&claimed), ["web/src/a"]);
+    // The root, `web` and `web/src`; not `docs`, nor the check file's folder.
+    assert_eq!(counting.trees.load(Ordering::SeqCst), 3);
 }

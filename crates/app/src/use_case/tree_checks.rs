@@ -6,8 +6,9 @@ use std::collections::BTreeMap;
 use std::future::Future;
 
 use crate::domain::address::Address;
-use crate::domain::check::{CheckDefinition, needs_fault};
+use crate::domain::check::{CheckDefinition, CheckKey, needs_fault};
 use crate::domain::file::File;
+use crate::domain::job::{Job, Needs};
 use crate::domain::path::{Path, PathError, Prefix};
 use crate::domain::repository::RepositoryId;
 use crate::domain::tree::{Entry, Tree};
@@ -15,12 +16,14 @@ use crate::port::driven::check_definitions::CheckDefinitions;
 use crate::port::driven::derived_data::{DerivedData, DerivedDataError};
 use crate::port::driven::object_store::{ObjectStore, ObjectStoreError};
 
-/// Every file of the tree at `root`, by its path from the root. `read` returns the tree stored
-/// under an address, and `invalid` turns a path no file can have into the caller's error.
+/// Every file of the tree at `root`, by its path from the root; where `only` is a check, the files
+/// it reads, reading no tree its inputs cannot reach. `read` returns the tree stored under an
+/// address, and `invalid` turns a path no file can have into the caller's error.
 pub(crate) async fn walk_files<E, R, F>(
     root: Address,
     read: R,
     invalid: fn(PathError) -> E,
+    only: Option<&CheckDefinition>,
 ) -> Result<BTreeMap<Path, File>, E>
 where
     R: Fn(Address) -> F,
@@ -33,9 +36,16 @@ where
             let mut components = directory.clone();
             components.push(name);
             match entry {
-                Entry::Directory(subtree) => pending.push((components, subtree)),
+                Entry::Directory(subtree) => {
+                    if only.is_none_or(|check| check.may_read_below(&components)) {
+                        pending.push((components, subtree));
+                    }
+                }
                 Entry::File(file) => {
-                    files.insert(Path::new(components).map_err(invalid)?, file);
+                    let path = Path::new(components).map_err(invalid)?;
+                    if only.is_none_or(|check| check.reads(&path)) {
+                        files.insert(path, file);
+                    }
                 }
             }
         }
@@ -57,12 +67,76 @@ pub(crate) async fn tree_files<D: DerivedData>(
         root,
         |address| derived.tree(repository, address),
         |error| DerivedDataError::Backend(error.to_string()),
+        None,
     )
     .await?;
     Ok(files
         .into_iter()
         .map(|(path, file)| (path, file.content))
         .collect())
+}
+
+/// What a check depends on (ADR 0049): the files its inputs select in the changeset, and the key
+/// and output tree of each check it needs. Its key covers it, and a claim grants it.
+#[derive(Debug)]
+pub(crate) struct Dependencies {
+    /// The files the check's input patterns select, by path.
+    pub inputs: BTreeMap<Path, File>,
+    /// The key and output tree of each check it needs, in the order of its `needs`.
+    pub needed: Vec<(CheckKey, Address)>,
+}
+
+impl Dependencies {
+    /// The key of `check`, the check these are the dependencies of. The key covers the content of
+    /// each input and not its kind.
+    pub(crate) fn key(&self, check: &CheckDefinition) -> CheckKey {
+        let inputs: Vec<(Path, Address)> = self
+            .inputs
+            .iter()
+            .map(|(path, file)| (path.clone(), file.content))
+            .collect();
+        CheckKey::new(check, &inputs, &self.needed)
+    }
+}
+
+/// Where the dependencies of a check stand.
+#[derive(Debug)]
+pub(crate) enum Resolved {
+    /// A check it needs has not ended.
+    Waiting,
+    /// A check it needs did not pass, so it is not run.
+    Skipped,
+    /// Every check it needs passed.
+    Ready(Dependencies),
+}
+
+/// The dependencies of `check` in the changeset at `root`, among `jobs`, the jobs of the
+/// changeset: the one place that decides them, for the key of a queued job and for the grant of a
+/// claimed one. Only the trees `check`'s inputs can reach are read.
+///
+/// # Errors
+///
+/// The failure of derived data.
+pub(crate) async fn dependencies<D: DerivedData>(
+    derived: &D,
+    repository: RepositoryId,
+    root: Address,
+    check: &CheckDefinition,
+    jobs: &[Job],
+) -> Result<Resolved, DerivedDataError> {
+    let needed = match Needs::of(check, jobs) {
+        Needs::Waiting => return Ok(Resolved::Waiting),
+        Needs::Skipped => return Ok(Resolved::Skipped),
+        Needs::Passed(needed) => needed,
+    };
+    let inputs = walk_files(
+        root,
+        |address| derived.tree(repository, address),
+        |error| DerivedDataError::Backend(error.to_string()),
+        Some(check),
+    )
+    .await?;
+    Ok(Resolved::Ready(Dependencies { inputs, needed }))
 }
 
 /// The check definitions of a tree could not be read.

@@ -171,3 +171,8 @@ async fn a_cache_ref_advances_only_on_a_pass_at_a_later_landing() {
 async fn a_cache_ref_moves_only_from_the_changeset_it_records() {
     checks::a_cache_ref_moves_only_from_the_changeset_it_records::<Harness>().await;
 }
+
+#[tokio::test]
+async fn a_claim_reads_only_the_trees_its_inputs_reach() {
+    checks::a_claim_reads_only_the_trees_its_inputs_reach::<Harness>().await;
+}
