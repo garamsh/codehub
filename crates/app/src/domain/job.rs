@@ -3,7 +3,7 @@
 use std::fmt;
 
 use crate::domain::address::Address;
-use crate::domain::check::{CheckDefinition, CheckKey};
+use crate::domain::check::{CheckDefinition, CheckId, CheckKey};
 use crate::domain::file::File;
 use crate::domain::name::OrganisationName;
 use crate::domain::path::{Path, Prefix};
@@ -278,22 +278,55 @@ pub enum Needs {
     Passed(Vec<(CheckKey, Address)>),
 }
 
+/// Where one check stands for a check that needs it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Standing {
+    /// It has not ended.
+    Open,
+    /// It passed, with its key and output tree.
+    Passed(CheckKey, Address),
+    /// It did not pass, or has no key to give.
+    NotPassed,
+}
+
+impl Job {
+    /// Where this job stands for a check that needs its check.
+    #[must_use]
+    pub fn standing(&self) -> Standing {
+        if !self.state.is_finished() {
+            return Standing::Open;
+        }
+        match (self.state.is_passed(), self.key) {
+            (true, Some(key)) => {
+                Standing::Passed(key, self.output_tree.unwrap_or_else(empty_output_tree))
+            }
+            (true, None) | (false, _) => Standing::NotPassed,
+        }
+    }
+}
+
 impl Needs {
     /// Where the checks `check` needs stand among `jobs`, the jobs of its changeset. A need is the
-    /// first job of its check, whether the key of `check` or its grant asks; the first need that
-    /// has not passed decides, as it comes in the order of `needs`.
+    /// first job of its check, whether the key of `check` or its grant asks.
     #[must_use]
     pub fn of(check: &CheckDefinition, jobs: &[Job]) -> Self {
-        let empty = empty_output_tree();
+        Self::by(check, |id| {
+            jobs.iter()
+                .find(|other| other.check.id() == *id)
+                .map_or(Standing::NotPassed, Job::standing)
+        })
+    }
+
+    /// Where the checks `check` needs stand, as `standing` says of each; the first need that has
+    /// not passed decides, as it comes in the order of `needs`.
+    #[must_use]
+    pub fn by(check: &CheckDefinition, standing: impl Fn(&CheckId) -> Standing) -> Self {
         let mut passed = Vec::new();
         for id in check.needed() {
-            match jobs.iter().find(|other| other.check.id() == id) {
-                Some(other) if !other.state.is_finished() => return Self::Waiting,
-                Some(other) if other.state.is_passed() => match other.key {
-                    Some(key) => passed.push((key, other.output_tree.unwrap_or(empty))),
-                    None => return Self::Skipped,
-                },
-                Some(_) | None => return Self::Skipped,
+            match standing(&id) {
+                Standing::Open => return Self::Waiting,
+                Standing::NotPassed => return Self::Skipped,
+                Standing::Passed(key, output) => passed.push((key, output)),
             }
         }
         Self::Passed(passed)

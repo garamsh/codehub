@@ -132,6 +132,11 @@ async fn a_plan_runs_what_the_draft_changes_and_takes_the_rest_from_the_cache() 
 }
 
 #[tokio::test]
+async fn a_plan_gives_a_check_a_reason_for_each_need_that_runs_and_none_for_one_cached() {
+    checks::a_plan_gives_a_check_a_reason_for_each_need_that_runs_and_none_for_one_cached::<Harness>().await;
+}
+
+#[tokio::test]
 async fn a_plan_gives_each_check_the_key_its_landing_gave() {
     checks::a_plan_gives_each_check_the_key_its_landing_gave::<Harness>().await;
 }

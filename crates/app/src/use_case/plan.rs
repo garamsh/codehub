@@ -7,6 +7,7 @@ use crate::domain::address::Address;
 use crate::domain::changeset::Change;
 use crate::domain::check::{CheckDefinition, CheckId, CheckKey};
 use crate::domain::draft::DraftId;
+use crate::domain::job::{Needs, Standing};
 use crate::domain::path::Path;
 use crate::domain::repository::RepositoryId;
 use crate::port::driven::changeset_log::{ChangesetLog, Ref};
@@ -17,7 +18,9 @@ use crate::port::driven::job_queue::JobQueue;
 use crate::port::driven::object_store::ObjectStore;
 use crate::port::driving::checks::{Plan, PlanError, PlanOutcome, PlannedCheck, RunReason};
 use crate::use_case::land::rebase;
-use crate::use_case::tree_checks::{DefinitionsError, Unreadable, read_definitions, tree_files};
+use crate::use_case::tree_checks::{
+    DefinitionsError, Files, Resolved, Unreadable, read_definitions, resolve, tree_files,
+};
 
 /// The driven ports a plan is made over.
 pub(crate) struct PlanPorts<'a, Q, L, O, D, C, S> {
@@ -75,14 +78,16 @@ where
     let mut after = before.clone();
     for (path, change) in changes {
         match change {
-            Change::File(file) => after.insert(path, file.content),
+            Change::File(file) => after.insert(path, file),
             Change::Deletion => after.remove(&path),
         };
     }
     let changed: BTreeSet<&Path> = before
         .keys()
         .chain(after.keys())
-        .filter(|path| before.get(*path) != after.get(*path))
+        .filter(|path| {
+            before.get(*path).map(|file| file.content) != after.get(*path).map(|file| file.content)
+        })
         .collect();
 
     let definitions = read_definitions(ports.objects, ports.definitions, repository, &after)
@@ -97,35 +102,48 @@ where
                 reason,
             },
         })?;
+    let files = Files::<D>::Rebased(&after);
     let mut checks = Vec::new();
     let mut settled: BTreeMap<CheckId, Cached> = BTreeMap::new();
     let mut remaining: BTreeMap<CheckId, &CheckDefinition> = definitions
         .iter()
         .map(|definition| (definition.id(), definition))
         .collect();
-    while let Some(id) = remaining
-        .iter()
-        .find(|(_, definition)| definition.needed().all(|need| settled.contains_key(&need)))
-        .map(|(id, _)| id.clone())
-    {
-        let Some(definition) = remaining.remove(&id) else {
+    // A check is settled once every check it needs is, because a plan gives a reason for each need
+    // that runs; a need that would run stands for a job that did not pass.
+    loop {
+        let mut ready = None;
+        for (id, definition) in &remaining {
+            if !definition.needed().all(|need| settled.contains_key(&need)) {
+                continue;
+            }
+            let standing = |need: &CheckId| match settled.get(need) {
+                None => Standing::Open,
+                Some(Some((key, output))) => Standing::Passed(*key, *output),
+                Some(None) => Standing::NotPassed,
+            };
+            let resolved = resolve(&files, definition, Needs::by(definition, standing)).await?;
+            if !matches!(resolved, Resolved::Waiting) {
+                ready = Some((id.clone(), *definition, resolved));
+                break;
+            }
+        }
+        let Some((id, definition, resolved)) = ready else {
             break;
         };
-        let inputs_changed = changed.iter().any(|path| definition.reads(path));
+        remaining.remove(&id);
         let mut reasons = Vec::new();
-        if inputs_changed {
+        if changed.iter().any(|path| definition.reads(path)) {
             reasons.push(RunReason::InputsChanged);
         }
-        let mut needed = Vec::new();
         for need in definition.needed() {
-            match settled.get(&need) {
-                Some(Some(result)) => needed.push(*result),
-                Some(None) | None => reasons.push(RunReason::NeedRuns(need)),
+            if !matches!(settled.get(&need), Some(Some(_))) {
+                reasons.push(RunReason::NeedRuns(need));
             }
         }
         let mut cached = None;
-        if needed.len() == definition.needs.len() {
-            let key = CheckKey::of_tree(definition, &after, &needed);
+        if let Resolved::Ready(dependencies) = resolved {
+            let key = dependencies.key(definition);
             cached = ports
                 .queue
                 .passed_with_key(repository, key)
