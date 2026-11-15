@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::cpu::PostgresCpu;
+
 /// The kind of operation a latency belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -62,10 +64,13 @@ const fn expected(kind: Kind, status: Status) -> bool {
 #[derive(Default)]
 pub struct Recorder {
     latencies: [Vec<Duration>; 4],
+    /// First land request to the successful one, per landing.
+    landing_times: Vec<Duration>,
     errors: BTreeMap<Status, ErrorCount>,
     operations: u64,
     landings: u64,
     landings_retried: u64,
+    landings_past_window: u64,
     lost_swaps: u64,
     conflicts: u64,
     abandoned: u64,
@@ -99,15 +104,22 @@ impl Recorder {
         self.operations += 1;
     }
 
-    /// Records a landing that succeeded after `lost_swaps` lost swaps, each retried by landing the
-    /// same draft again, and `conflicts` conflicts, each retried by staging a fresh draft.
-    pub const fn landed(&mut self, lost_swaps: u64, conflicts: u64) {
+    /// Records a landing that succeeded `took` after its first land request, after `lost_swaps`
+    /// lost swaps, each retried by landing the same draft again, and `conflicts` conflicts, each
+    /// retried by staging a fresh draft.
+    pub fn landed(&mut self, took: Duration, lost_swaps: u64, conflicts: u64) {
+        self.landing_times.push(took);
         self.landings += 1;
         self.lost_swaps += lost_swaps;
         self.conflicts += conflicts;
         if lost_swaps + conflicts > 0 {
             self.landings_retried += 1;
         }
+    }
+
+    /// Records a landing that started in the scenario's window and was still running after it.
+    pub const fn ran_past_window(&mut self) {
+        self.landings_past_window += 1;
     }
 
     /// Records the retries of a landing that did not succeed.
@@ -131,9 +143,11 @@ impl Recorder {
             mine.expected += count.expected;
             mine.unexpected += count.unexpected;
         }
+        self.landing_times.extend(other.landing_times);
         self.operations += other.operations;
         self.landings += other.landings;
         self.landings_retried += other.landings_retried;
+        self.landings_past_window += other.landings_past_window;
         self.lost_swaps += other.lost_swaps;
         self.conflicts += other.conflicts;
         self.abandoned += other.abandoned;
@@ -155,6 +169,7 @@ impl Recorder {
                 })
             })
             .collect();
+        self.landing_times.sort_unstable();
         let seconds = elapsed.as_secs_f64();
         Report {
             scenario: scenario.to_owned(),
@@ -165,6 +180,12 @@ impl Recorder {
             latency,
             landings: self.landings,
             landings_retried: self.landings_retried,
+            landing_end_to_end: EndToEnd {
+                p50_ms: percentile(&self.landing_times, 50),
+                p95_ms: percentile(&self.landing_times, 95),
+                p99_ms: percentile(&self.landing_times, 99),
+            },
+            landings_past_window: self.landings_past_window,
             lost_swap_retries: self.lost_swaps,
             conflict_retries: self.conflicts,
             retries: self.lost_swaps + self.conflicts,
@@ -180,6 +201,7 @@ impl Recorder {
                 })
                 .collect(),
             external_calls: None,
+            postgres_cpu: None,
         }
     }
 }
@@ -201,6 +223,14 @@ fn percentile(samples: &[Duration], p: usize) -> f64 {
 pub struct Latency {
     kind: Kind,
     count: u64,
+    p50_ms: f64,
+    p95_ms: f64,
+    p99_ms: f64,
+}
+
+/// Percentiles of the time from a landing's first land request to its successful one.
+#[derive(Serialize)]
+pub struct EndToEnd {
     p50_ms: f64,
     p95_ms: f64,
     p99_ms: f64,
@@ -255,6 +285,10 @@ pub struct Report {
     latency: Vec<Latency>,
     landings: u64,
     landings_retried: u64,
+    /// Landing time from the first land request to the successful one, retries included.
+    landing_end_to_end: EndToEnd,
+    /// Landings that started in the window and were still running when it ended.
+    landings_past_window: u64,
     /// Retries made by landing the same draft again after `main moved while landing`.
     lost_swap_retries: u64,
     /// Retries made in a fresh draft after a conflict.
@@ -267,6 +301,8 @@ pub struct Report {
     errors: Vec<StatusCount>,
     /// Set by the `external` scenario.
     pub external_calls: Option<ExternalCalls>,
+    /// The compose PostgreSQL service's CPU during the run.
+    pub postgres_cpu: Option<PostgresCpu>,
 }
 
 impl Report {
@@ -313,6 +349,27 @@ impl Report {
             self.lost_swap_retries,
             self.conflict_retries
         );
+        let _ = writeln!(
+            text,
+            "  landing (first request to last): p50 {:.1} ms, p95 {:.1} ms, p99 {:.1} ms",
+            self.landing_end_to_end.p50_ms,
+            self.landing_end_to_end.p95_ms,
+            self.landing_end_to_end.p99_ms
+        );
+        let _ = writeln!(
+            text,
+            "  landings still running at the window's end: {}",
+            self.landings_past_window
+        );
+        if let Some(cpu) = &self.postgres_cpu {
+            let _ = writeln!(
+                text,
+                "  postgres cpu (cores): median {:.2}, max {:.2} ({} samples)",
+                cpu.median_cores,
+                cpu.max_cores,
+                cpu.samples.len()
+            );
+        }
         if self.abandoned > 0 {
             let _ = writeln!(
                 text,
@@ -390,13 +447,13 @@ mod tests {
     fn merges_what_agents_recorded_and_derives_retries_per_landing() {
         let mut first = Recorder::default();
         first.record(Kind::Land, Duration::from_millis(10), 409);
-        first.landed(1, 0);
+        first.landed(Duration::from_millis(10), 1, 0);
         first.operation();
         let mut second = Recorder::default();
         second.record(Kind::Land, Duration::from_millis(30), 200);
         second.record(Kind::Land, Duration::from_millis(20), 409);
         second.record(Kind::Land, Duration::from_millis(30), 409);
-        second.landed(1, 2);
+        second.landed(Duration::from_millis(30), 1, 2);
         second.operation();
         first.merge(second);
 
@@ -411,5 +468,50 @@ mod tests {
         assert_eq!(report.operations_per_second, 1.0);
         let land = report.latency.iter().find(|l| l.kind == Kind::Land);
         assert_eq!(land.map(|l| l.count), Some(4));
+    }
+
+    #[test]
+    fn takes_landing_percentiles_over_the_whole_landing_not_its_requests() {
+        let mut recorder = Recorder::default();
+        // One landing of 100 whose retries took 60 s, with a 10 ms request each.
+        for took in 1..=99 {
+            recorder.record(Kind::Land, Duration::from_millis(10), 200);
+            recorder.landed(Duration::from_millis(took), 0, 0);
+        }
+        recorder.record(Kind::Land, Duration::from_millis(10), 200);
+        recorder.landed(Duration::from_secs(60), 150, 0);
+
+        let report = recorder.report("t", 1, Duration::from_secs(1));
+        assert_eq!(report.landing_end_to_end.p50_ms, 50.0);
+        assert_eq!(report.landing_end_to_end.p95_ms, 95.0);
+        assert_eq!(report.landing_end_to_end.p99_ms, 99.0);
+        // The per-request p99 stays at 10 ms, which is what hid the tail.
+        let land = report.latency.iter().find(|l| l.kind == Kind::Land);
+        assert_eq!(land.map(|l| l.p99_ms), Some(10.0));
+        // Without landings the figures are 0, as for no requests.
+        let none = Recorder::default().report("t", 1, Duration::from_secs(1));
+        assert_eq!(none.landing_end_to_end.p99_ms, 0.0);
+    }
+
+    #[test]
+    fn counts_landings_still_running_at_the_end_of_the_window_across_agents() {
+        let mut first = Recorder::default();
+        first.ran_past_window();
+        let mut second = Recorder::default();
+        second.ran_past_window();
+        second.ran_past_window();
+        first.merge(second);
+        assert_eq!(
+            first
+                .report("t", 2, Duration::from_secs(1))
+                .landings_past_window,
+            3
+        );
+        assert_eq!(
+            Recorder::default()
+                .report("t", 1, Duration::from_secs(1))
+                .landings_past_window,
+            0
+        );
     }
 }

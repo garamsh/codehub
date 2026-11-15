@@ -3,6 +3,7 @@
 //! where a replica dies or an operation answers a status the scenario does not expect.
 
 mod api;
+mod cpu;
 mod host;
 mod proxy;
 mod scenario;

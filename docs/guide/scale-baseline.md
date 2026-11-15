@@ -66,4 +66,4 @@ Two runs back to back on the same machine, with other projects loading it: load 
 - `same-file` conflicts: 121 before, 30 after.
 - `read-heavy` reads after: p50 1.9 ms, p95 15.0 ms, p99 66.0 ms. History: p50 19.7 ms, p95 192.3 ms, p99 394.1 ms.
 - `external` after: 59175 API requests made 205170 decision-point calls, 3.47 per request, against 11.08 before: fewer landings are retried, so fewer requests ask for every staged path again.
-- PostgreSQL CPU, sampled every 10 seconds with `docker stats` beside the harness: a median of about 2.0 cores, at most 2.7, before; a median of about 0.9 cores, at most 3.3, after. ADR 0040 reads the trigger for distributed SQL from this figure.
+- PostgreSQL CPU, sampled every 10 seconds with `docker stats` beside the harness: a median of about 2.0 cores, at most 2.7, before; a median of about 0.9 cores, at most 3.3, after. ADR 0040 reads the trigger for distributed SQL from this figure. `make loadtest` now reports the PostgreSQL CPU per scenario, from the container's cgroup `cpu.stat` read every second; the figures above are not re-measured.
