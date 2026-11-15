@@ -4,6 +4,7 @@
 //! each adapter over it.
 
 mod authorisation_decision;
+mod cache_refs;
 mod changeset_log;
 mod conversion;
 mod database;
@@ -16,6 +17,7 @@ mod repository_directory;
 mod runner_registry;
 
 pub use authorisation_decision::PostgresAuthorisationDecision;
+pub use cache_refs::PostgresCacheRefs;
 pub use changeset_log::PostgresChangesetLog;
 pub use database::{Database, DatabaseError};
 pub use derived_data::PostgresDerivedData;

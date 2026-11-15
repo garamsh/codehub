@@ -41,7 +41,15 @@ The runner stops its job when a heartbeat answers stop.
 Declared in the application's terms (`docs/architecture/structure.md`).
 
 - **Runner registry** (server side): register, remove and list registrations, and find a principal's registrations. Adapters: PostgreSQL (ADR 0013) and in-memory.
-- **Job queue** (server side): queue jobs, hand the oldest matching job to a claiming runner, take heartbeats, results and cancellations, and expire leases and timeouts. Adapters: PostgreSQL, where claims never hand one job out twice, and in-memory.
+- **Job queue** (server side): the job records. It serves these operations:
+  - record a changeset's jobs, waiting until the checks they need have ended, then queue, skip or pass each from the result cache;
+  - hand the oldest matching job to a claiming runner;
+  - take heartbeats, results with the output tree, and cancellations;
+  - expire leases and timeouts;
+  - answer the result cache: whether a key passed in a repository, with the output tree of that run. A result-cache entry is a passed job record, so the cache stays on this port;
+  - reserve and record a changeset's revert.
+  Adapters: PostgreSQL, where claims never hand one job out twice, and in-memory.
+- **Cache refs** (server side): read the cache ref of a (repository, folder, cache path), and move it by compare-and-swap from the changeset it records. That a ref moves only to a later landing on `main`'s first-parent line is the rule of the use case, not of the port. Adapters: PostgreSQL and in-memory.
 - **Job source** (runner side): the claim, heartbeat and result conversation. Adapters: HTTP, and a test double.
 - **Executor driver** (runner side): see `execution.md`.
 
@@ -49,6 +57,7 @@ Declared in the application's terms (`docs/architecture/structure.md`).
 
 - The GitHub Actions model, and what would show it wrong: ADR 0009.
 - Runner as principal, HTTP long-poll, label routing and the host driver: ADR 0034. The gaon driver, and the result listener that is the runner's only inbound connection: ADR 0046. ADR 0034 supersedes ADR 0009's registration token and runner credentials, ADR 0006's mutual TLS for runners, and the runner identity verification port. Checking an executor's setup without a server: ADR 0047.
+- Cache refs have a port of their own, while the result cache and revert reservations stay on the job queue. Judged under `structure.md`'s rule for when a port is earned, in issue #204 (goal #205): a cache ref is a pointer in its own table, moved apart from any job, whereas a result-cache entry is a job record. Cache refs and the result cache themselves: ADR 0049.
 - Facts of the GitHub model this design relies on (GitHub documentation):
   - the runner needs only outbound HTTPS on port 443;
   - a job runs on a self-hosted runner that has all the labels it names;

@@ -6,13 +6,11 @@ use std::fmt;
 
 use crate::domain::address::Address;
 use crate::domain::changeset::{Change, Changeset};
-use crate::domain::check::{CheckDefinition, CheckKey, needs_fault};
+use crate::domain::check::CheckDefinition;
 use crate::domain::draft::Draft;
-use crate::domain::job::{Job, JobState, NewJob, Resolution, empty_output_tree};
-use crate::domain::path::{Path, Prefix};
+use crate::domain::job::{Job, JobState, NewJob, Resolution};
 use crate::domain::repository::RepositoryId;
 use crate::domain::revert::{self, AUTHOR, Revert};
-use crate::domain::tree::{Entry, Tree};
 use crate::port::driven::changeset_log::ChangesetLog;
 use crate::port::driven::changeset_log::ChangesetLogError;
 use crate::port::driven::check_definitions::CheckDefinitions;
@@ -29,6 +27,9 @@ use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::last_green::{advance, blocking_checks_passed};
 use crate::use_case::read_file::file_at;
 use crate::use_case::source_control::AfterLanding;
+use crate::use_case::tree_checks::{
+    DefinitionsError, Resolved, Unreadable, dependencies, read_definitions, tree_files,
+};
 
 /// Why the post-land checks of a landing failed after it landed.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -357,13 +358,11 @@ where
         changeset: Address,
     ) -> Result<(), ProgressError> {
         let adapters = &self.adapters;
-        let mut files = None;
         loop {
             let jobs = adapters.queue.of_changeset(repository, changeset).await?;
             let mut settled = false;
             for job in jobs.iter().filter(|job| job.state == JobState::Waiting) {
-                let Some(resolution) = self.resolution(job, &jobs, &mut files, changeset).await?
-                else {
+                let Some(resolution) = self.resolution(job, &jobs, changeset).await? else {
                     continue;
                 };
                 settled |= adapters.queue.resolve(job.id, resolution).await?;
@@ -378,78 +377,28 @@ where
     }
 
     /// What becomes of the waiting `job` among `jobs`, the jobs of its changeset; `None` where a
-    /// check it needs has not ended. `files` holds the files of the changeset's tree once they
-    /// have been read.
+    /// check it needs has not ended.
     async fn resolution(
         &self,
         job: &Job,
         jobs: &[Job],
-        files: &mut Option<Vec<(Path, Address)>>,
         changeset: Address,
     ) -> Result<Option<Resolution>, ProgressError> {
         let adapters = &self.adapters;
-        let empty = empty_output_tree();
-        let mut needed = Vec::new();
-        for id in job.check.needed() {
-            let found = jobs.iter().find(|other| other.check.id() == id);
-            match found {
-                Some(other) if !other.state.is_finished() => return Ok(None),
-                Some(other) if other.state.is_passed() => {
-                    if let Some(key) = other.key {
-                        needed.push((key, other.output_tree.unwrap_or(empty)));
-                        continue;
-                    }
-                    return Ok(Some(Resolution::Skip));
-                }
-                Some(_) | None => return Ok(Some(Resolution::Skip)),
-            }
-        }
-        let tree = match files {
-            Some(files) => files,
-            None => {
-                let root = adapters.derived.root(job.repository, changeset).await?;
-                files.insert(self.input_files(job.repository, root).await?)
-            }
-        };
-        let inputs: Vec<(Path, Address)> = tree
-            .iter()
-            .filter(|(path, _)| job.check.reads(path))
-            .cloned()
-            .collect();
-        let key = CheckKey::new(&job.check, &inputs, &needed);
+        let root = adapters.derived.root(job.repository, changeset).await?;
+        let dependencies =
+            match dependencies(adapters.derived, job.repository, root, &job.check, jobs).await? {
+                Resolved::Waiting => return Ok(None),
+                Resolved::Skipped => return Ok(Some(Resolution::Skip)),
+                Resolved::Ready(dependencies) => dependencies,
+            };
+        let key = dependencies.key(&job.check);
         Ok(Some(
             match adapters.queue.passed_with_key(job.repository, key).await? {
                 Some(output_tree) => Resolution::Cache { key, output_tree },
                 None => Resolution::Queue { key },
             },
         ))
-    }
-
-    /// The path and content address of every file of the tree rooted at `root`, by path.
-    async fn input_files(
-        &self,
-        repository: RepositoryId,
-        root: Address,
-    ) -> Result<Vec<(Path, Address)>, DerivedDataError> {
-        let derived = self.adapters.derived;
-        let mut files = Vec::new();
-        let mut pending = vec![(Vec::new(), root)];
-        while let Some((directory, address)) = pending.pop() {
-            for (name, entry) in derived.tree(repository, address).await?.entries {
-                let mut components = directory.clone();
-                components.push(name);
-                match entry {
-                    Entry::Directory(subtree) => pending.push((components, subtree)),
-                    Entry::File(file) => {
-                        let path = Path::new(components)
-                            .map_err(|error| DerivedDataError::Backend(error.to_string()))?;
-                        files.push((path, file.content));
-                    }
-                }
-            }
-        }
-        files.sort();
-        Ok(files)
     }
 
     /// Records the checks `landed` defines as waiting and resolves them. Returns the failed job recorded where the definitions could not be read, which the caller is to
@@ -474,29 +423,26 @@ where
 
         let file = adapters.definitions.file();
         let root = adapters.derived.root(repository, landed).await?;
-        let mut definitions = Vec::new();
-        for (folder, content) in self.check_files(repository, root).await? {
-            let bytes = adapters.objects.get(repository, content).await?;
-            match adapters.definitions.parse(&folder, &bytes) {
-                Ok(read) => definitions.extend(read),
-                Err(error) => {
-                    let unreadable = job(CheckDefinition::unreadable(&folder, file));
-                    let failed = adapters
-                        .queue
-                        .record_failed(unreadable, error.to_string().into_bytes())
-                        .await?;
-                    return Ok(Some(failed));
-                }
+        let files = tree_files(adapters.derived, repository, root).await?;
+        let definitions = match read_definitions(
+            adapters.objects,
+            adapters.definitions,
+            repository,
+            &files,
+        )
+        .await
+        {
+            Ok(definitions) => definitions,
+            Err(DefinitionsError::Objects(error)) => return Err(error.into()),
+            Err(DefinitionsError::Unreadable(Unreadable { folder, reason })) => {
+                let unreadable = job(CheckDefinition::unreadable(&folder, file));
+                let failed = adapters
+                    .queue
+                    .record_failed(unreadable, reason.into_bytes())
+                    .await?;
+                return Ok(Some(failed));
             }
-        }
-        if let Some(fault) = needs_fault(&definitions) {
-            let unreadable = job(CheckDefinition::unreadable(&fault.check().folder, file));
-            let failed = adapters
-                .queue
-                .record_failed(unreadable, fault.to_string().into_bytes())
-                .await?;
-            return Ok(Some(failed));
-        }
+        };
 
         adapters
             .queue
@@ -504,34 +450,6 @@ where
             .await?;
         self.progress(repository, landed).await?;
         Ok(None)
-    }
-
-    /// The folders of the tree rooted at `root` that hold a check definitions file, each with the
-    /// address of the file's content, a folder before the folders under it.
-    async fn check_files(
-        &self,
-        repository: RepositoryId,
-        root: Address,
-    ) -> Result<Vec<(Prefix, Address)>, DerivedDataError> {
-        let derived = self.adapters.derived;
-        let file = self.adapters.definitions.file();
-        let mut found = Vec::new();
-        let mut pending = vec![(Prefix::whole(), root)];
-        while let Some((folder, address)) = pending.pop() {
-            let tree = derived.tree(repository, address).await?;
-            for (name, entry) in &tree.entries {
-                if let Entry::Directory(subtree) = entry {
-                    let mut components = folder.components().to_vec();
-                    components.push(name.clone());
-                    pending.push((Prefix::new(components), *subtree));
-                }
-            }
-            if let Some(content) = file_in(derived, repository, &tree, file).await? {
-                found.push((folder, content));
-            }
-        }
-        found.sort_by(|(first, _), (second, _)| first.cmp(second));
-        Ok(found)
     }
 
     /// Where the blocking check `job` has failed or timed out, reverts its changeset on `main`:
@@ -645,27 +563,5 @@ where
             }
             Err(error) => Err(RevertError::Land(error)),
         }
-    }
-}
-
-/// The address of the content of the file at `path` below `tree`, if it holds one.
-async fn file_in<D: DerivedData>(
-    derived: &D,
-    repository: RepositoryId,
-    tree: &Tree,
-    path: &Path,
-) -> Result<Option<Address>, DerivedDataError> {
-    let Some((first, rest)) = path.components().split_first() else {
-        return Ok(None);
-    };
-    match tree.entries.get(first) {
-        Some(Entry::File(file)) if rest.is_empty() => Ok(Some(file.content)),
-        Some(Entry::Directory(subtree)) => match Path::new(rest.to_vec()) {
-            Ok(rest) => Ok(file_at(derived, repository, Some(*subtree), &rest)
-                .await?
-                .map(|file| file.content)),
-            Err(_) => Ok(None),
-        },
-        Some(Entry::File(_)) | None => Ok(None),
     }
 }

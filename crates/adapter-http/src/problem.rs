@@ -409,7 +409,8 @@ impl From<JobsError> for Problem {
             ),
             JobsError::Queue(error) => error.into(),
             JobsError::Registry(error) => error.into(),
-            JobsError::Objects(_)
+            JobsError::CacheRefs(_)
+            | JobsError::Objects(_)
             | JobsError::Derived(_)
             | JobsError::Log(_)
             | JobsError::Path(_)

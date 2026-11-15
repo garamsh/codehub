@@ -1,5 +1,5 @@
-//! The jobs driving port, served by the runner registry, the job queue, the object store, derived
-//! data and the changeset log it is given.
+//! The jobs driving port, served by the runner registry, the job queue, the cache refs, the object
+//! store, derived data and the changeset log it is given.
 
 use std::collections::BTreeMap;
 
@@ -7,14 +7,15 @@ use crate::domain::address::Address;
 use crate::domain::changeset::Change;
 use crate::domain::file::File;
 use crate::domain::job::{
-    CacheRef, Heartbeat, Job, JobId, JobResult, Outcome, Produced, ProducedFile, empty_output_tree,
+    Heartbeat, Job, JobId, JobResult, Outcome, Produced, ProducedFile, empty_output_tree,
     output_tail,
 };
-use crate::domain::path::{Component, Path, PathError, Prefix};
+use crate::domain::path::{Path, PathError, Prefix};
 use crate::domain::principal::{Caller, Principal};
 use crate::domain::repository::RepositoryId;
 use crate::domain::runner::{Registration, RegistrationId};
-use crate::domain::tree::{Entry, Tree, derive};
+use crate::domain::tree::{Tree, derive};
+use crate::port::driven::cache_refs::CacheRefs;
 use crate::port::driven::changeset_log::ChangesetLog;
 use crate::port::driven::check_definitions::CheckDefinitions;
 use crate::port::driven::derived_data::DerivedData;
@@ -23,15 +24,19 @@ use crate::port::driven::object_store::ObjectStore;
 use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driven::runner_registry::RunnerRegistry;
 use crate::port::driving::jobs::{Claimed, ClaimedFile, Jobs, JobsError, Upload, UploadGrant};
+use crate::use_case::cache_refs::advance;
 use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
+use crate::use_case::tree_checks::{Resolved, dependencies, walk_files};
 
 /// The driven ports the jobs are built over.
-pub struct JobsAdapters<'a, G, Q, O, D, L, R, C> {
+pub struct JobsAdapters<'a, G, Q, F, O, D, L, R, C> {
     /// Finds the callers' registrations.
     pub registry: &'a G,
     /// Holds the jobs.
     pub queue: &'a Q,
+    /// Holds the cache refs.
+    pub cache_refs: &'a F,
     /// Stores blobs.
     pub objects: &'a O,
     /// Stores derived data.
@@ -46,9 +51,10 @@ pub struct JobsAdapters<'a, G, Q, O, D, L, R, C> {
 
 /// Jobs served to registered runners, each claim holding its job for `lease` seconds. A blocking
 /// job that ends in failure or in a timeout has its changeset reverted.
-pub struct JobsService<'a, G, Q, O, D, L, R, C> {
+pub struct JobsService<'a, G, Q, F, O, D, L, R, C> {
     registry: &'a G,
     queue: &'a Q,
+    cache_refs: &'a F,
     objects: &'a O,
     derived: &'a D,
     log: &'a L,
@@ -56,17 +62,18 @@ pub struct JobsService<'a, G, Q, O, D, L, R, C> {
     lease: i64,
 }
 
-impl<'a, G, Q, O, D, L, R, C> JobsService<'a, G, Q, O, D, L, R, C> {
+impl<'a, G, Q, F, O, D, L, R, C> JobsService<'a, G, Q, F, O, D, L, R, C> {
     /// Jobs over `adapters`, where a claim or a heartbeat holds a job for `lease` seconds and each
     /// revert is tried at most `attempts` times.
     pub const fn new(
-        adapters: JobsAdapters<'a, G, Q, O, D, L, R, C>,
+        adapters: JobsAdapters<'a, G, Q, F, O, D, L, R, C>,
         lease: i64,
         attempts: LandingAttempts,
     ) -> Self {
         let JobsAdapters {
             registry,
             queue,
+            cache_refs,
             objects,
             derived,
             log,
@@ -76,6 +83,7 @@ impl<'a, G, Q, O, D, L, R, C> JobsService<'a, G, Q, O, D, L, R, C> {
         Self {
             registry,
             queue,
+            cache_refs,
             objects,
             derived,
             log,
@@ -95,7 +103,7 @@ impl<'a, G, Q, O, D, L, R, C> JobsService<'a, G, Q, O, D, L, R, C> {
     }
 }
 
-impl<G, Q, O, D, L, R, C> JobsService<'_, G, Q, O, D, L, R, C>
+impl<G, Q, F, O, D, L, R, C> JobsService<'_, G, Q, F, O, D, L, R, C>
 where
     G: RunnerRegistry + Sync,
 {
@@ -108,15 +116,6 @@ where
             Ok(registrations)
         }
     }
-}
-
-/// Where the trees of a walk are read from.
-#[derive(Clone, Copy)]
-enum Trees {
-    /// The trees of changesets, in derived data.
-    Changesets,
-    /// The trees of outputs and of caches, as blobs in the object store.
-    Blobs,
 }
 
 /// `path` below `prefix`.
@@ -141,48 +140,34 @@ fn covered(produced: &[ProducedFile], prefixes: &[Prefix]) -> BTreeMap<Path, Fil
         .collect()
 }
 
-impl<G, Q, O, D, L, R, C> JobsService<'_, G, Q, O, D, L, R, C>
+impl<G, Q, F, O, D, L, R, C> JobsService<'_, G, Q, F, O, D, L, R, C>
 where
     Q: JobQueue + Sync,
+    F: CacheRefs + Sync,
     O: ObjectStore + Sync,
     D: DerivedData + Sync,
     L: ChangesetLog + Sync,
 {
-    async fn tree(
-        &self,
-        repository: RepositoryId,
-        from: Trees,
-        address: Address,
-    ) -> Result<Tree, JobsError> {
-        match from {
-            Trees::Changesets => Ok(self.derived.tree(repository, address).await?),
-            Trees::Blobs if address == empty_output_tree() => Ok(Tree::default()),
-            Trees::Blobs => Ok(Tree::decode(&self.objects.get(repository, address).await?)?),
-        }
-    }
-
-    /// Every file of the tree at `root`, by its path from the root.
+    /// Every file of the output or cache tree at `root`, a blob in the object store, by its path
+    /// from the root.
     async fn walk(
         &self,
         repository: RepositoryId,
-        from: Trees,
         root: Address,
     ) -> Result<BTreeMap<Path, File>, JobsError> {
-        let mut files = BTreeMap::new();
-        let mut pending: Vec<(Vec<Component>, Address)> = vec![(Vec::new(), root)];
-        while let Some((directory, tree)) = pending.pop() {
-            for (name, entry) in self.tree(repository, from, tree).await?.entries {
-                let mut components = directory.clone();
-                components.push(name);
-                match entry {
-                    Entry::Directory(subtree) => pending.push((components, subtree)),
-                    Entry::File(file) => {
-                        files.insert(Path::new(components)?, file);
-                    }
+        walk_files(
+            root,
+            |address| async move {
+                if address == empty_output_tree() {
+                    Ok(Tree::default())
+                } else {
+                    Ok(Tree::decode(&self.objects.get(repository, address).await?)?)
                 }
-            }
-        }
-        Ok(files)
+            },
+            JobsError::from,
+            None,
+        )
+        .await
     }
 
     /// The files `job` is granted, by path from the repository root.
@@ -191,13 +176,13 @@ where
         let caches = job.check.caches.iter().zip(job.cache_prefixes());
         for (declared, prefix) in caches {
             let Some(cache) = self
-                .queue
+                .cache_refs
                 .cache_ref(job.repository, &job.check.folder, declared)
                 .await?
             else {
                 continue;
             };
-            for (path, file) in self.walk(job.repository, Trees::Blobs, cache.tree).await? {
+            for (path, file) in self.walk(job.repository, cache.tree).await? {
                 granted.insert(joined(&prefix, &path)?, file);
             }
         }
@@ -205,23 +190,17 @@ where
             .queue
             .of_changeset(job.repository, job.changeset)
             .await?;
-        for needed in job.check.needed() {
-            let output = jobs
-                .iter()
-                .rev()
-                .find(|other| other.check.id() == needed && other.state.is_passed())
-                .and_then(|other| other.output_tree);
-            if let Some(tree) = output {
-                granted.extend(self.walk(job.repository, Trees::Blobs, tree).await?);
-            }
-        }
         let root = self.derived.root(job.repository, job.changeset).await?;
-        let changeset = self.walk(job.repository, Trees::Changesets, root).await?;
-        granted.extend(
-            changeset
-                .into_iter()
-                .filter(|(path, _)| job.check.reads(path)),
-        );
+        // A claimed job's needs have passed, so it is ready; a job that is not grants only its
+        // caches.
+        if let Resolved::Ready(dependencies) =
+            dependencies(self.derived, job.repository, root, &job.check, &jobs).await?
+        {
+            for (_, output) in dependencies.needed {
+                granted.extend(self.walk(job.repository, output).await?);
+            }
+            granted.extend(dependencies.inputs);
+        }
         Ok(granted)
     }
 
@@ -274,23 +253,6 @@ where
         Ok(true)
     }
 
-    /// Whether `candidate` is a strict first-parent descendant of `current`.
-    async fn later(
-        &self,
-        repository: RepositoryId,
-        candidate: Address,
-        current: Address,
-    ) -> Result<bool, JobsError> {
-        let mut at = candidate;
-        while at != current {
-            match self.log.get(repository, at).await?.parents.first() {
-                Some(parent) => at = *parent,
-                None => return Ok(false),
-            }
-        }
-        Ok(candidate != current)
-    }
-
     /// Points each cache ref of `job` at the tree `job` left in its cache path, where `job`'s
     /// changeset is later than the one the ref records. Where a ref moves between the read and
     /// the compare-and-swap, decides again over where it moved.
@@ -306,35 +268,16 @@ where
                 .filter_map(|(file, content)| Some((relative(&prefix, file)?, *content)))
                 .collect();
             let tree = self.store_tree(job.repository, files).await?;
-            loop {
-                let current = self
-                    .queue
-                    .cache_ref(job.repository, &job.check.folder, path)
-                    .await?;
-                if let Some(current) = current
-                    && !self
-                        .later(job.repository, job.changeset, current.changeset)
-                        .await?
-                {
-                    break;
-                }
-                let moved = self
-                    .queue
-                    .advance_cache_ref(
-                        job.repository,
-                        &job.check.folder,
-                        path,
-                        current.map(|current| current.changeset),
-                        CacheRef {
-                            tree,
-                            changeset: job.changeset,
-                        },
-                    )
-                    .await?;
-                if moved {
-                    break;
-                }
-            }
+            advance::<_, _, JobsError>(
+                self.cache_refs,
+                self.log,
+                job.repository,
+                &job.check.folder,
+                path,
+                job.changeset,
+                tree,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -347,10 +290,11 @@ fn ids(registrations: &[Registration]) -> Vec<RegistrationId> {
         .collect()
 }
 
-impl<G, Q, O, D, L, R, C> Jobs for JobsService<'_, G, Q, O, D, L, R, C>
+impl<G, Q, F, O, D, L, R, C> Jobs for JobsService<'_, G, Q, F, O, D, L, R, C>
 where
     G: RunnerRegistry + Sync,
     Q: JobQueue + Sync,
+    F: CacheRefs + Sync,
     O: ObjectStore + Sync,
     D: DerivedData + Sync,
     L: ChangesetLog + Sync,

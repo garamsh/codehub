@@ -9,6 +9,7 @@ use crate::domain::job::{Heartbeat, Job, JobId, JobResult, Produced};
 use crate::domain::path::{Path, PathError};
 use crate::domain::principal::Caller;
 use crate::domain::tree::DeriveError;
+use crate::port::driven::cache_refs::CacheRefsError;
 use crate::port::driven::changeset_log::ChangesetLogError;
 use crate::port::driven::derived_data::DerivedDataError;
 use crate::port::driven::job_queue::JobQueueError;
@@ -128,6 +129,8 @@ pub enum JobsError {
     NotRegistered,
     /// The job queue refused or failed.
     Queue(JobQueueError),
+    /// The cache refs failed.
+    CacheRefs(CacheRefsError),
     /// The runner registry failed.
     Registry(RunnerRegistryError),
     /// The object store failed.
@@ -147,6 +150,7 @@ impl fmt::Display for JobsError {
         match self {
             Self::NotRegistered => f.write_str("the caller is not a registered runner"),
             Self::Queue(error) => write!(f, "{error}"),
+            Self::CacheRefs(error) => write!(f, "{error}"),
             Self::Registry(error) => write!(f, "{error}"),
             Self::Objects(error) => write!(f, "{error}"),
             Self::Derived(error) => write!(f, "{error}"),
@@ -162,6 +166,7 @@ impl std::error::Error for JobsError {
         match self {
             Self::NotRegistered => None,
             Self::Queue(error) => Some(error),
+            Self::CacheRefs(error) => Some(error),
             Self::Registry(error) => Some(error),
             Self::Objects(error) => Some(error),
             Self::Derived(error) => Some(error),
@@ -175,6 +180,12 @@ impl std::error::Error for JobsError {
 impl From<JobQueueError> for JobsError {
     fn from(error: JobQueueError) -> Self {
         Self::Queue(error)
+    }
+}
+
+impl From<CacheRefsError> for JobsError {
+    fn from(error: CacheRefsError) -> Self {
+        Self::CacheRefs(error)
     }
 }
 

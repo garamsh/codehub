@@ -142,6 +142,11 @@ async fn a_plan_runs_what_the_draft_changes_and_takes_the_rest_from_the_cache() 
 }
 
 #[tokio::test]
+async fn a_plan_gives_each_check_the_key_its_landing_gave() {
+    checks::a_plan_gives_each_check_the_key_its_landing_gave::<Harness>().await;
+}
+
+#[tokio::test]
 async fn a_plan_names_a_check_that_never_passed_and_refuses_a_draft_it_cannot_read() {
     checks::a_plan_names_a_check_that_never_passed_and_refuses_a_draft_it_cannot_read::<Harness>()
         .await;
@@ -175,4 +180,9 @@ async fn a_cache_ref_advances_only_on_a_pass_at_a_later_landing() {
 #[tokio::test]
 async fn a_cache_ref_moves_only_from_the_changeset_it_records() {
     checks::a_cache_ref_moves_only_from_the_changeset_it_records::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_claim_reads_only_the_trees_its_inputs_reach() {
+    checks::a_claim_reads_only_the_trees_its_inputs_reach::<Harness>().await;
 }

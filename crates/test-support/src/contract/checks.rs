@@ -5,17 +5,25 @@ use crate::contract::runner_deployment::{
     LEASE, RunnerDeployment, Spec, check, land, land_checks, land_checks_in, land_checks_with,
     organisation, runner,
 };
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+
 use app::domain::address::Address;
 use app::domain::file::{File, FileKind};
+use app::domain::file_version::FileVersionNode;
 use app::domain::job::{
     CacheRef, Heartbeat, Job, JobResult, JobState, Outcome, Produced, ProducedFile, StopReason,
     empty_output_tree,
 };
 use app::domain::path::{Component, Path, Prefix};
 use app::domain::principal::Caller;
+use app::domain::repository::RepositoryId;
+use app::domain::tree::{Entry, Tree};
+use app::port::driven::cache_refs::CacheRefs;
 use app::port::driven::changeset_log::{ChangesetLog, Ref};
 use app::port::driven::check_definitions::CheckDefinitions;
 use app::port::driven::check_definitions::CheckFileError;
+use app::port::driven::derived_data::{DerivedData, DerivedDataError};
 use app::port::driven::job_queue::{JobQueue, JobQueueError};
 use app::port::driven::membership::{Access, Role};
 use app::port::driven::object_store::ObjectStore;
@@ -27,6 +35,8 @@ use app::port::driving::jobs::{Claimed, Jobs, Upload};
 use app::port::driving::members::Members;
 use app::port::driving::source_control::LandError;
 use app::use_case::administration::Administration;
+use app::use_case::jobs::{JobsAdapters, JobsService};
+use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::members::{MembersAdapters, MembersService};
 
 fn passed() -> JobResult {
@@ -1047,6 +1057,62 @@ pub async fn a_plan_runs_what_the_draft_changes_and_takes_the_rest_from_the_cach
     assert_eq!(repo.main().await, Some(first));
 }
 
+/// A plan gives each check the key its landing gave it: a draft that changes none of a tree's
+/// files, planned over a tree whose checks need one another, takes every check from the cache of
+/// the landing's run, and a draft that rewrites a file with the content it has changes no key.
+pub async fn a_plan_gives_each_check_the_key_its_landing_gave<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let folders: &[(&str, &[Spec])] = &[
+        ("", &[check("root").reading(&["//docs/**"])]),
+        ("a", &[check("unit")]),
+        ("b", &[check("unit")]),
+        ("c", &[check("package").needing(&["//b:unit", "//a:unit"])]),
+        ("d", &[check("deploy").needing(&["//c:package", "//:root"])]),
+    ];
+    let first = land_checks_with(
+        &repo,
+        &ada,
+        "first",
+        folders,
+        &[
+            ("docs/x", "1\n"),
+            ("a/src/deep/x", "1\n"),
+            ("b/src", "1\n"),
+            ("c/src", "1\n"),
+            ("d/src", "1\n"),
+        ],
+    )
+    .await;
+    run_all(&harness, &bot, &[], 0).await;
+    let landed = jobs(&harness, &ada, &repo, first, 1).await;
+    assert_eq!(landed.len(), 5);
+    assert!(landed.iter().all(|job| job.key.is_some()));
+
+    let idle = draft("idle");
+    repo.stage(&ada, &idle, &[("README", "hello\n")]).await;
+    let same = draft("same");
+    repo.stage(&ada, &same, &[("a/src/deep/x", "1\n")]).await;
+    for draft in [&idle, &same] {
+        let plan = harness.checks().plan(&ada, repo.id, draft).await.unwrap();
+        assert_eq!(plan.checks.len(), 5);
+        assert!(plan.checks.iter().all(|c| c.outcome == PlanOutcome::Cached));
+    }
+
+    // The control: a changed file reaches the key of a check two needs away.
+    let edit = draft("edit");
+    repo.stage(&ada, &edit, &[("a/src/deep/x", "2\n")]).await;
+    let plan = harness.checks().plan(&ada, repo.id, &edit).await.unwrap();
+    assert_eq!(
+        planned(&plan.checks, "a:unit").outcome,
+        PlanOutcome::Run(vec![RunReason::InputsChanged])
+    );
+    assert_eq!(planned(&plan.checks, "b:unit").outcome, PlanOutcome::Cached);
+    assert_eq!(planned(&plan.checks, "root").outcome, PlanOutcome::Cached);
+}
+
 /// A check whose key has no passed run is planned as a run with no reason but that, and a draft
 /// whose files conflict with `main`, or whose check file cannot be read, has no plan.
 pub async fn a_plan_names_a_check_that_never_passed_and_refuses_a_draft_it_cannot_read<
@@ -1321,7 +1387,7 @@ async fn cache_ref_of<H: RunnerDeployment>(
 ) -> Option<CacheRef> {
     let folder = Prefix::from(folder.parse::<Path>().unwrap());
     harness
-        .queue()
+        .cache_refs()
         .cache_ref(repo.id, &folder, &path.parse().unwrap())
         .await
         .unwrap()
@@ -1440,37 +1506,172 @@ pub async fn a_cache_ref_moves_only_from_the_changeset_it_records<H: RunnerDeplo
         tree: Address::of(tree),
         changeset: Address::of(changeset),
     };
-    let queue = harness.queue();
+    let refs = harness.cache_refs();
 
     let first = to(b"t1", b"c1");
-    let set = queue
+    let set = refs
         .advance_cache_ref(repo.id, &folder, &path, None, first)
         .await
         .unwrap();
     assert!(set);
     // Control: moving from the changeset it records succeeds.
     let second = to(b"t2", b"c2");
-    let moved = queue
+    let moved = refs
         .advance_cache_ref(repo.id, &folder, &path, Some(first.changeset), second)
         .await
         .unwrap();
     assert!(moved);
     // Moving from one it does not record, or from none, does not.
     let third = to(b"t3", b"c3");
-    let stale = queue
+    let stale = refs
         .advance_cache_ref(repo.id, &folder, &path, Some(first.changeset), third)
         .await
         .unwrap();
     assert!(!stale);
-    let blind = queue
+    let blind = refs
         .advance_cache_ref(repo.id, &folder, &path, None, third)
         .await
         .unwrap();
     assert!(!blind);
-    let held = queue.cache_ref(repo.id, &folder, &path).await.unwrap();
+    let held = refs.cache_ref(repo.id, &folder, &path).await.unwrap();
     assert_eq!(held, Some(second));
     // The ref is of its folder and path.
     let other = Prefix::from("app".parse::<Path>().unwrap());
-    let elsewhere = queue.cache_ref(repo.id, &other, &path).await.unwrap();
+    let elsewhere = refs.cache_ref(repo.id, &other, &path).await.unwrap();
     assert_eq!(elsewhere, None);
+}
+
+/// Derived data that records the addresses of the trees it is asked for and otherwise answers as
+/// `inner` does.
+struct CountingTrees<'a, D> {
+    inner: &'a D,
+    read: Mutex<Vec<Address>>,
+}
+
+impl<D: DerivedData> DerivedData for CountingTrees<'_, D> {
+    fn put_trees(
+        &self,
+        repository: RepositoryId,
+        changeset: Address,
+        root: Address,
+        trees: BTreeMap<Address, Tree>,
+    ) -> impl Future<Output = Result<(), DerivedDataError>> + Send {
+        self.inner.put_trees(repository, changeset, root, trees)
+    }
+
+    fn root(
+        &self,
+        repository: RepositoryId,
+        changeset: Address,
+    ) -> impl Future<Output = Result<Address, DerivedDataError>> + Send {
+        self.inner.root(repository, changeset)
+    }
+
+    fn tree(
+        &self,
+        repository: RepositoryId,
+        address: Address,
+    ) -> impl Future<Output = Result<Tree, DerivedDataError>> + Send {
+        if let Ok(mut read) = self.read.lock() {
+            read.push(address);
+        }
+        self.inner.tree(repository, address)
+    }
+
+    fn put_file_versions(
+        &self,
+        repository: RepositoryId,
+        changeset: Address,
+        value: BTreeMap<Path, Address>,
+        nodes: BTreeMap<Address, FileVersionNode>,
+    ) -> impl Future<Output = Result<(), DerivedDataError>> + Send {
+        self.inner
+            .put_file_versions(repository, changeset, value, nodes)
+    }
+
+    fn file_versions(
+        &self,
+        repository: RepositoryId,
+        changeset: Address,
+    ) -> impl Future<Output = Result<Option<BTreeMap<Path, Address>>, DerivedDataError>> + Send
+    {
+        self.inner.file_versions(repository, changeset)
+    }
+
+    fn file_version_node(
+        &self,
+        repository: RepositoryId,
+        address: Address,
+    ) -> impl Future<Output = Result<FileVersionNode, DerivedDataError>> + Send {
+        self.inner.file_version_node(repository, address)
+    }
+}
+
+/// The address of the tree of the directory `name` in the tree at `address`.
+async fn subtree<H: RunnerDeployment>(
+    harness: &H,
+    repo: RepositoryId,
+    address: Address,
+    name: &str,
+) -> Address {
+    let tree = harness.derived().tree(repo, address).await.unwrap();
+    let key = Component::new(name.as_bytes().to_vec()).unwrap();
+    match tree.entries.get(&key) {
+        Some(Entry::Directory(subtree)) => *subtree,
+        _ => panic!("no directory {name}"),
+    }
+}
+
+/// A claim reads no tree of a directory its job's inputs cannot reach.
+pub async fn a_claim_reads_only_the_trees_its_inputs_reach<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let bot = runner(&harness, &ada, &organisation("acme"), "bot", &[]).await;
+    let folders: &[(&str, &[Spec])] = &[("web", &[check("unit").reading(&["src/**"])])];
+    let files = [
+        ("web/src/a", "1\n"),
+        ("web/notes", "1\n"),
+        ("docs/deep/er/x", "1\n"),
+        ("docs/y", "1\n"),
+    ];
+    let landed = land_checks_with(&repo, &ada, "first", folders, &files).await;
+
+    // The trees no input of the check can reach: `docs`, below which nothing is selected, and
+    // the folder holding the check file. The tree of `web/src` is the one its inputs do reach.
+    let root = harness.derived().root(repo.id, landed).await.unwrap();
+    let web = subtree(&harness, repo.id, root, "web").await;
+    let unreachable = [
+        subtree(&harness, repo.id, root, "docs").await,
+        subtree(&harness, repo.id, web, ".codehub").await,
+    ];
+    let reachable = subtree(&harness, repo.id, web, "src").await;
+
+    let counting = CountingTrees {
+        inner: harness.derived(),
+        read: Mutex::new(Vec::new()),
+    };
+    let jobs = JobsService::new(
+        JobsAdapters {
+            registry: harness.registry(),
+            queue: harness.queue(),
+            cache_refs: harness.cache_refs(),
+            objects: harness.objects(),
+            derived: &counting,
+            log: harness.log(),
+            directory: harness.directory(),
+            definitions: harness.definitions(),
+        },
+        LEASE,
+        LandingAttempts::default(),
+    );
+    let claimed = jobs.claim(&bot, 0).await.unwrap().unwrap();
+
+    assert_eq!(granted(&claimed), ["web/src/a"]);
+    let read = counting.read.lock().unwrap();
+    // The control: the tree its input selects was read, so the claim did walk.
+    assert!(read.contains(&reachable));
+    for tree in unreachable {
+        assert!(!read.contains(&tree), "the claim read {tree}");
+    }
 }

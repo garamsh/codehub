@@ -153,6 +153,42 @@ impl Pattern {
     }
 }
 
+impl Pattern {
+    /// Whether the pattern could select a file below the directory `directory`, for a check of
+    /// `folder`; every directory above a file the pattern selects is one.
+    #[must_use]
+    pub fn may_select_below(&self, folder: &Prefix, directory: &[Component]) -> bool {
+        let base = if self.from_root {
+            &[]
+        } else {
+            folder.components()
+        };
+        let Some(below) = directory.strip_prefix(base) else {
+            // Above the base, the directory leads to it; beside it, to nothing.
+            return base.starts_with(directory);
+        };
+        let names: Vec<&[u8]> = below.iter().map(Component::as_bytes).collect();
+        let parts: Vec<&str> = self.text.split('/').collect();
+        parts_lead(&parts, &names)
+    }
+}
+
+/// Whether some path of components `names` followed by at least one more matches the pattern
+/// components `parts`.
+fn parts_lead(parts: &[&str], names: &[&[u8]]) -> bool {
+    let Some((part, rest)) = parts.split_first() else {
+        return false;
+    };
+    if *part == "**" {
+        return rest.is_empty()
+            || (0..=names.len())
+                .any(|skip| names.get(skip..).is_some_and(|tail| parts_lead(rest, tail)));
+    }
+    names
+        .split_first()
+        .is_none_or(|(name, tail)| wildcard(part.as_bytes(), name) && parts_lead(rest, tail))
+}
+
 /// Whether the pattern components `parts` match the path components `names`.
 fn parts_match(parts: &[&str], names: &[&[u8]]) -> bool {
     let Some((part, rest)) = parts.split_first() else {
@@ -365,6 +401,25 @@ impl CheckKey {
     }
 }
 
+impl CheckKey {
+    /// The key of `definition` over the files of a tree, `files` by path with each content
+    /// address, of which the definition's patterns select its inputs, and `needed`, as in
+    /// [`CheckKey::new`]. A landing and a plan of a draft both key a check through here.
+    #[must_use]
+    pub fn of_tree(
+        definition: &CheckDefinition,
+        files: &BTreeMap<Path, Address>,
+        needed: &[(CheckKey, Address)],
+    ) -> Self {
+        let inputs: Vec<(Path, Address)> = files
+            .iter()
+            .filter(|(path, _)| definition.reads(path))
+            .map(|(path, content)| (path.clone(), *content))
+            .collect();
+        Self::new(definition, &inputs, needed)
+    }
+}
+
 impl fmt::Display for CheckKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)
@@ -451,6 +506,15 @@ impl CheckDefinition {
         self.inputs
             .iter()
             .any(|pattern| pattern.selects(&self.folder, path))
+    }
+
+    /// Whether the check could read a file below the directory `directory`, whose components run
+    /// from the repository root: one of its input patterns could select such a file.
+    #[must_use]
+    pub fn may_read_below(&self, directory: &[Component]) -> bool {
+        self.inputs
+            .iter()
+            .any(|pattern| pattern.may_select_below(&self.folder, directory))
     }
 
     /// The checks this one needs, each named by folder and name.
@@ -627,6 +691,32 @@ mod tests {
         let lock: Pattern = "//Cargo.lock".parse().unwrap();
         assert!(lock.selects(&folder, &path("Cargo.lock")));
         assert!(!lock.selects(&folder, &path("svc/Cargo.lock")));
+    }
+
+    #[test]
+    fn a_pattern_may_select_below_the_directories_above_the_files_it_selects() {
+        let folder = Prefix::from("svc".parse::<Path>().unwrap());
+        let dir = |text: &str| text.parse::<Path>().unwrap().components().to_vec();
+        let rust: Pattern = "src/**/*.rs".parse().unwrap();
+        for directory in ["svc", "svc/src", "svc/src/a", "svc/src/a/lib.rs"] {
+            assert!(
+                rust.may_select_below(&folder, &dir(directory)),
+                "{directory}"
+            );
+        }
+        for directory in ["other", "svc/tests", "svcx"] {
+            assert!(
+                !rust.may_select_below(&folder, &dir(directory)),
+                "{directory}"
+            );
+        }
+        let lock: Pattern = "//Cargo.lock".parse().unwrap();
+        assert!(!lock.may_select_below(&folder, &dir("svc")));
+        let nested: Pattern = "//a/b/*.toml".parse().unwrap();
+        assert!(nested.may_select_below(&folder, &dir("a")));
+        assert!(nested.may_select_below(&folder, &dir("a/b")));
+        assert!(!nested.may_select_below(&folder, &dir("a/b/c")));
+        assert!(!nested.may_select_below(&folder, &dir("c")));
     }
 
     #[test]

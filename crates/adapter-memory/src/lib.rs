@@ -2,6 +2,7 @@
 //! substitute them for the real technologies.
 
 mod authorisation_decision;
+mod cache_refs;
 mod changeset_log;
 mod check_definitions;
 mod derived_data;
@@ -18,6 +19,7 @@ mod runner_registry;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 pub use authorisation_decision::MemoryAuthorisationDecision;
+pub use cache_refs::MemoryCacheRefs;
 pub use changeset_log::MemoryChangesetLog;
 pub use check_definitions::MemoryCheckDefinitions;
 pub use derived_data::MemoryDerivedData;
