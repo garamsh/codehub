@@ -5,13 +5,12 @@ use std::sync::Arc;
 
 use app::domain::name::{Label, RepositoryName};
 use app::domain::runner::{Registration, RegistrationId};
-use app::port::driving::runners::Runners;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
-use crate::RunnerServices;
+use crate::ApiState;
 use crate::extract::{Authenticated, Body, Params, PrincipalBody, find, parse};
 use crate::problem::Problem;
 
@@ -52,8 +51,8 @@ impl From<Registration> for RegistrationBody {
     }
 }
 
-pub async fn register<P: RunnerServices>(
-    State(ports): State<Arc<P>>,
+pub async fn register(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params(organisation): Params<String>,
     Body(new): Body<NewRunner>,
@@ -71,11 +70,11 @@ pub async fn register<P: RunnerServices>(
         .map(|repository| parse::<RepositoryName>("repository name", repository))
         .transpose()?;
     let repository = match new.repository.as_deref() {
-        Some(repository) => Some(find(&*ports, &caller, &organisation, repository).await?),
+        Some(repository) => Some(find(&ports, &caller, &organisation, repository).await?),
         None => None,
     };
     let id = ports
-        .runners()
+        .runners
         .register(&caller, &name, named.as_ref(), &principal, labels.clone())
         .await?;
     Ok((
@@ -91,13 +90,13 @@ pub async fn register<P: RunnerServices>(
     ))
 }
 
-pub async fn list<P: RunnerServices>(
-    State(ports): State<Arc<P>>,
+pub async fn list(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params(organisation): Params<String>,
 ) -> Result<Json<RegistrationsBody>, Problem> {
     let registrations = ports
-        .runners()
+        .runners
         .list(&caller, &parse("organisation name", &organisation)?)
         .await?;
     Ok(Json(RegistrationsBody {
@@ -105,13 +104,13 @@ pub async fn list<P: RunnerServices>(
     }))
 }
 
-pub async fn remove<P: RunnerServices>(
-    State(ports): State<Arc<P>>,
+pub async fn remove(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, id)): Params<(String, u64)>,
 ) -> Result<StatusCode, Problem> {
     ports
-        .runners()
+        .runners
         .remove(
             &caller,
             &parse("organisation name", &organisation)?,

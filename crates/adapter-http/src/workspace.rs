@@ -11,13 +11,13 @@ use app::domain::draft::{ChangeStatus, Edit};
 use app::domain::file::File;
 use app::domain::name::DraftName;
 use app::domain::path::Path;
-use app::port::driving::source_control::{ListedFile, PathDiff, SourceControl, Workspace};
+use app::port::driving::source_control::{ListedFile, PathDiff, Workspace};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
-use crate::Services;
+use crate::ApiState;
 use crate::extract::{Authenticated, Body, Params, Queried, find, parse, parse_prefix};
 use crate::problem::Problem;
 use crate::source_control::{GrantBody, KindBody};
@@ -183,41 +183,41 @@ fn draft_name(text: &str) -> Result<DraftName, Problem> {
     parse("draft name", text)
 }
 
-pub async fn open<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn open(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository, draft)): Params<(String, String, String)>,
 ) -> Result<Json<WorkspaceBody>, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
     let workspace = ports
-        .source_control()
+        .source_control
         .open_workspace(&caller, repository, &draft_name(&draft)?)
         .await?;
     Ok(Json(workspace.into()))
 }
 
-pub async fn read<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn read(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository, draft)): Params<(String, String, String)>,
 ) -> Result<Json<WorkspaceBody>, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
     let workspace = ports
-        .source_control()
+        .source_control
         .workspace(&caller, repository, &draft_name(&draft)?)
         .await?;
     Ok(Json(workspace.into()))
 }
 
-pub async fn describe<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn describe(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository, draft)): Params<(String, String, String)>,
     Body(description): Body<DescriptionBody>,
 ) -> Result<StatusCode, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
     ports
-        .source_control()
+        .source_control
         .describe(
             &caller,
             repository,
@@ -228,13 +228,13 @@ pub async fn describe<P: Services>(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn snapshot<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn snapshot(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository, draft)): Params<(String, String, String)>,
     Body(snapshot): Body<SnapshotBody>,
 ) -> Result<StatusCode, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
     let draft = draft_name(&draft)?;
     let mut edits = BTreeMap::new();
     for change in snapshot.changes {
@@ -255,20 +255,20 @@ pub async fn snapshot<P: Services>(
         }
     }
     ports
-        .source_control()
+        .source_control
         .snapshot(&caller, repository, &draft, edits)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn restore<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn restore(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository, draft, path)): Params<(String, String, String, String)>,
 ) -> Result<StatusCode, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
     ports
-        .source_control()
+        .source_control
         .restore(
             &caller,
             repository,
@@ -279,20 +279,20 @@ pub async fn restore<P: Services>(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn diff<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn diff(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository, draft)): Params<(String, String, String)>,
     Queried(query): Queried<DiffQuery>,
 ) -> Result<Json<DiffBody>, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
     let path = query
         .path
         .as_deref()
         .map(|path| parse::<Path>("path", path))
         .transpose()?;
     let diffs = ports
-        .source_control()
+        .source_control
         .diff(&caller, repository, &draft_name(&draft)?, path.as_ref())
         .await?;
     Ok(Json(DiffBody {
@@ -300,17 +300,17 @@ pub async fn diff<P: Services>(
     }))
 }
 
-pub async fn list_files<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn list_files(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params((organisation, repository, changeset)): Params<(String, String, String)>,
     Queried(query): Queried<FilesQuery>,
 ) -> Result<Json<FilesBody>, Problem> {
-    let repository = find(&*ports, &caller, &organisation, &repository).await?;
+    let repository = find(&ports, &caller, &organisation, &repository).await?;
     let changeset: Address = parse("changeset", &changeset)?;
     let prefix = parse_prefix(query.prefix.as_deref().unwrap_or_default())?;
     let files = ports
-        .source_control()
+        .source_control
         .list_files(&caller, repository, changeset, &prefix)
         .await?;
     Ok(Json(FilesBody {

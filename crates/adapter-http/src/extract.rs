@@ -9,8 +9,6 @@ use app::domain::credential::Credential;
 use app::domain::path::{Path, Prefix};
 use app::domain::principal::{Caller, Principal};
 use app::domain::repository::RepositoryId;
-use app::port::driving::authentication::Authentication;
-use app::port::driving::repositories::Repositories;
 use axum::body::Bytes;
 use axum::extract::{FromRequest, FromRequestParts, Query, Request};
 use axum::http::header;
@@ -18,16 +16,16 @@ use axum::http::request::Parts;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
+use crate::ApiState;
 use crate::problem::Problem;
-use crate::{Authenticates, Locates};
 
 /// The caller the request's bearer token identifies.
 pub struct Authenticated(pub Caller);
 
-impl<P: Authenticates> FromRequestParts<Arc<P>> for Authenticated {
+impl FromRequestParts<Arc<ApiState>> for Authenticated {
     type Rejection = Problem;
 
-    async fn from_request_parts(parts: &mut Parts, ports: &Arc<P>) -> Result<Self, Problem> {
+    async fn from_request_parts(parts: &mut Parts, ports: &Arc<ApiState>) -> Result<Self, Problem> {
         let header = parts
             .headers
             .get(header::AUTHORIZATION)
@@ -44,9 +42,7 @@ impl<P: Authenticates> FromRequestParts<Arc<P>> for Authenticated {
         let credential: Credential = token
             .parse()
             .map_err(|_| Problem::unauthorised("the bearer token is empty"))?;
-        Ok(Self(
-            ports.authentication().authenticate(&credential).await?,
-        ))
+        Ok(Self(ports.authentication.authenticate(&credential).await?))
     }
 }
 
@@ -105,14 +101,14 @@ where
 }
 
 /// The repository `organisation`/`repository`, which `caller` may read.
-pub async fn find<P: Locates>(
-    ports: &P,
+pub async fn find(
+    ports: &ApiState,
     caller: &Caller,
     organisation: &str,
     repository: &str,
 ) -> Result<RepositoryId, Problem> {
     Ok(ports
-        .repositories()
+        .repositories
         .find_repository(
             caller,
             &parse("organisation name", organisation)?,

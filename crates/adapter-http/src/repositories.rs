@@ -2,13 +2,12 @@
 
 use std::sync::Arc;
 
-use app::port::driving::repositories::Repositories;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
-use crate::Services;
+use crate::ApiState;
 use crate::extract::{Authenticated, Body, Params, parse};
 use crate::problem::Problem;
 
@@ -29,21 +28,21 @@ pub struct CreatedRepository {
     id: u64,
 }
 
-pub async fn create_organisation<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn create_organisation(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Body(new): Body<NewName>,
 ) -> Result<(StatusCode, Json<Created>), Problem> {
     let name = parse("organisation name", &new.name)?;
     ports
-        .repositories()
+        .repositories
         .create_organisation(&caller, &name)
         .await?;
     Ok((StatusCode::CREATED, Json(Created { name: new.name })))
 }
 
-pub async fn create_repository<P: Services>(
-    State(ports): State<Arc<P>>,
+pub async fn create_repository(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params(organisation): Params<String>,
     Body(new): Body<NewName>,
@@ -51,7 +50,7 @@ pub async fn create_repository<P: Services>(
     let organisation = parse("organisation name", &organisation)?;
     let name = parse("repository name", &new.name)?;
     let id = ports
-        .repositories()
+        .repositories
         .create_repository(&caller, &organisation, &name)
         .await?;
     Ok((

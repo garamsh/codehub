@@ -2,7 +2,7 @@
 //!
 //! Every helper panics when a reply is not the one expected, as a failed assertion does.
 
-use adapter_http::{Pause, RunnerSettings};
+use adapter_http::{ApiState, Pause, Readiness, RunnerSettings};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -54,39 +54,46 @@ fn assembly(stores: &MemoryDeployment<Taught>, administration: Administration) -
     assembly
 }
 
-/// The router over `stores`, with members administered as `administration` says.
-pub fn router(stores: &MemoryDeployment<Taught>, administration: Administration) -> Router {
+/// The state over `stores`, with members administered as `administration` says and every
+/// dependency answering.
+pub fn state(stores: &MemoryDeployment<Taught>, administration: Administration) -> ApiState {
     let assembly = assembly(stores, administration);
-    adapter_http::api_router(
-        assembly.authentication(),
-        assembly.repositories(),
-        assembly.members(),
-        assembly.source_control(),
-        assembly.runners(),
-        assembly.jobs(),
-        assembly.checks(),
-        settings(),
-        (),
-    )
+    ApiState {
+        authentication: Arc::new(assembly.authentication()),
+        repositories: Arc::new(assembly.repositories()),
+        members: Arc::new(assembly.members()),
+        source_control: Arc::new(assembly.source_control()),
+        runners: Arc::new(assembly.runners()),
+        jobs: Arc::new(assembly.jobs()),
+        checks: Arc::new(assembly.checks()),
+        settings: settings(),
+        readiness: Arc::new(()),
+    }
 }
 
-/// The router over `stores`, with the repositories port replaced by `repositories`. It serves the
-/// source-control routes alone.
-pub fn router_with<R>(
+/// The router over `stores`, with members administered as `administration` says.
+pub fn router(stores: &MemoryDeployment<Taught>, administration: Administration) -> Router {
+    adapter_http::router(state(stores, administration))
+}
+
+/// The router over `stores`, with the repositories port replaced by `repositories`.
+pub fn router_with(
     stores: &MemoryDeployment<Taught>,
     administration: Administration,
-    repositories: R,
-) -> Router
-where
-    R: Repositories + Send + Sync + 'static,
-{
-    let assembly = assembly(stores, administration);
-    adapter_http::router(
-        assembly.authentication(),
+    repositories: Arc<dyn Repositories>,
+) -> Router {
+    adapter_http::router(ApiState {
         repositories,
-        assembly.members(),
-        assembly.source_control(),
-    )
+        ..state(stores, administration)
+    })
+}
+
+/// The router over `stores` whose readiness probe is `readiness`.
+pub fn router_ready(stores: &MemoryDeployment<Taught>, readiness: Arc<dyn Readiness>) -> Router {
+    adapter_http::router(ApiState {
+        readiness,
+        ..state(stores, Administration::BuiltIn)
+    })
 }
 
 fn pause(duration: Duration) -> Pause {

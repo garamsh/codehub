@@ -14,13 +14,13 @@ adapter-postgres = { path = "../adapter-postgres" }
 adapter-s3 = { path = "../adapter-s3" }
 adapter-toml = { path = "../adapter-toml" }
 app = { path = "../app" }
+async-trait.workspace = true
 axum = { workspace = true, features = ["http1", "tokio"] }
 clap = { workspace = true, features = ["derive", "env", "error-context", "help", "std", "usage"] }
 oauth-client = { path = "../oauth-client" }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
 
 [dev-dependencies]
-async-trait.workspace = true
 aws-lc-rs = { workspace = true }
 base64 = { workspace = true }
 codehub-runner = { path = "../codehub-runner" }

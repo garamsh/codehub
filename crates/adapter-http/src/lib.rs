@@ -24,6 +24,7 @@ use app::port::driving::members::Members;
 use app::port::driving::repositories::Repositories;
 use app::port::driving::runners::Runners;
 use app::port::driving::source_control::SourceControl;
+use async_trait::async_trait;
 use axum::Router;
 use axum::http::header;
 use axum::response::IntoResponse;
@@ -34,49 +35,15 @@ use crate::problem::Problem;
 /// The OpenAPI 3.1 document of the API, served at `/v1/openapi.json`.
 pub const OPENAPI: &str = include_str!("../openapi.json");
 
-/// What every route needs: the port that identifies the caller.
-trait Authenticates: Send + Sync + 'static {
-    type Authentication: Authentication + Send + Sync;
-
-    fn authentication(&self) -> &Self::Authentication;
-}
-
-/// What a route that names a repository needs: the port that finds it.
-trait Locates: Send + Sync + 'static {
-    type Repositories: Repositories + Send + Sync;
-
-    fn repositories(&self) -> &Self::Repositories;
-}
-
-/// The driving ports the router of the source-control API serves.
-trait Services: Authenticates + Locates {
-    type Members: Members + Send + Sync;
-    type SourceControl: SourceControl + Send + Sync;
-
-    fn members(&self) -> &Self::Members;
-    fn source_control(&self) -> &Self::SourceControl;
-}
-
-/// The driving ports the router of the runner API serves.
-trait RunnerServices: Authenticates + Locates {
-    type Runners: Runners + Send + Sync;
-    type Jobs: Jobs + Send + Sync;
-    type Checks: Checks + Send + Sync;
-
-    fn runners(&self) -> &Self::Runners;
-    fn jobs(&self) -> &Self::Jobs;
-    fn checks(&self) -> &Self::Checks;
-    fn settings(&self) -> &RunnerSettings;
-}
-
 /// The dependencies the readiness probe asks about.
-pub trait Readiness: Send + Sync + 'static {
+#[async_trait]
+pub trait Readiness: Send + Sync {
     /// Whether every dependency of the server answers now.
     ///
     /// # Errors
     ///
     /// [`NotReady`] naming the dependency that did not answer.
-    fn check(&self) -> impl Future<Output = Result<(), NotReady>> + Send;
+    async fn check(&self) -> Result<(), NotReady>;
 }
 
 /// Why the server is not ready: the short reason `/readyz` answers 503 with.
@@ -101,133 +68,35 @@ pub struct RunnerSettings {
     pub pause: fn(Duration) -> Pause,
 }
 
-struct Ports<A, R, M, S> {
-    authentication: A,
-    repositories: R,
-    members: M,
-    source_control: S,
-}
-
-impl<A, R, M, S> Authenticates for Ports<A, R, M, S>
-where
-    A: Authentication + Send + Sync + 'static,
-    R: Send + Sync + 'static,
-    M: Send + Sync + 'static,
-    S: Send + Sync + 'static,
-{
-    type Authentication = A;
-
-    fn authentication(&self) -> &A {
-        &self.authentication
-    }
-}
-
-impl<A, R, M, S> Locates for Ports<A, R, M, S>
-where
-    A: Send + Sync + 'static,
-    R: Repositories + Send + Sync + 'static,
-    M: Send + Sync + 'static,
-    S: Send + Sync + 'static,
-{
-    type Repositories = R;
-
-    fn repositories(&self) -> &R {
-        &self.repositories
-    }
-}
-
-impl<A, R, M, S> Services for Ports<A, R, M, S>
-where
-    A: Authentication + Send + Sync + 'static,
-    R: Repositories + Send + Sync + 'static,
-    M: Members + Send + Sync + 'static,
-    S: SourceControl + Send + Sync + 'static,
-{
-    type Members = M;
-    type SourceControl = S;
-
-    fn members(&self) -> &M {
-        &self.members
-    }
-
-    fn source_control(&self) -> &S {
-        &self.source_control
-    }
-}
-
-struct RunnerPorts<A, R, N, J, C> {
-    authentication: A,
-    repositories: R,
-    runners: N,
-    jobs: J,
-    checks: C,
-    settings: RunnerSettings,
-}
-
-impl<A, R, N, J, C> Authenticates for RunnerPorts<A, R, N, J, C>
-where
-    A: Authentication + Send + Sync + 'static,
-    R: Send + Sync + 'static,
-    N: Send + Sync + 'static,
-    J: Send + Sync + 'static,
-    C: Send + Sync + 'static,
-{
-    type Authentication = A;
-
-    fn authentication(&self) -> &A {
-        &self.authentication
-    }
-}
-
-impl<A, R, N, J, C> Locates for RunnerPorts<A, R, N, J, C>
-where
-    A: Send + Sync + 'static,
-    R: Repositories + Send + Sync + 'static,
-    N: Send + Sync + 'static,
-    J: Send + Sync + 'static,
-    C: Send + Sync + 'static,
-{
-    type Repositories = R;
-
-    fn repositories(&self) -> &R {
-        &self.repositories
-    }
-}
-
-impl<A, R, N, J, C> RunnerServices for RunnerPorts<A, R, N, J, C>
-where
-    A: Authentication + Send + Sync + 'static,
-    R: Repositories + Send + Sync + 'static,
-    N: Runners + Send + Sync + 'static,
-    J: Jobs + Send + Sync + 'static,
-    C: Checks + Send + Sync + 'static,
-{
-    type Runners = N;
-    type Jobs = J;
-    type Checks = C;
-
-    fn runners(&self) -> &N {
-        &self.runners
-    }
-
-    fn jobs(&self) -> &J {
-        &self.jobs
-    }
-
-    fn checks(&self) -> &C {
-        &self.checks
-    }
-
-    fn settings(&self) -> &RunnerSettings {
-        &self.settings
-    }
+/// What the router serves: every driving port it translates requests to, the settings of the
+/// runner API and the readiness probe. The router owns the state for as long as it lives and
+/// shares it between requests.
+pub struct ApiState {
+    /// Identifies the caller of every route but the probes.
+    pub authentication: Arc<dyn Authentication>,
+    /// Finds the repositories, and creates them and the organisations.
+    pub repositories: Arc<dyn Repositories>,
+    /// Administers members and their grants.
+    pub members: Arc<dyn Members>,
+    /// Serves the drafts, the landing and the reads of source control.
+    pub source_control: Arc<dyn SourceControl>,
+    /// Registers and lists runners.
+    pub runners: Arc<dyn Runners>,
+    /// Serves the runner's job conversation.
+    pub jobs: Arc<dyn Jobs>,
+    /// Serves the checks and refs of a repository.
+    pub checks: Arc<dyn Checks>,
+    /// How a runner's claim is held.
+    pub settings: RunnerSettings,
+    /// Asked on every request to `/readyz`.
+    pub readiness: Arc<dyn Readiness>,
 }
 
 /// Declares a router's routes once, as both the router and its list of routes, so the two cannot
 /// differ.
 macro_rules! routes {
     (
-        $list:ident, $routed:ident, $services:ident;
+        $list:ident, $routed:ident;
         $($path:literal => $first:ident($first_handler:expr) $(, $rest:ident($rest_handler:expr))*;)+
     ) => {
         /// Every route of the router: its path template and the lowercase names of its methods.
@@ -235,7 +104,7 @@ macro_rules! routes {
             $(($path, &[stringify!($first) $(, stringify!($rest))*])),+
         ];
 
-        fn $routed<P: $services>() -> Router<Arc<P>> {
+        fn $routed() -> Router<Arc<ApiState>> {
             Router::new()$(
                 .route($path, routing::$first($first_handler)$(.$rest($rest_handler))*)
             )+
@@ -244,48 +113,48 @@ macro_rules! routes {
 }
 
 routes! {
-    ROUTES, routed, Services;
+    ROUTES, routed;
     "/v1/openapi.json" => get(openapi);
-    "/v1/orgs" => post(repositories::create_organisation::<P>);
-    "/v1/orgs/{org}/repos" => post(repositories::create_repository::<P>);
+    "/v1/orgs" => post(repositories::create_organisation);
+    "/v1/orgs/{org}/repos" => post(repositories::create_repository);
     "/v1/orgs/{org}/members" =>
-        put(members::add_member::<P>), delete(members::remove_member::<P>);
+        put(members::add_member), delete(members::remove_member);
     "/v1/orgs/{org}/repos/{repo}/grants" =>
-        put(members::add_grant::<P>), delete(members::remove_grant::<P>);
-    "/v1/orgs/{org}/repos/{repo}/uploads" => post(source_control::request_upload::<P>);
+        put(members::add_grant), delete(members::remove_grant);
+    "/v1/orgs/{org}/repos/{repo}/uploads" => post(source_control::request_upload);
     "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/files/{*path}" =>
-        put(source_control::stage_file::<P>), delete(source_control::stage_deletion::<P>);
+        put(source_control::stage_file), delete(source_control::stage_deletion);
     "/v1/orgs/{org}/repos/{repo}/drafts/{draft}" =>
-        put(workspace::open::<P>), get(workspace::read::<P>);
-    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/description" => put(workspace::describe::<P>);
-    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/snapshot" => post(workspace::snapshot::<P>);
+        put(workspace::open), get(workspace::read);
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/description" => put(workspace::describe);
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/snapshot" => post(workspace::snapshot);
     "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/changes/{*path}" =>
-        delete(workspace::restore::<P>);
-    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/diff" => get(workspace::diff::<P>);
-    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/land" => post(source_control::land::<P>);
-    "/v1/orgs/{org}/repos/{repo}/changesets/{id}/files" => get(workspace::list_files::<P>);
-    "/v1/orgs/{org}/repos/{repo}/files/{*path}" => get(source_control::read_file::<P>);
-    "/v1/orgs/{org}/repos/{repo}/history/{*path}" => get(source_control::history::<P>);
+        delete(workspace::restore);
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/diff" => get(workspace::diff);
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/land" => post(source_control::land);
+    "/v1/orgs/{org}/repos/{repo}/changesets/{id}/files" => get(workspace::list_files);
+    "/v1/orgs/{org}/repos/{repo}/files/{*path}" => get(source_control::read_file);
+    "/v1/orgs/{org}/repos/{repo}/history/{*path}" => get(source_control::history);
 }
 
 routes! {
-    RUNNER_ROUTES, runner_routed, RunnerServices;
-    "/v1/orgs/{org}/runners" => post(runners::register::<P>), get(runners::list::<P>);
-    "/v1/orgs/{org}/runners/{id}" => delete(runners::remove::<P>);
-    "/v1/runner/jobs/claim" => post(jobs::claim::<P>);
-    "/v1/runner/jobs/{id}/heartbeat" => post(jobs::heartbeat::<P>);
-    "/v1/runner/jobs/{id}/result" => post(jobs::report::<P>);
-    "/v1/runner/jobs/{id}/uploads" => post(jobs::uploads::<P>);
-    "/v1/orgs/{org}/repos/{repo}/changesets/{id}/checks" => get(checks::list::<P>);
-    "/v1/orgs/{org}/repos/{repo}/jobs/{id}/cancel" => post(checks::cancel::<P>);
-    "/v1/orgs/{org}/repos/{repo}/refs/{name}" => get(checks::reference::<P>);
-    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/checks/plan" => get(checks::plan::<P>);
+    RUNNER_ROUTES, runner_routed;
+    "/v1/orgs/{org}/runners" => post(runners::register), get(runners::list);
+    "/v1/orgs/{org}/runners/{id}" => delete(runners::remove);
+    "/v1/runner/jobs/claim" => post(jobs::claim);
+    "/v1/runner/jobs/{id}/heartbeat" => post(jobs::heartbeat);
+    "/v1/runner/jobs/{id}/result" => post(jobs::report);
+    "/v1/runner/jobs/{id}/uploads" => post(jobs::uploads);
+    "/v1/orgs/{org}/repos/{repo}/changesets/{id}/checks" => get(checks::list);
+    "/v1/orgs/{org}/repos/{repo}/jobs/{id}/cancel" => post(checks::cancel);
+    "/v1/orgs/{org}/repos/{repo}/refs/{name}" => get(checks::reference);
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/checks/plan" => get(checks::plan);
 }
 
 routes! {
-    HEALTH_ROUTES, health_routed, Readiness;
+    HEALTH_ROUTES, health_routed;
     "/healthz" => get(health::live);
-    "/readyz" => get(health::ready::<P>);
+    "/readyz" => get(health::ready);
 }
 
 async fn openapi() -> impl IntoResponse {
@@ -296,140 +165,20 @@ async fn no_route() -> Problem {
     Problem::no_route()
 }
 
-/// The router serving the API over these driving ports, answering a request no route matches.
-///
-/// The router owns the ports for as long as it lives and shares them between requests, so they
-/// are `'static`. A service that borrows its driven ports is made `'static` by the caller, by
-/// leaking the driven ports it borrows, for instance.
-pub fn router<A, R, M, S>(
-    authentication: A,
-    repositories: R,
-    members: M,
-    source_control: S,
-) -> Router
-where
-    A: Authentication + Send + Sync + 'static,
-    R: Repositories + Send + Sync + 'static,
-    M: Members + Send + Sync + 'static,
-    S: SourceControl + Send + Sync + 'static,
-{
-    source_router(authentication, repositories, members, source_control).fallback(no_route)
-}
-
-/// The routes of [`router`] without its fallback, so that another router can be merged in before
-/// the fallback is set.
-fn source_router<A, R, M, S>(
-    authentication: A,
-    repositories: R,
-    members: M,
-    source_control: S,
-) -> Router
-where
-    A: Authentication + Send + Sync + 'static,
-    R: Repositories + Send + Sync + 'static,
-    M: Members + Send + Sync + 'static,
-    S: SourceControl + Send + Sync + 'static,
-{
-    routed().with_state(Arc::new(Ports {
-        authentication,
-        repositories,
-        members,
-        source_control,
-    }))
-}
-
-/// The router serving the runner API over these driving ports: registrations, the runner's job
-/// conversation, and the checks and refs of a repository.
-///
-/// It routes only what [`RUNNER_ROUTES`] lists and has no fallback. `settings` says how a claim
-/// is held.
-fn runner_router<A, R, N, J, C>(
-    authentication: A,
-    repositories: R,
-    runners: N,
-    jobs: J,
-    checks: C,
-    settings: RunnerSettings,
-) -> Router
-where
-    A: Authentication + Send + Sync + 'static,
-    R: Repositories + Send + Sync + 'static,
-    N: Runners + Send + Sync + 'static,
-    J: Jobs + Send + Sync + 'static,
-    C: Checks + Send + Sync + 'static,
-{
-    runner_routed().with_state(Arc::new(RunnerPorts {
-        authentication,
-        repositories,
-        runners,
-        jobs,
-        checks,
-        settings,
-    }))
-}
-
-/// The router serving the liveness and readiness probes, which need no token.
-///
-/// It has no fallback, so a caller merges it into [`router`]'s. `readiness` is asked on every
-/// request to `/readyz`.
-pub fn health_router<P: Readiness>(readiness: P) -> Router {
-    health_routed().with_state(Arc::new(readiness))
-}
-
 /// A server with no dependency to ask about, which is always ready.
+#[async_trait]
 impl Readiness for () {
     async fn check(&self) -> Result<(), NotReady> {
         Ok(())
     }
 }
 
-/// The router serving the whole API over these driving ports: every route of [`ROUTES`],
-/// [`RUNNER_ROUTES`] and [`HEALTH_ROUTES`], and a fallback for a request no route matches.
-/// `settings` says how a runner's claim is held, and `readiness` is asked on every request to
-/// `/readyz`.
-///
-/// Authentication and repositories serve both the source-control and the runner routes, so each
-/// is cloned for the second. The router owns the ports for as long as it lives, so they are
-/// `'static`.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one argument for each driving port the API serves, plus its two settings"
-)]
-pub fn api_router<A, R, M, S, N, J, C, P>(
-    authentication: A,
-    repositories: R,
-    members: M,
-    source_control: S,
-    runners: N,
-    jobs: J,
-    checks: C,
-    settings: RunnerSettings,
-    readiness: P,
-) -> Router
-where
-    A: Authentication + Clone + Send + Sync + 'static,
-    R: Repositories + Clone + Send + Sync + 'static,
-    M: Members + Send + Sync + 'static,
-    S: SourceControl + Send + Sync + 'static,
-    N: Runners + Send + Sync + 'static,
-    J: Jobs + Send + Sync + 'static,
-    C: Checks + Send + Sync + 'static,
-    P: Readiness,
-{
-    source_router(
-        authentication.clone(),
-        repositories.clone(),
-        members,
-        source_control,
-    )
-    .merge(runner_router(
-        authentication,
-        repositories,
-        runners,
-        jobs,
-        checks,
-        settings,
-    ))
-    .merge(health_router(readiness))
-    .fallback(no_route)
+/// The router serving the whole API over `state`: every route of [`ROUTES`], [`RUNNER_ROUTES`]
+/// and [`HEALTH_ROUTES`], and a fallback for a request no route matches.
+pub fn router(state: ApiState) -> Router {
+    routed()
+        .merge(runner_routed())
+        .merge(health_routed())
+        .fallback(no_route)
+        .with_state(Arc::new(state))
 }

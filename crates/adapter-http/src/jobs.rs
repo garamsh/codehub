@@ -6,14 +6,14 @@ use std::time::Duration;
 use app::domain::file::{File, FileKind};
 use app::domain::job::{Heartbeat, JobId, JobResult, Outcome, Produced, ProducedFile, StopReason};
 use app::domain::path::Prefix;
-use app::port::driving::jobs::{Claimed, ClaimedFile, Jobs, Upload};
+use app::port::driving::jobs::{Claimed, ClaimedFile, Upload};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
-use crate::RunnerServices;
+use crate::ApiState;
 use crate::extract::{Authenticated, Body, Params, parse};
 use crate::problem::Problem;
 use crate::source_control::{GrantBody, now};
@@ -175,14 +175,14 @@ pub struct UploadGrantsBody {
     grants: Vec<UploadGrantBody>,
 }
 
-pub async fn claim<P: RunnerServices>(
-    State(ports): State<Arc<P>>,
+pub async fn claim(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
 ) -> Result<Response, Problem> {
-    let settings = ports.settings();
+    let settings = ports.settings;
     let mut waited = Duration::ZERO;
     loop {
-        if let Some(claimed) = ports.jobs().claim(&caller, now()).await? {
+        if let Some(claimed) = ports.jobs.claim(&caller, now()).await? {
             return Ok(Json(JobBody::new(claimed, settings.heartbeat_interval)).into_response());
         }
         let remaining = settings.hold.saturating_sub(waited);
@@ -198,13 +198,13 @@ pub async fn claim<P: RunnerServices>(
     }
 }
 
-pub async fn heartbeat<P: RunnerServices>(
-    State(ports): State<Arc<P>>,
+pub async fn heartbeat(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params(job): Params<u64>,
 ) -> Result<Json<HeartbeatBody>, Problem> {
     let answer = ports
-        .jobs()
+        .jobs
         .heartbeat(&caller, JobId::new(job), now())
         .await?;
     Ok(Json(match answer {
@@ -218,8 +218,8 @@ pub async fn heartbeat<P: RunnerServices>(
     }))
 }
 
-pub async fn report<P: RunnerServices>(
-    State(ports): State<Arc<P>>,
+pub async fn report(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params(job): Params<u64>,
     Body(result): Body<ResultBody>,
@@ -248,14 +248,14 @@ pub async fn report<P: RunnerServices>(
         output: result.output_tail.into_bytes(),
     };
     ports
-        .jobs()
+        .jobs
         .report(&caller, JobId::new(job), result, produced, now())
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn uploads<P: RunnerServices>(
-    State(ports): State<Arc<P>>,
+pub async fn uploads(
+    State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params(job): Params<u64>,
     Body(request): Body<UploadsBody>,
@@ -271,7 +271,7 @@ pub async fn uploads<P: RunnerServices>(
         })
         .collect::<Result<Vec<_>, Problem>>()?;
     let grants = ports
-        .jobs()
+        .jobs
         .upload_grants(&caller, JobId::new(job), files, now())
         .await?;
     Ok(Json(UploadGrantsBody {
