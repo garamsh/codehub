@@ -15,11 +15,11 @@ use crate::domain::principal::{Caller, Principal};
 use crate::domain::repository::RepositoryId;
 use crate::domain::runner::{Registration, RegistrationId};
 use crate::domain::tree::{Tree, derive};
-use crate::port::driven::cache_refs::{CacheRefs, CacheRefsError};
+use crate::port::driven::cache_refs::CacheRefs;
 use crate::port::driven::changeset_log::ChangesetLog;
 use crate::port::driven::check_definitions::CheckDefinitions;
 use crate::port::driven::derived_data::DerivedData;
-use crate::port::driven::job_queue::{JobQueue, JobQueueError};
+use crate::port::driven::job_queue::JobQueue;
 use crate::port::driven::object_store::ObjectStore;
 use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driven::runner_registry::RunnerRegistry;
@@ -280,15 +280,6 @@ where
             .await?;
         }
         Ok(())
-    }
-}
-
-/// A failure of the cache refs reaches the runner as the failure of the job queue, which held
-/// them before they had a port of their own.
-impl From<CacheRefsError> for JobsError {
-    fn from(error: CacheRefsError) -> Self {
-        let CacheRefsError::Backend(description) = error;
-        Self::Queue(JobQueueError::Backend(description))
     }
 }
 
