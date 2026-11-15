@@ -1,6 +1,8 @@
 //! The checks a tree defines: its files walked once, its check files found and read, and each
-//! check keyed from its inputs and the results of the checks it needs (ADR 0049). The plan of a
-//! draft and the queueing of a landing both read and key through here, so they compute one key.
+//! check's dependencies, the files its inputs select and the results of the checks it needs
+//! (ADR 0049). [`resolve`] decides them for a landed tree and for a draft's rebased files alike,
+//! and the plan of a draft and the queueing of a landing both key through [`Dependencies::key`],
+//! so they compute one key.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -53,7 +55,7 @@ where
     Ok(files)
 }
 
-/// The content address of every file of the changeset tree at `root`, by path.
+/// Every file of the changeset tree at `root`, by path.
 ///
 /// # Errors
 ///
@@ -62,18 +64,14 @@ pub(crate) async fn tree_files<D: DerivedData>(
     derived: &D,
     repository: RepositoryId,
     root: Address,
-) -> Result<BTreeMap<Path, Address>, DerivedDataError> {
-    let files = walk_files(
+) -> Result<BTreeMap<Path, File>, DerivedDataError> {
+    walk_files(
         root,
         |address| derived.tree(repository, address),
         |error| DerivedDataError::Backend(error.to_string()),
         None,
     )
-    .await?;
-    Ok(files
-        .into_iter()
-        .map(|(path, file)| (path, file.content))
-        .collect())
+    .await
 }
 
 /// What a check depends on (ADR 0049): the files its inputs select in the changeset, and the key
@@ -110,9 +108,71 @@ pub(crate) enum Resolved {
     Ready(Dependencies),
 }
 
+/// Where the files of a tree come from.
+pub(crate) enum Files<'a, D> {
+    /// The changeset tree at `root` of `repository`, read through derived data.
+    Landed {
+        derived: &'a D,
+        repository: RepositoryId,
+        root: Address,
+    },
+    /// A draft's rebased files, by path, held in memory.
+    Rebased(&'a BTreeMap<Path, File>),
+}
+
+impl<D: DerivedData> Files<'_, D> {
+    /// The files `check` reads, by path: a landed tree is read only below the directories its
+    /// inputs can reach.
+    async fn selected(
+        &self,
+        check: &CheckDefinition,
+    ) -> Result<BTreeMap<Path, File>, DerivedDataError> {
+        match self {
+            Self::Landed {
+                derived,
+                repository,
+                root,
+            } => {
+                walk_files(
+                    *root,
+                    |address| derived.tree(*repository, address),
+                    |error| DerivedDataError::Backend(error.to_string()),
+                    Some(check),
+                )
+                .await
+            }
+            Self::Rebased(files) => Ok(files
+                .iter()
+                .filter(|(path, _)| check.reads(path))
+                .map(|(path, file)| (path.clone(), *file))
+                .collect()),
+        }
+    }
+}
+
+/// The dependencies of `check` in `files`, given where `needs` says the checks it needs stand: the
+/// one place that decides them, for the key of a queued job, the grant of a claimed one and the
+/// key of a planned check.
+///
+/// # Errors
+///
+/// The failure of derived data.
+pub(crate) async fn resolve<D: DerivedData>(
+    files: &Files<'_, D>,
+    check: &CheckDefinition,
+    needs: Needs,
+) -> Result<Resolved, DerivedDataError> {
+    let needed = match needs {
+        Needs::Waiting => return Ok(Resolved::Waiting),
+        Needs::Skipped => return Ok(Resolved::Skipped),
+        Needs::Passed(needed) => needed,
+    };
+    let inputs = files.selected(check).await?;
+    Ok(Resolved::Ready(Dependencies { inputs, needed }))
+}
+
 /// The dependencies of `check` in the changeset at `root`, among `jobs`, the jobs of the
-/// changeset: the one place that decides them, for the key of a queued job and for the grant of a
-/// claimed one. Only the trees `check`'s inputs can reach are read.
+/// changeset.
 ///
 /// # Errors
 ///
@@ -124,19 +184,12 @@ pub(crate) async fn dependencies<D: DerivedData>(
     check: &CheckDefinition,
     jobs: &[Job],
 ) -> Result<Resolved, DerivedDataError> {
-    let needed = match Needs::of(check, jobs) {
-        Needs::Waiting => return Ok(Resolved::Waiting),
-        Needs::Skipped => return Ok(Resolved::Skipped),
-        Needs::Passed(needed) => needed,
-    };
-    let inputs = walk_files(
+    let files = Files::Landed {
+        derived,
+        repository,
         root,
-        |address| derived.tree(repository, address),
-        |error| DerivedDataError::Backend(error.to_string()),
-        Some(check),
-    )
-    .await?;
-    Ok(Resolved::Ready(Dependencies { inputs, needed }))
+    };
+    resolve(&files, check, Needs::of(check, jobs)).await
 }
 
 /// The check definitions of a tree could not be read.
@@ -173,7 +226,7 @@ pub(crate) async fn read_definitions<O, C>(
     objects: &O,
     reader: &C,
     repository: RepositoryId,
-    files: &BTreeMap<Path, Address>,
+    files: &BTreeMap<Path, File>,
 ) -> Result<Vec<CheckDefinition>, DefinitionsError>
 where
     O: ObjectStore,
@@ -181,9 +234,9 @@ where
 {
     let file = reader.file();
     let mut found: BTreeMap<Prefix, Address> = BTreeMap::new();
-    for (path, content) in files {
+    for (path, found_file) in files {
         if let Some(folder) = path.components().strip_suffix(file.components()) {
-            found.insert(Prefix::new(folder.to_vec()), *content);
+            found.insert(Prefix::new(folder.to_vec()), found_file.content);
         }
     }
     let mut definitions = Vec::new();
