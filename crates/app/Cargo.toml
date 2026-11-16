@@ -14,6 +14,7 @@ tracing.workspace = true
 [dev-dependencies]
 adapter-memory = { path = "../adapter-memory" }
 test-support = { path = "../test-support" }
+metrics-exporter-prometheus.workspace = true
 proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 

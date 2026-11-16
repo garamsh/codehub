@@ -19,6 +19,7 @@ axum = { workspace = true, features = ["http1", "tokio"] }
 clap = { workspace = true, features = ["derive", "env", "error-context", "help", "std", "usage"] }
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
+metrics-util.workspace = true
 oauth-client = { path = "../oauth-client" }
 opentelemetry.workspace = true
 opentelemetry-otlp.workspace = true

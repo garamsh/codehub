@@ -18,6 +18,7 @@ gix-imara-diff = { version = "0.3.3", default-features = false, features = ["uni
 jsonwebtoken = { version = "11.1.0", default-features = false }
 metrics = { version = "0.24.6", default-features = false }
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+metrics-util = { version = "0.20.4", default-features = false }
 opentelemetry = { version = "0.33.1", default-features = false, features = ["trace"] }
 opentelemetry-http = { version = "0.33.1", default-features = false }
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["trace", "http-proto", "http-json", "reqwest-blocking-client"] }

@@ -4,7 +4,7 @@
 //! go; the composition site installs the recorder and the subscriber. Until it does, every call
 //! here costs nothing and reports nowhere.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -18,7 +18,7 @@ use crate::domain::repository::RepositoryId;
 use crate::port::driven::authorisation_decision::{
     Action, AuthorisationDecision, AuthorisationError, Decision, Resource,
 };
-use crate::port::driven::backlog::{Backlog, BacklogError};
+use crate::port::driven::backlog::{Backlog, BacklogError, QueueBacklog};
 use crate::port::driven::directory_changes::{
     DirectoryChanges, OrganisationChange, RepositoryChange,
 };
@@ -47,8 +47,12 @@ pub const OUTBOX_PENDING: &str = "codehub_outbox_pending";
 pub const DB_POOL_CONNECTIONS: &str = "codehub_db_pool_connections";
 /// Connections the database pool has lent out.
 pub const DB_POOL_IN_USE: &str = "codehub_db_pool_connections_in_use";
-/// Seconds it took to take a connection from the database pool.
+/// The most connections the database pool opens.
+pub const DB_POOL_MAX: &str = "codehub_db_pool_connections_max";
+/// Seconds it took to take a connection from the database pool, or to give up on taking one.
 pub const DB_POOL_ACQUIRE: &str = "codehub_db_pool_acquire_seconds";
+/// Probes that failed to take a connection from the database pool.
+pub const DB_POOL_ACQUIRE_FAILURES: &str = "codehub_db_pool_acquire_failures_total";
 
 /// Records that a landing waited `waited` at the gate of its repository.
 pub fn landing_gate_waited(waited: Duration) {
@@ -262,11 +266,51 @@ impl<T: DirectoryChanges> DirectoryChanges for Observed<T> {
     }
 }
 
-/// Sets the backlog gauges from the backlog, and drains to zero the ones of a queue that no longer
-/// has anything waiting, so a scrape never shows a depth the queue has left behind.
+/// The most label sets of one kind that have a gauge of their own; the rest are folded into the
+/// label set `other`. A label set is chosen by whoever queues the work, so the series must not
+/// follow it without bound.
+pub const MAX_LABEL_SETS: usize = 16;
+
+/// The label set the label sets beyond [`MAX_LABEL_SETS`] are folded into.
+pub const OTHER_LABELS: &str = "other";
+
+/// Sets the backlog gauges from the backlog. A label set that no longer has anything waiting is set
+/// to zero once and then left alone, so a scrape never shows a depth the queue has left behind and
+/// the recorder, which drops a gauge nothing sets for a while, can forget it.
 #[derive(Debug, Default)]
 pub struct BacklogGauges {
     seen: Mutex<BTreeSet<(&'static str, String)>>,
+}
+
+/// `queues` with, per kind, the [`MAX_LABEL_SETS`] deepest label sets kept and the rest folded
+/// into one entry of [`OTHER_LABELS`].
+fn bounded(queues: &[QueueBacklog]) -> Vec<QueueBacklog> {
+    let mut sorted = queues.to_vec();
+    sorted.sort_by(|a, b| b.depth.cmp(&a.depth).then_with(|| a.labels.cmp(&b.labels)));
+    let mut bounded: Vec<QueueBacklog> = Vec::new();
+    let mut kept: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for queue in sorted {
+        let count = kept.entry(queue.kind).or_insert(0);
+        if *count < MAX_LABEL_SETS {
+            *count += 1;
+            bounded.push(queue);
+            continue;
+        }
+        match bounded
+            .iter_mut()
+            .find(|other| other.kind == queue.kind && other.labels == OTHER_LABELS)
+        {
+            Some(other) => {
+                other.depth = other.depth.saturating_add(queue.depth);
+                other.oldest_age_seconds = other.oldest_age_seconds.max(queue.oldest_age_seconds);
+            }
+            None => bounded.push(QueueBacklog {
+                labels: OTHER_LABELS.to_owned(),
+                ..queue
+            }),
+        }
+    }
+    bounded
 }
 
 impl BacklogGauges {
@@ -283,9 +327,9 @@ impl BacklogGauges {
     /// [`BacklogError`] where the backlog could not be read; the gauges keep their last values.
     pub async fn update(&self, backlog: &dyn Backlog) -> Result<(), BacklogError> {
         let reading = backlog.read().await?;
+        let queues = bounded(&reading.queues);
         let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
-        let current: BTreeSet<(&'static str, String)> = reading
-            .queues
+        let current: BTreeSet<(&'static str, String)> = queues
             .iter()
             .map(|queue| (queue.kind, queue.labels.clone()))
             .collect();
@@ -293,7 +337,7 @@ impl BacklogGauges {
             metrics::gauge!(QUEUE_DEPTH, "kind" => *kind, "labels" => labels.clone()).set(0.0);
             metrics::gauge!(QUEUE_OLDEST_AGE, "kind" => *kind, "labels" => labels.clone()).set(0.0);
         }
-        for queue in &reading.queues {
+        for queue in &queues {
             #[expect(
                 clippy::cast_precision_loss,
                 reason = "a queue depth of 2^53 is out of reach, and a gauge is a float"

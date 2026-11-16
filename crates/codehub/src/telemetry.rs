@@ -4,7 +4,7 @@
 use std::io::Write;
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use adapter_http::Scrape;
 use adapter_postgres::Database;
@@ -12,6 +12,7 @@ use app::observability::{self, BacklogGauges};
 use app::port::driven::backlog::Backlog;
 use clap::{Args, ValueEnum};
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
+use metrics_util::MetricKindMask;
 use opentelemetry::KeyValue;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig};
@@ -19,6 +20,7 @@ use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::resource::Resource;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use tokio::task::JoinHandle;
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
@@ -31,8 +33,26 @@ const POOL_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// The upper bounds of the duration histograms, in seconds.
 const SECONDS_BUCKETS: &[f64] = &[
-    0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
+    0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
 ];
+
+/// How long a gauge that nothing sets is still rendered. The backlog gauges of a queue that has
+/// emptied are set once to zero and then left alone, and this lets the recorder forget them.
+const GAUGE_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The longest `--backlog-interval`, in seconds: a gauge is read often enough that
+/// [`GAUGE_IDLE_TIMEOUT`] never drops one that is still set.
+const MAX_BACKLOG_INTERVAL: u32 = 120;
+
+fn backlog_interval(value: &str) -> Result<NonZeroU32, String> {
+    let seconds: NonZeroU32 = value
+        .parse()
+        .map_err(|error| format!("{error}: a number of seconds, 1 to {MAX_BACKLOG_INTERVAL}"))?;
+    if seconds.get() > MAX_BACKLOG_INTERVAL {
+        return Err(format!("at most {MAX_BACKLOG_INTERVAL} seconds"));
+    }
+    Ok(seconds)
+}
 
 /// The upper bounds of the landing attempts histogram.
 const ATTEMPT_BUCKETS: &[f64] = &[1.0, 2.0, 3.0, 4.0, 8.0, 16.0, 32.0];
@@ -52,8 +72,8 @@ pub struct TelemetryOptions {
     /// How a log line is written, on standard output.
     #[arg(long, env = "CODEHUB_LOG_FORMAT", value_enum, default_value = "json")]
     pub log_format: LogFormat,
-    /// Which spans and log lines are kept: a level, or `target=level` directives separated by
-    /// commas.
+    /// Which log lines are kept: a level, or `target=level` directives separated by commas. It
+    /// does not filter the spans exported to the trace collector.
     #[arg(long, env = "CODEHUB_LOG", default_value = "info")]
     pub log_filter: String,
 }
@@ -62,8 +82,13 @@ pub struct TelemetryOptions {
 #[derive(Args, Debug)]
 pub struct BacklogOptions {
     /// How often the depth and age of the queues and the size of the directory outbox are read,
-    /// in seconds, at least one.
-    #[arg(long, env = "CODEHUB_BACKLOG_INTERVAL", default_value_t = NonZeroU32::MIN.saturating_add(14))]
+    /// in seconds, from 1 to 120.
+    #[arg(
+        long,
+        env = "CODEHUB_BACKLOG_INTERVAL",
+        default_value_t = NonZeroU32::MIN.saturating_add(14),
+        value_parser = backlog_interval
+    )]
     pub backlog_interval: NonZeroU32,
 }
 
@@ -202,10 +227,18 @@ fn describe() {
         observability::DB_POOL_IN_USE,
         "Connections the database pool has lent out"
     );
+    metrics::describe_gauge!(
+        observability::DB_POOL_MAX,
+        "Connections the database pool opens at most"
+    );
     metrics::describe_histogram!(
         observability::DB_POOL_ACQUIRE,
         metrics::Unit::Seconds,
-        "Time to take a connection from the database pool, probed every few seconds"
+        "Time to take a connection from the database pool, or to give up on taking one, probed every few seconds"
+    );
+    metrics::describe_counter!(
+        observability::DB_POOL_ACQUIRE_FAILURES,
+        "Probes that failed to take a connection from the database pool"
     );
 }
 
@@ -223,6 +256,7 @@ impl Telemetry {
                 ATTEMPT_BUCKETS,
             )
             .map_err(|error| Error::Telemetry(format!("setting the buckets: {error}")))?
+            .idle_timeout(MetricKindMask::GAUGE, Some(GAUGE_IDLE_TIMEOUT))
             .install_recorder()
             .map_err(|error| Error::Telemetry(format!("installing the recorder: {error}")))?;
         describe();
@@ -245,18 +279,23 @@ impl Telemetry {
         let filter = EnvFilter::try_new(&options.log_filter)
             .map_err(|error| Error::Telemetry(format!("--log-filter: {error}")))?;
         let lines = tracing_subscriber::fmt::layer().with_writer(std::io::stdout);
+        // The filter is the log's: the spans the trace export takes are the ones at INFO and
+        // above whatever the log keeps.
         let lines = match options.log_format {
             LogFormat::Json => lines
                 .json()
                 .with_current_span(true)
                 .with_span_list(false)
+                .with_filter(filter)
                 .boxed(),
-            LogFormat::Text => lines.boxed(),
+            LogFormat::Text => lines.with_filter(filter).boxed(),
         };
+        let spans = tracing_opentelemetry::layer()
+            .with_tracer(tracer.tracer("codehub"))
+            .with_filter(LevelFilter::INFO);
         tracing_subscriber::registry()
             .with(lines)
-            .with(tracing_opentelemetry::layer().with_tracer(tracer.tracer("codehub")))
-            .with(filter)
+            .with(spans)
             .try_init()
             .map_err(|error| Error::Telemetry(format!("installing the subscriber: {error}")))?;
         Ok(Self { metrics, tracer })
@@ -311,11 +350,20 @@ async fn sample_pool(database: Database) {
         metrics::gauge!(observability::DB_POOL_CONNECTIONS).set(f64::from(state.open));
         metrics::gauge!(observability::DB_POOL_IN_USE)
             .set(f64::from(state.open.saturating_sub(state.idle)));
+        metrics::gauge!(observability::DB_POOL_MAX).set(f64::from(state.max));
+        let started = Instant::now();
         match database.probe_acquire().await {
             Ok(waited) => {
                 metrics::histogram!(observability::DB_POOL_ACQUIRE).record(waited.as_secs_f64());
             }
-            Err(error) => tracing::warn!(%error, "probing the database pool failed"),
+            Err(error) => {
+                // A pool that cannot lend a connection is the wait this histogram is for: the
+                // time given up on counts, and so does the failure.
+                metrics::histogram!(observability::DB_POOL_ACQUIRE)
+                    .record(started.elapsed().as_secs_f64());
+                metrics::counter!(observability::DB_POOL_ACQUIRE_FAILURES).increment(1);
+                tracing::warn!(%error, "probing the database pool failed");
+            }
         }
         tokio::time::sleep(POOL_SAMPLE_INTERVAL).await;
     }
@@ -328,5 +376,24 @@ async fn measure_backlog(backlog: Arc<dyn Backlog>, interval: Duration) {
             tracing::warn!(%error, "measuring the backlog failed");
         }
         tokio::time::sleep(interval).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_BACKLOG_INTERVAL, backlog_interval};
+
+    #[test]
+    fn the_backlog_interval_is_from_one_to_the_longest_the_gauges_outlive() {
+        assert_eq!(backlog_interval("1").unwrap().get(), 1);
+        assert_eq!(
+            backlog_interval(&MAX_BACKLOG_INTERVAL.to_string())
+                .unwrap()
+                .get(),
+            MAX_BACKLOG_INTERVAL
+        );
+        assert!(backlog_interval("0").is_err());
+        assert!(backlog_interval(&(MAX_BACKLOG_INTERVAL + 1).to_string()).is_err());
+        assert!(backlog_interval("soon").is_err());
     }
 }
