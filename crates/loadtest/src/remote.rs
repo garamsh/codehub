@@ -116,7 +116,9 @@ pub fn failures_by_status(events: &[Event]) -> String {
 pub fn failures_by_window(events: &[Event]) -> String {
     let mut counts = std::collections::BTreeMap::new();
     for event in events.iter().filter(|event| !event.ok) {
-        *counts.entry((event.at / 10.0) as u64 * 10).or_insert(0_usize) += 1;
+        *counts
+            .entry((event.at / 10.0) as u64 * 10)
+            .or_insert(0_usize) += 1;
     }
     if counts.is_empty() {
         return "none".to_owned();
