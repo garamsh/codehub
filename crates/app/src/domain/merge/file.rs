@@ -3,8 +3,8 @@
 use std::fmt;
 use std::ops::Range;
 
-use imara_diff::sources::byte_lines;
-use imara_diff::{Algorithm, Diff, InternedInput};
+use gix_imara_diff::sources::byte_lines;
+use gix_imara_diff::{Algorithm, Diff, InternedInput};
 
 use crate::domain::file::FileKind;
 
@@ -551,6 +551,35 @@ mod tests {
         assert_eq!(
             merge_file(None, file("a\n").as_ref(), executable("b\n").as_ref()),
             Err(FileConflict::AddAdd)
+        );
+    }
+
+    #[test]
+    fn merges_an_insertion_before_lines_the_other_side_changed() {
+        assert_eq!(
+            merge_text("a\nb\nc\n", "a\nX\nb\nc\n", "a\nB\nc\n"),
+            clean("a\nX\nB\nc\n")
+        );
+    }
+
+    #[test]
+    fn merges_an_insertion_above_lines_the_other_side_changed_further_down() {
+        assert_eq!(
+            merge_text("a\nb\nc\nd\n", "a\nX\nb\nc\nd\n", "a\nb\nc\nD\n"),
+            clean("a\nX\nb\nc\nD\n")
+        );
+    }
+
+    #[test]
+    fn conflicts_on_a_binary_side_beside_a_text_base_and_a_text_side() {
+        assert_eq!(
+            merge_content(Some(b"a\nb\nc\n"), b"a\0\nb\nc\n", b"a\nb\nC\n"),
+            Err(FileConflict::Binary)
+        );
+        // Control: the same edits with both sides text merge.
+        assert_eq!(
+            merge_text("a\nb\nc\n", "A\nb\nc\n", "a\nb\nC\n"),
+            clean("A\nb\nC\n")
         );
     }
 }

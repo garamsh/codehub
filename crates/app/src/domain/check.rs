@@ -862,4 +862,49 @@ mod tests {
         ];
         assert_eq!(needs_fault(&chain), None);
     }
+
+    #[test]
+    fn a_cycle_is_found_beside_a_need_that_is_not_on_it() {
+        // `b` needs `a` and `c`; once `c` is removed `b` still waits for `a`, which waits for `b`.
+        let checks = [
+            named("", "a", &["b"]),
+            named("", "b", &["a", "c"]),
+            named("", "c", &[]),
+        ];
+        assert_eq!(
+            needs_fault(&checks),
+            Some(NeedsFault::Cycle {
+                check: checks[0].id()
+            })
+        );
+    }
+
+    #[test]
+    fn a_cycle_is_reported_by_a_check_on_it_and_not_one_that_leads_into_it() {
+        let checks = [
+            named("", "a", &["b"]),
+            named("", "b", &["c"]),
+            named("", "c", &["b"]),
+        ];
+        assert_eq!(
+            needs_fault(&checks),
+            Some(NeedsFault::Cycle {
+                check: checks[1].id()
+            })
+        );
+    }
+
+    #[test]
+    fn a_key_tells_where_one_field_ends_and_the_next_begins() {
+        let label: Label = "y".parse().unwrap();
+        let mut with_label = named("", "unit", &[]);
+        with_label.command = Command::new("x").unwrap();
+        with_label.labels = BTreeSet::from([label]);
+        let mut joined = named("", "unit", &[]);
+        joined.command = Command::new("xy").unwrap();
+        assert_ne!(
+            CheckKey::new(&with_label, &[], &[]),
+            CheckKey::new(&joined, &[], &[])
+        );
+    }
 }

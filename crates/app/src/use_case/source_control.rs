@@ -573,19 +573,23 @@ impl<P: AfterLanding> SourceControl for SourceControlService<P> {
         let timestamp = landing.timestamp;
         let instance = staged.instance;
         let version = staged.version;
-        let arrival = self.gates.reach(repository);
-        let _one_at_a_time = arrival.pass().await;
-        let landed = land(
-            &*self.objects,
-            &*self.log,
-            &*self.derived,
-            repository,
-            caller.principal(),
-            staged,
-            landing,
-            self.attempts,
-        )
-        .await?;
+        // The gate covers the attempts at the swap alone (ADR 0039). The draft was read before it,
+        // so removing the draft after it orders nothing a landing reads.
+        let landed = {
+            let arrival = self.gates.reach(repository);
+            let _one_at_a_time = arrival.pass().await;
+            land(
+                &*self.objects,
+                &*self.log,
+                &*self.derived,
+                repository,
+                caller.principal(),
+                staged,
+                landing,
+                self.attempts,
+            )
+            .await?
+        };
         // A record committed after the draft was read moves its version: the draft and its
         // instance stay open for the next landing, and the landing is answered as it landed.
         match self

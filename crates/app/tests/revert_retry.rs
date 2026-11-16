@@ -53,6 +53,18 @@ impl ChangesetLog for LosingLog {
         self.inner.get(repository, id).await
     }
 
+    async fn first_parent_chain(
+        &self,
+        repository: RepositoryId,
+        head: Option<Address>,
+        base: Option<Address>,
+        limit: usize,
+    ) -> Result<Option<Vec<Changeset>>, ChangesetLogError> {
+        self.inner
+            .first_parent_chain(repository, head, base, limit)
+            .await
+    }
+
     async fn read_ref(
         &self,
         repository: RepositoryId,

@@ -2,7 +2,7 @@
 //! diff where both sides are text (ADR 0017), a marker otherwise, and the change of file kind
 //! beside either.
 
-use imara_diff::{Algorithm, BasicLineDiffPrinter, Diff, InternedInput, UnifiedDiffConfig};
+use gix_imara_diff::{Algorithm, BasicLineDiffPrinter, Diff, InternedInput, UnifiedDiffConfig};
 
 use super::file::FileKind;
 use super::merge::is_text;
@@ -135,6 +135,15 @@ mod tests {
         assert_eq!(
             text,
             "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n a\n-b\n+c\n"
+        );
+    }
+
+    #[test]
+    fn a_change_after_four_unchanged_lines_has_a_header_that_matches_its_context() {
+        let text = lines(Some("b\nb\na\nc\n"), Some("b\nb\na\nc\na\n"));
+        assert_eq!(
+            text,
+            "--- a/a.txt\n+++ b/a.txt\n@@ -2,3 +2,4 @@\n b\n a\n c\n+a\n"
         );
     }
 

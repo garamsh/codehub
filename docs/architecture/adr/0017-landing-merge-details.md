@@ -53,3 +53,7 @@ The resulting shape is in `docs/architecture/source-control.md`.
 - Landings conflict on whitespace-only or line-ending differences often enough that agents routinely normalise files before landing.
 - Text files in encodings other than UTF-8 are common in workspaces, and their path-level conflicts are a visible share of rejected landings.
 - Files that are binary but pass the text test, or text but fail it, are merged the wrong way often enough to be reported.
+
+## Errata
+
+- 2026-11-16: The Context and Decision name `imara-diff` 0.2.0 as the crate the project depends on. `imara-diff` 0.2.0, its latest release, misprints the first hunk of a unified diff, because `UnifiedDiff::fmt` starts `pos` at 0 instead of at the first hunk's context start; issue #293 found it with a property test. The project now depends on the maintained fork `gix-imara-diff` 0.3.3, which has the fix. The Histogram algorithm and the 3-way merge are unchanged, as the replacement note under Consequences anticipated. The decision stands.

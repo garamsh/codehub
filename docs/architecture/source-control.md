@@ -66,7 +66,7 @@ How versions of a repository's content are stored, changed, landed and queried.
   - overlapping binary files are merged at path level;
   - a true conflict rejects the landing and returns the conflicting paths for the author's agent to resolve.
 - **Details of the landing merge** (ADR 0017):
-  - lines are diffed with the Histogram algorithm of the `imara-diff` crate; the 3-way merge over those diffs is the domain ring's own;
+  - lines are diffed with the Histogram algorithm of the `gix-imara-diff` crate (the maintained fork of `imara-diff`; ADR 0017, Errata); the 3-way merge over those diffs is the domain ring's own;
   - a file version is binary when a NUL byte occurs in its first 8000 bytes or it is not valid UTF-8, and text otherwise; a path is merged by lines only when its base and both sides are text;
   - lines are compared byte for byte, so whitespace-only and line-ending differences are differences;
   - renames are not detected: a rename is a deletion and an addition;
@@ -153,7 +153,7 @@ Addresses:
 The ports below follow from the decisions, named for the conversation and in the application's terms (`docs/architecture/structure.md`). Whether each is earned by two adapters is settled when it is written.
 
 - **Object store** — put and get immutable objects by content address, answer an object's size without its bytes, and issue presigned URLs through which clients upload and download object bytes directly to and from the store, so the bytes do not pass through the server API (ADR 0015). Served by an S3-compatible adapter; the same technology also holds filesystem images, delivered the same way (`docs/architecture/execution.md`, ADR 0008).
-- **Changeset log** — append a changeset, read the log, read a ref, and move a ref by compare-and-swap on that ref alone. Served by a PostgreSQL adapter, the log as a table (ADR 0013, ADR 0022).
+- **Changeset log** — append a changeset, read the log, read the first-parent chain from a head back to a base in one call, bounded by a depth the caller gives, read a ref, and move a ref by compare-and-swap on that ref alone. A swap whose connection failed after its statement was sent is settled: the backend that runs the statement, found by a tag of the attempt in the statement, is ended, and the swap is won exactly where its changeset is `main` or on `main`'s first-parent chain. Served by a PostgreSQL adapter, the log as a table (ADR 0013, ADR 0022).
 - **Derived data** — read and write computed trees, file-version nodes, blame and skip lists for a repository. Served by PostgreSQL (ADR 0022).
 - **Draft store** — put and get draft changesets with their description and version, held outside the log until they land, record changes, and remove a draft, only where the instance and version are the ones expected (ADR 0012, ADR 0048, ADR 0051). Served by PostgreSQL (ADR 0022).
 - **Check dispatch** — ask for the post-land checks to run and receive their results. Served by the job queue port (`docs/architecture/runner.md`).

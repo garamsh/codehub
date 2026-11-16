@@ -55,3 +55,19 @@ async fn two_landings_on_one_repository_at_once_do_not_rebase_and_swap_together(
     landing::two_landings_on_one_repository_at_once_do_not_rebase_and_swap_together::<Harness>()
         .await;
 }
+
+#[tokio::test]
+async fn a_landing_waiting_at_the_gate_is_not_held_behind_anothers_after_landing() {
+    landing::a_landing_waiting_at_the_gate_is_not_held_behind_anothers_after_landing::<Harness>()
+        .await;
+}
+
+#[tokio::test]
+async fn an_attempt_reads_the_chain_from_its_base_to_main_in_one_call() {
+    landing::an_attempt_reads_the_chain_from_its_base_to_main_in_one_call::<Harness>().await;
+}
+
+#[tokio::test]
+async fn the_first_parent_chain_runs_from_head_back_to_base_exclusive() {
+    landing::the_first_parent_chain_runs_from_head_back_to_base_exclusive::<Harness>().await;
+}
