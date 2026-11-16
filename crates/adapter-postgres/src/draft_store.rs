@@ -11,10 +11,12 @@ use sqlx::PgPool;
 
 use crate::conversion;
 use crate::database::Database;
+use crate::statements::Statements;
 
 /// The draft store in PostgreSQL.
 pub struct PostgresDraftStore {
     pool: PgPool,
+    statements: Statements,
 }
 
 impl PostgresDraftStore {
@@ -23,6 +25,7 @@ impl PostgresDraftStore {
     pub fn new(database: &Database) -> Self {
         Self {
             pool: database.pool.clone(),
+            statements: database.statements,
         }
     }
 }
@@ -85,19 +88,20 @@ impl DraftStore for PostgresDraftStore {
         base: Option<Address>,
     ) -> Result<Draft, DraftStoreError> {
         // The no-op update keeps the base of a draft already held.
-        sqlx::query(
-            "insert into drafts (repository, issuer, subject, name, base) \
+        self.statements
+            .query(
+                "insert into drafts (repository, issuer, subject, name, base) \
              values ($1, $2, $3, $4, $5) \
              on conflict (repository, issuer, subject, name) do update set name = drafts.name",
-        )
-        .bind(repository_column(repository)?)
-        .bind(draft.principal.issuer())
-        .bind(draft.principal.subject())
-        .bind(draft.name.as_str())
-        .bind(base.as_ref().map(|base| base.digest().as_slice()))
-        .execute(&self.pool)
-        .await
-        .map_err(backend)?;
+            )
+            .bind(repository_column(repository)?)
+            .bind(draft.principal.issuer())
+            .bind(draft.principal.subject())
+            .bind(draft.name.as_str())
+            .bind(base.as_ref().map(|base| base.digest().as_slice()))
+            .execute(&self.pool)
+            .await
+            .map_err(backend)?;
         self.get(repository, draft).await
     }
 
@@ -107,19 +111,21 @@ impl DraftStore for PostgresDraftStore {
         draft: &DraftId,
         description: String,
     ) -> Result<(), DraftStoreError> {
-        let described = sqlx::query(
-            "update drafts set description = $5 \
+        let described = self
+            .statements
+            .query(
+                "update drafts set description = $5 \
              where repository = $1 and issuer = $2 and subject = $3 and name = $4",
-        )
-        .bind(repository_column(repository)?)
-        .bind(draft.principal.issuer())
-        .bind(draft.principal.subject())
-        .bind(draft.name.as_str())
-        .bind(description)
-        .execute(&self.pool)
-        .await
-        .map_err(backend)?
-        .rows_affected();
+            )
+            .bind(repository_column(repository)?)
+            .bind(draft.principal.issuer())
+            .bind(draft.principal.subject())
+            .bind(draft.name.as_str())
+            .bind(description)
+            .execute(&self.pool)
+            .await
+            .map_err(backend)?
+            .rows_affected();
         if described == 0 {
             return Err(DraftStoreError::NotFound(draft.clone()));
         }
@@ -135,25 +141,28 @@ impl DraftStore for PostgresDraftStore {
         edits: BTreeMap<Path, Edit>,
     ) -> Result<(), DraftStoreError> {
         let mut transaction = self.pool.begin().await.map_err(backend)?;
-        let (id, version) = sqlx::query_as::<_, (i64, i64)>(
-            "select id, version from drafts \
+        let (id, version) = self
+            .statements
+            .query_as::<(i64, i64)>(
+                "select id, version from drafts \
              where repository = $1 and issuer = $2 and subject = $3 and name = $4 \
              for update",
-        )
-        .bind(repository_column(repository)?)
-        .bind(draft.principal.issuer())
-        .bind(draft.principal.subject())
-        .bind(draft.name.as_str())
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(backend)?
-        .filter(|(id, _)| u64::try_from(*id).is_ok_and(|id| id == instance.get()))
-        .ok_or_else(|| DraftStoreError::NotFound(draft.clone()))?;
+            )
+            .bind(repository_column(repository)?)
+            .bind(draft.principal.issuer())
+            .bind(draft.principal.subject())
+            .bind(draft.name.as_str())
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(backend)?
+            .filter(|(id, _)| u64::try_from(*id).is_ok_and(|id| id == instance.get()))
+            .ok_or_else(|| DraftStoreError::NotFound(draft.clone()))?;
         let version = u64::try_from(version).map_err(backend)?;
         if version != expected {
             return Err(DraftStoreError::Moved { current: version });
         }
-        sqlx::query("update drafts set version = version + 1 where id = $1")
+        self.statements
+            .query("update drafts set version = version + 1 where id = $1")
             .bind(id)
             .execute(&mut *transaction)
             .await
@@ -162,22 +171,24 @@ impl DraftStore for PostgresDraftStore {
             match edit {
                 Edit::Record(change) => {
                     let (kind, content) = change_columns(change);
-                    sqlx::query(
-                        "insert into draft_changes (draft, path, kind, content) \
+                    self.statements
+                        .query(
+                            "insert into draft_changes (draft, path, kind, content) \
                          values ($1, $2, $3, $4) \
                          on conflict (draft, path) do update \
                          set kind = excluded.kind, content = excluded.content",
-                    )
-                    .bind(id)
-                    .bind(conversion::path_column(&path))
-                    .bind(kind)
-                    .bind(content)
-                    .execute(&mut *transaction)
-                    .await
-                    .map_err(backend)?;
+                        )
+                        .bind(id)
+                        .bind(conversion::path_column(&path))
+                        .bind(kind)
+                        .bind(content)
+                        .execute(&mut *transaction)
+                        .await
+                        .map_err(backend)?;
                 }
                 Edit::Restore => {
-                    sqlx::query("delete from draft_changes where draft = $1 and path = $2")
+                    self.statements
+                        .query("delete from draft_changes where draft = $1 and path = $2")
                         .bind(id)
                         .bind(conversion::path_column(&path))
                         .execute(&mut *transaction)
@@ -196,7 +207,7 @@ impl DraftStore for PostgresDraftStore {
     ) -> Result<Draft, DraftStoreError> {
         // One statement, so the base and the changes are from one snapshot; a draft with no
         // changes yields its row alone, with null change columns.
-        let rows = sqlx::query_as::<_, Row>(
+        let rows = self.statements.query_as::<Row>(
             "select d.id, d.version, d.base, d.description, c.path, c.kind, c.content from drafts d \
              left join draft_changes c on c.draft = d.id \
              where d.repository = $1 and d.issuer = $2 and d.subject = $3 and d.name = $4",
@@ -245,25 +256,28 @@ impl DraftStore for PostgresDraftStore {
         expected: u64,
     ) -> Result<(), DraftStoreError> {
         let mut transaction = self.pool.begin().await.map_err(backend)?;
-        let (id, version) = sqlx::query_as::<_, (i64, i64)>(
-            "select id, version from drafts \
+        let (id, version) = self
+            .statements
+            .query_as::<(i64, i64)>(
+                "select id, version from drafts \
              where repository = $1 and issuer = $2 and subject = $3 and name = $4 \
              for update",
-        )
-        .bind(repository_column(repository)?)
-        .bind(draft.principal.issuer())
-        .bind(draft.principal.subject())
-        .bind(draft.name.as_str())
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(backend)?
-        .filter(|(id, _)| u64::try_from(*id).is_ok_and(|id| id == instance.get()))
-        .ok_or_else(|| DraftStoreError::NotFound(draft.clone()))?;
+            )
+            .bind(repository_column(repository)?)
+            .bind(draft.principal.issuer())
+            .bind(draft.principal.subject())
+            .bind(draft.name.as_str())
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(backend)?
+            .filter(|(id, _)| u64::try_from(*id).is_ok_and(|id| id == instance.get()))
+            .ok_or_else(|| DraftStoreError::NotFound(draft.clone()))?;
         let version = u64::try_from(version).map_err(backend)?;
         if version != expected {
             return Err(DraftStoreError::Moved { current: version });
         }
-        sqlx::query("delete from drafts where id = $1")
+        self.statements
+            .query("delete from drafts where id = $1")
             .bind(id)
             .execute(&mut *transaction)
             .await

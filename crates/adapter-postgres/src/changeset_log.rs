@@ -9,6 +9,8 @@ use sqlx::PgPool;
 
 use crate::conversion;
 use crate::database::Database;
+use crate::retry;
+use crate::statements::Statements;
 
 /// How many changesets of `main` a settled swap looks through for its own.
 const SETTLE_DEPTH: usize = 1000;
@@ -39,6 +41,8 @@ fn swap_tag() -> String {
 /// exactly where the new changeset is `main` or on its first-parent chain.
 pub struct PostgresChangesetLog {
     pool: PgPool,
+    statements: Statements,
+    database: Database,
 }
 
 impl PostgresChangesetLog {
@@ -47,6 +51,8 @@ impl PostgresChangesetLog {
     pub fn new(database: &Database) -> Self {
         Self {
             pool: database.pool.clone(),
+            statements: database.statements,
+            database: database.clone(),
         }
     }
 
@@ -87,15 +93,17 @@ impl PostgresChangesetLog {
     async fn stop_statement(&self, tag: &str) -> Result<(), sqlx::Error> {
         let deadline = Instant::now() + STOP_BOUND;
         loop {
-            let running = sqlx::query_scalar::<_, bool>(
-                "select pg_terminate_backend(pid) from pg_stat_activity \
+            let running = self
+                .statements
+                .query_scalar::<bool>(
+                    "select pg_terminate_backend(pid) from pg_stat_activity \
                  where datname = current_database() and pid <> pg_backend_pid() \
                    and state <> 'idle' and position($1 in query) > 0",
-            )
-            .bind(tag)
-            .persistent(false)
-            .fetch_all(&self.pool)
-            .await?;
+                )
+                .bind(tag)
+                .persistent(false)
+                .fetch_all(&self.pool)
+                .await?;
             if running.is_empty() {
                 return Ok(());
             }
@@ -113,12 +121,16 @@ impl PostgresChangesetLog {
         repository: i64,
         base: Address,
     ) -> Result<Option<Vec<Changeset>>, ChangesetLogError> {
-        let held = sqlx::query_scalar::<_, bool>(
-            "select exists (select 1 from changesets where repository = $1 and id = $2)",
-        )
-        .bind(repository)
-        .bind(base.digest().as_slice())
-        .fetch_one(&self.pool)
+        let held = retry::idempotent(|| async move {
+            self.statements
+                .query_scalar::<bool>(
+                    "select exists (select 1 from changesets where repository = $1 and id = $2)",
+                )
+                .bind(repository)
+                .bind(base.digest().as_slice())
+                .fetch_one(&self.pool)
+                .await
+        })
         .await
         .map_err(backend)?;
         if held {
@@ -133,12 +145,16 @@ impl PostgresChangesetLog {
         repository: i64,
         name: Ref,
     ) -> Result<Option<Address>, ChangesetLogError> {
-        sqlx::query_scalar::<_, Vec<u8>>(
-            "select target from refs where repository = $1 and name = $2",
-        )
-        .bind(repository)
-        .bind(ref_name(name))
-        .fetch_optional(&self.pool)
+        retry::idempotent(|| async move {
+            self.statements
+                .query_scalar::<Vec<u8>>(
+                    "select target from refs where repository = $1 and name = $2",
+                )
+                .bind(repository)
+                .bind(ref_name(name))
+                .fetch_optional(&self.pool)
+                .await
+        })
         .await
         .map_err(backend)?
         .map(|bytes| conversion::address(bytes).map_err(ChangesetLogError::Backend))
@@ -187,14 +203,20 @@ impl ChangesetLog for PostgresChangesetLog {
     ) -> Result<Address, ChangesetLogError> {
         let encoding = changeset.encode().map_err(ChangesetLogError::Encode)?;
         let id = Address::of(&encoding);
-        sqlx::query(
-            "insert into changesets (repository, id, encoding) values ($1, $2, $3) \
-             on conflict (repository, id) do nothing",
-        )
-        .bind(repository_column(repository)?)
-        .bind(id.digest().as_slice())
-        .bind(encoding)
-        .execute(&self.pool)
+        let repository = repository_column(repository)?;
+        let encoding = &encoding;
+        retry::idempotent(|| async move {
+            self.statements
+                .query(
+                    "insert into changesets (repository, id, encoding) values ($1, $2, $3) \
+                 on conflict (repository, id) do nothing",
+                )
+                .bind(repository)
+                .bind(id.digest().as_slice())
+                .bind(encoding.clone())
+                .execute(&self.pool)
+                .await
+        })
         .await
         .map_err(backend)?;
         Ok(id)
@@ -205,15 +227,22 @@ impl ChangesetLog for PostgresChangesetLog {
         repository: RepositoryId,
         id: Address,
     ) -> Result<Changeset, ChangesetLogError> {
-        let encoding = sqlx::query_scalar::<_, Vec<u8>>(
-            "select encoding from changesets where repository = $1 and id = $2",
-        )
-        .bind(repository_column(repository)?)
-        .bind(id.digest().as_slice())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(backend)?
-        .ok_or(ChangesetLogError::NotFound(id))?;
+        let repository = repository_column(repository)?;
+        let encoding = self
+            .database
+            .immutable(|pool| async move {
+                self.statements
+                    .query_scalar::<Vec<u8>>(
+                        "select encoding from changesets where repository = $1 and id = $2",
+                    )
+                    .bind(repository)
+                    .bind(id.digest().as_slice())
+                    .fetch_optional(&pool)
+                    .await
+            })
+            .await
+            .map_err(backend)?
+            .ok_or(ChangesetLogError::NotFound(id))?;
         Changeset::decode(&encoding).map_err(backend)
     }
 
@@ -239,8 +268,10 @@ impl ChangesetLog for PostgresChangesetLog {
         // of ADR 0016: a version byte, a kind byte, a four-byte parent count, then the first
         // parent as an algorithm byte, a four-byte length and its 32-byte digest. Another version
         // ends the walk at its changeset, which then fails to decode.
-        let rows = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
-            "with recursive chain (depth, id, encoding) as ( \
+        let rows = retry::idempotent(|| async move {
+            self.statements
+                .query_as::<(Vec<u8>, Vec<u8>)>(
+                    "with recursive chain (depth, id, encoding) as ( \
                  select 0, id, encoding from changesets where repository = $1 and id = $2 \
                  union all \
                  select chain.depth + 1, parent.id, parent.encoding \
@@ -252,12 +283,14 @@ impl ChangesetLog for PostgresChangesetLog {
                    and chain.id is distinct from $3 \
                    and chain.depth < $4 \
              ) select id, encoding from chain order by depth",
-        )
-        .bind(column)
-        .bind(head.digest().as_slice())
-        .bind(base_digest)
-        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
-        .fetch_all(&self.pool)
+                )
+                .bind(column)
+                .bind(head.digest().as_slice())
+                .bind(base_digest)
+                .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+                .fetch_all(&self.pool)
+                .await
+        })
         .await
         .map_err(backend)?;
         let mut chain = Vec::with_capacity(rows.len());
@@ -310,7 +343,9 @@ impl ChangesetLog for PostgresChangesetLog {
             ),
         };
         // The tag is digits and dashes made here, and nothing a caller supplies.
-        let query = sqlx::query(sqlx::AssertSqlSafe(statement))
+        let query = self
+            .statements
+            .query(sqlx::AssertSqlSafe(statement))
             .persistent(false)
             .bind(column)
             .bind(ref_name(name))

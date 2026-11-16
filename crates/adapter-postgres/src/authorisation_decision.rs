@@ -12,6 +12,7 @@ use sqlx::PgPool;
 
 use crate::conversion;
 use crate::database::Database;
+use crate::statements::Statements;
 
 /// The ADR 0021 policy evaluated over the memberships of [`crate::PostgresMembership`]: an admin
 /// may take every action in its organisation; a member's grants allow `read` and `write` on the
@@ -19,6 +20,7 @@ use crate::database::Database;
 /// as a whole as that grant allows; `run` is asked of a repository only (ADR 0051).
 pub struct PostgresAuthorisationDecision {
     pool: PgPool,
+    statements: Statements,
 }
 
 impl PostgresAuthorisationDecision {
@@ -27,6 +29,7 @@ impl PostgresAuthorisationDecision {
     pub fn new(database: &Database) -> Self {
         Self {
             pool: database.pool.clone(),
+            statements: database.statements,
         }
     }
 }
@@ -134,20 +137,22 @@ impl PostgresAuthorisationDecision {
     ) -> Result<Held, AuthorisationError> {
         // One statement reads the role and the grants from one snapshot; a member with no grants
         // there yields its role alone, with null grant columns.
-        let rows = sqlx::query_as::<_, (String, Option<Vec<u8>>, Option<String>)>(
-            "select m.role, g.prefix, g.access from members m \
+        let rows = self
+            .statements
+            .query_as::<(String, Option<Vec<u8>>, Option<String>)>(
+                "select m.role, g.prefix, g.access from members m \
              left join grants g \
              on g.organisation = m.organisation and g.issuer = m.issuer \
              and g.subject = m.subject and g.repository = $4 \
              where m.organisation = $1 and m.issuer = $2 and m.subject = $3",
-        )
-        .bind(organisation.as_str())
-        .bind(subject.issuer())
-        .bind(subject.subject())
-        .bind(repository)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(backend)?;
+            )
+            .bind(organisation.as_str())
+            .bind(subject.issuer())
+            .bind(subject.subject())
+            .bind(repository)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend)?;
         let Some((role, ..)) = rows.first() else {
             return Ok(None);
         };

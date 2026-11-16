@@ -13,14 +13,17 @@ mod directory_outbox;
 mod draft_store;
 mod job_queue;
 mod membership;
+mod primary;
 mod repository_directory;
+mod retry;
 mod runner_registry;
 mod runs;
+mod statements;
 
 pub use authorisation_decision::PostgresAuthorisationDecision;
 pub use cache_refs::PostgresCacheRefs;
 pub use changeset_log::PostgresChangesetLog;
-pub use database::{Database, DatabaseError};
+pub use database::{Database, DatabaseError, PostgresOptions};
 pub use derived_data::PostgresDerivedData;
 pub use directory_outbox::PostgresDirectoryOutbox;
 pub use draft_store::PostgresDraftStore;

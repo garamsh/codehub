@@ -8,7 +8,7 @@ rust-version.workspace = true
 app = { path = "../app" }
 async-trait.workspace = true
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "migrate", "macros"] }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["rt", "time"] }
 
 [dev-dependencies]
 adapter-memory = { path = "../adapter-memory" }

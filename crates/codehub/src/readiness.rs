@@ -1,5 +1,5 @@
-//! The readiness probe: PostgreSQL, the schema it holds and the object store each answer within
-//! [`LIMIT`].
+//! The readiness probe: a writable PostgreSQL primary, the schema it holds and the object store each
+//! answer within [`LIMIT`].
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,17 +15,24 @@ use tokio::time::timeout;
 /// How long each dependency has to answer.
 const LIMIT: Duration = Duration::from_secs(2);
 
-/// Whether the database has the schema this binary was built for.
+/// What the database must be for this binary: a writable primary with the schema it was built for.
 #[async_trait::async_trait]
 pub(crate) trait Schema: Send + Sync {
     /// Whether every migration this binary embeds has been applied; a newer schema is current.
     async fn is_current(&self) -> Result<bool, DatabaseError>;
+
+    /// Whether the server answering is a writable primary and not a standby (ADR 0054).
+    async fn is_writable(&self) -> Result<bool, DatabaseError>;
 }
 
 #[async_trait::async_trait]
 impl Schema for Database {
     async fn is_current(&self) -> Result<bool, DatabaseError> {
         self.schema_is_current().await
+    }
+
+    async fn is_writable(&self) -> Result<bool, DatabaseError> {
+        Database::is_writable(self).await
     }
 }
 
@@ -43,7 +50,8 @@ impl Readiness for Probe {
         // Neither repository 0 nor the empty object need exist: a question answered "none" is
         // an answer.
         let probed = RepositoryId::new(0);
-        let (schema, database, objects) = tokio::join!(
+        let (writable, schema, database, objects) = tokio::join!(
+            timeout(LIMIT, self.schema.is_writable()),
             timeout(LIMIT, self.schema.is_current()),
             timeout(LIMIT, self.directory.names_of(probed)),
             async {
@@ -55,6 +63,12 @@ impl Readiness for Probe {
                 }
             },
         );
+        // A standby, or no server at all, cannot take a landing, so it is the reason given first.
+        match writable {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => return Err(NotReady("no writable PostgreSQL primary answers")),
+            _ => return Err(NotReady("PostgreSQL did not answer")),
+        }
         // A database that has not been migrated cannot answer the directory's question, so the
         // schema is the reason given first.
         match schema {
@@ -177,13 +191,22 @@ mod tests {
         }
     }
 
-    /// A schema that is current, older than the binary, or whose question fails.
-    struct Schemas(Result<bool, ()>);
+    /// A schema that is current, older than the binary, or whose question fails, on a server that
+    /// is a writable primary, a standby, or whose question fails.
+    struct Schemas {
+        current: Result<bool, ()>,
+        writable: Result<bool, ()>,
+    }
 
     #[async_trait::async_trait]
     impl Schema for Schemas {
         async fn is_current(&self) -> Result<bool, DatabaseError> {
-            self.0
+            self.current
+                .map_err(|()| DatabaseError::Connect("down".to_owned()))
+        }
+
+        async fn is_writable(&self) -> Result<bool, DatabaseError> {
+            self.writable
                 .map_err(|()| DatabaseError::Connect("down".to_owned()))
         }
     }
@@ -194,7 +217,10 @@ mod tests {
     ) -> Result<(), NotReady> {
         let probe = Probe {
             directory: Arc::new(Directory(Answer::Ok)),
-            schema: Arc::new(Schemas(schema)),
+            schema: Arc::new(Schemas {
+                current: schema,
+                writable: Ok(true),
+            }),
             objects: objects.map(|answer| Arc::new(Objects(answer)) as Arc<dyn ObjectStore>),
         };
         probe.check().await
@@ -203,7 +229,10 @@ mod tests {
     async fn check(database: Answer, objects: Answer) -> Result<(), NotReady> {
         let probe = Probe {
             directory: Arc::new(Directory(database)),
-            schema: Arc::new(Schemas(Ok(true))),
+            schema: Arc::new(Schemas {
+                current: Ok(true),
+                writable: Ok(true),
+            }),
             objects: Some(Arc::new(Objects(objects))),
         };
         probe.check().await
@@ -218,6 +247,31 @@ mod tests {
         );
         assert_eq!(
             check_schema(Err(()), Some(Answer::Ok)).await,
+            Err(NotReady("PostgreSQL did not answer"))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn is_not_ready_while_no_writable_primary_answers() {
+        let check_writable = |writable| async move {
+            Probe {
+                directory: Arc::new(Directory(Answer::Ok)),
+                schema: Arc::new(Schemas {
+                    current: Ok(true),
+                    writable,
+                }),
+                objects: None,
+            }
+            .check()
+            .await
+        };
+        assert_eq!(check_writable(Ok(true)).await, Ok(()));
+        assert_eq!(
+            check_writable(Ok(false)).await,
+            Err(NotReady("no writable PostgreSQL primary answers"))
+        );
+        assert_eq!(
+            check_writable(Err(())).await,
             Err(NotReady("PostgreSQL did not answer"))
         );
     }

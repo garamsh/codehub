@@ -34,9 +34,11 @@ use oauth_client::{Authentication, InvalidClient, TokenClient};
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 
+mod postgres;
 mod readiness;
 mod settings;
 
+pub use postgres::{MigrationOptions, PostgresSettings, ReplicaOptions};
 use readiness::Probe;
 pub use settings::{
     AllOptions, ApiOptions, Authorisation, AuthorisationOptions, AuthzenClientAuthentication,
@@ -253,6 +255,10 @@ struct Http<'a> {
     routes: Routes,
     listen: SocketAddr,
     database: &'a DatabaseOptions,
+    /// The read replica serving the immutable reads, if any.
+    read_url: Option<&'a str>,
+    /// Where migrations are applied, for the role that migrates.
+    migration: Option<&'a MigrationOptions>,
     objects: &'a ObjectOptions,
     landing: &'a LandingOptions,
     /// How long answering a creation waits for its change, in seconds.
@@ -268,13 +274,15 @@ struct Http<'a> {
 /// An [`Error`] naming the step that failed.
 pub async fn run(cli: Cli) -> Result<(), Error> {
     match cli.role {
-        Role::Migrate(options) => migrate(&options.database).await,
+        Role::Migrate(options) => migrate(&options.database, &options.migration).await,
         Role::Worker(options) => work(&options).await,
         Role::Api(options) => {
             serve(Http {
                 routes: Routes::Api,
                 listen: options.listen.listen,
                 database: &options.database,
+                read_url: options.replica.postgres_read_url.as_deref(),
+                migration: None,
                 objects: &options.objects,
                 landing: &options.landing,
                 delivery_wait: options.delivery.directory_delivery_wait,
@@ -287,6 +295,8 @@ pub async fn run(cli: Cli) -> Result<(), Error> {
                 routes: Routes::RunnerApi,
                 listen: options.listen.listen,
                 database: &options.database,
+                read_url: options.replica.postgres_read_url.as_deref(),
+                migration: None,
                 objects: &options.objects,
                 landing: &options.landing,
                 delivery_wait: UNUSED_DELIVERY_WAIT,
@@ -299,6 +309,8 @@ pub async fn run(cli: Cli) -> Result<(), Error> {
                 routes: Routes::All,
                 listen: options.listen.listen,
                 database: &options.database,
+                read_url: options.replica.postgres_read_url.as_deref(),
+                migration: Some(&options.migration),
                 objects: &options.objects,
                 landing: &options.landing,
                 delivery_wait: options.delivery.directory_delivery_wait,
@@ -311,14 +323,12 @@ pub async fn run(cli: Cli) -> Result<(), Error> {
 
 /// Opens the pool `options` names.
 async fn connect(options: &DatabaseOptions) -> Result<Database, Error> {
-    Database::connect(&options.postgres_url, options.postgres_pool_size)
-        .await
-        .map_err(Error::Database)
+    postgres::open(options, None).await
 }
 
 /// Applies the migrations the database has not had.
-async fn migrate(options: &DatabaseOptions) -> Result<(), Error> {
-    connect(options)
+async fn migrate(options: &DatabaseOptions, migration: &MigrationOptions) -> Result<(), Error> {
+    postgres::open_for_migration(options, migration)
         .await?
         .migrate()
         .await
@@ -374,6 +384,8 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
         routes,
         listen,
         database: database_options,
+        read_url,
+        migration,
         objects: object_options,
         landing,
         delivery_wait,
@@ -385,10 +397,10 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
         selection.identity,
         Duration::from_secs(serving.identity.jwks_min_refetch_seconds),
     )?;
-    let database = connect(database_options).await?;
-    if routes == Routes::All {
-        database.migrate().await.map_err(Error::Database)?;
+    if let Some(migration) = migration {
+        migrate(database_options, migration).await?;
     }
+    let database = postgres::open(database_options, read_url).await?;
     let (authorisation, changes): Selected = match selection.authorisation {
         AuthorisationMode::Postgres => (
             Arc::new(PostgresAuthorisationDecision::new(&database)),

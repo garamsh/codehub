@@ -16,6 +16,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use oauth_client::Authentication;
 
 use crate::Error;
+use crate::postgres::{MigrationOptions, PostgresSettings, ReplicaOptions};
 
 /// The default of `--runner-claim-hold`, in seconds.
 const DEFAULT_CLAIM_HOLD: u64 = 30;
@@ -158,6 +159,8 @@ pub struct ApiOptions {
     #[command(flatten)]
     pub(crate) objects: ObjectOptions,
     #[command(flatten)]
+    pub(crate) replica: ReplicaOptions,
+    #[command(flatten)]
     pub(crate) identity: IdentityOptions,
     #[command(flatten)]
     pub(crate) authorisation: AuthorisationOptions,
@@ -180,6 +183,8 @@ pub struct RunnerApiOptions {
     pub(crate) database: DatabaseOptions,
     #[command(flatten)]
     pub(crate) objects: ObjectOptions,
+    #[command(flatten)]
+    pub(crate) replica: ReplicaOptions,
     #[command(flatten)]
     pub(crate) identity: IdentityOptions,
     #[command(flatten)]
@@ -210,6 +215,8 @@ pub struct WorkerOptions {
 pub struct MigrateOptions {
     #[command(flatten)]
     pub(crate) database: DatabaseOptions,
+    #[command(flatten)]
+    pub(crate) migration: MigrationOptions,
 }
 
 /// The options of `all`, which is every option there is.
@@ -220,7 +227,11 @@ pub struct AllOptions {
     #[command(flatten)]
     pub(crate) database: DatabaseOptions,
     #[command(flatten)]
+    pub(crate) migration: MigrationOptions,
+    #[command(flatten)]
     pub(crate) objects: ObjectOptions,
+    #[command(flatten)]
+    pub(crate) replica: ReplicaOptions,
     #[command(flatten)]
     pub(crate) identity: IdentityOptions,
     #[command(flatten)]
@@ -256,6 +267,9 @@ pub struct DatabaseOptions {
     /// clients use (ADR 0037).
     #[arg(long, env = "CODEHUB_POSTGRES_POOL_SIZE", default_value_t = 40)]
     pub postgres_pool_size: u32,
+    #[command(flatten)]
+    /// How the pool to the primary behaves (ADR 0054).
+    pub postgres: PostgresSettings,
 }
 
 /// The object store, and what a client may put in it.
@@ -439,10 +453,12 @@ impl fmt::Debug for DatabaseOptions {
         let Self {
             postgres_url,
             postgres_pool_size,
+            postgres,
         } = self;
         f.debug_struct("DatabaseOptions")
             .field("postgres_url", &redact_url(postgres_url))
             .field("postgres_pool_size", postgres_pool_size)
+            .field("postgres", postgres)
             .finish()
     }
 }
@@ -848,7 +864,7 @@ const REDACTED: &str = "<redacted>";
 /// The URL with the password of its userinfo, and any `password` query parameter, replaced by
 /// `<redacted>`. A string that is not `scheme://authority...` is returned as `<redacted>` whole,
 /// since it cannot be told where a secret sits in it.
-fn redact_url(url: &str) -> String {
+pub(crate) fn redact_url(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return REDACTED.to_owned();
     };
@@ -916,6 +932,21 @@ mod tests {
             database: DatabaseOptions {
                 postgres_url: postgres_url.to_owned(),
                 postgres_pool_size: 10,
+                postgres: PostgresSettings {
+                    postgres_acquire_timeout: 5,
+                    postgres_statement_timeout: 30,
+                    postgres_statement_cache: 100,
+                },
+            },
+            replica: ReplicaOptions {
+                postgres_read_url: Some(
+                    "postgres://reader:replica-secret-value@replica.example/db".to_owned(),
+                ),
+            },
+            migration: MigrationOptions {
+                postgres_migrate_url: Some(
+                    "postgres://migrator:migrate-secret-value@direct.example/db".to_owned(),
+                ),
             },
             landing: LandingOptions {
                 landing_attempts: LandingAttempts::DEFAULT,
@@ -1054,7 +1085,7 @@ mod tests {
     #[test]
     fn each_role_takes_the_options_it_uses_and_no_others() {
         let all = options_of("all");
-        assert_eq!(all.len(), 38, "{all:?}");
+        assert_eq!(all.len(), 43, "{all:?}");
         let without = |role: &str, left_out: &[&str]| {
             let taken = options_of(role);
             let expected: Vec<String> = all
@@ -1093,13 +1124,15 @@ mod tests {
         let directory_settings = ["directory-changes", "directory-garam-url"];
         let creation_wait = ["directory-delivery-wait"];
         let landing = ["landing-attempts"];
+        let replica = ["postgres-read-url"];
+        let migration = ["postgres-migrate-url"];
         let concat = |parts: &[&[&'static str]]| -> Vec<&'static str> {
             parts.iter().flat_map(|part| part.iter().copied()).collect()
         };
-        without("api", &concat(&[&runner_settings]));
+        without("api", &concat(&[&runner_settings, &migration]));
         without(
             "runner-api",
-            &concat(&[&directory_settings, &creation_wait]),
+            &concat(&[&directory_settings, &creation_wait, &migration]),
         );
         without(
             "worker",
@@ -1110,11 +1143,20 @@ mod tests {
                 &runner_settings,
                 &creation_wait,
                 &landing,
+                &replica,
+                &migration,
             ]),
         );
         assert_eq!(
             options_of("migrate"),
-            ["postgres-pool-size", "postgres-url"]
+            [
+                "postgres-acquire-timeout",
+                "postgres-migrate-url",
+                "postgres-pool-size",
+                "postgres-statement-cache",
+                "postgres-statement-timeout",
+                "postgres-url",
+            ]
         );
     }
 
@@ -1213,6 +1255,8 @@ mod tests {
         assert!(!shown.contains("pg-secret-value"), "{shown}");
         assert!(!shown.contains("introspection-secret-value"), "{shown}");
         assert!(!shown.contains("authzen-secret-value"), "{shown}");
+        assert!(!shown.contains("replica-secret-value"), "{shown}");
+        assert!(!shown.contains("migrate-secret-value"), "{shown}");
         assert!(shown.contains("introspection-client-visible"), "{shown}");
         assert!(shown.contains("authzen-client-visible"), "{shown}");
         assert!(shown.contains("bucket-visible"), "{shown}");
@@ -1275,7 +1319,7 @@ mod tests {
             without.contains("postgres://db.example/codehub"),
             "{without}"
         );
-        assert!(!without.contains("<redacted>@"), "{without}");
+        assert!(!without.contains("<redacted>@db.example"), "{without}");
     }
 
     /// A change to the settings of a case.
