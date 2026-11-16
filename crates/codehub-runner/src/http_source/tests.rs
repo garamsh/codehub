@@ -652,7 +652,11 @@ fn instance(document: &Value, schema: &Value) -> Value {
     }
     let kind = match &schema["type"] {
         Value::Array(kinds) => kinds.iter().find(|k| *k != "null").unwrap().clone(),
-        kind => kind.clone(),
+        kind @ (Value::Null
+        | Value::Bool(_)
+        | Value::Number(_)
+        | Value::String(_)
+        | Value::Object(_)) => kind.clone(),
     };
     match kind.as_str().unwrap() {
         "string" if schema["pattern"].is_string() => json!(format!("sha256:{}", "0".repeat(64))),
@@ -692,7 +696,7 @@ fn conforms(document: &Value, value: &Value, schema: &Value) -> Result<(), Strin
     let kinds: Vec<&str> = match &schema["type"] {
         Value::Array(kinds) => kinds.iter().filter_map(Value::as_str).collect(),
         Value::String(kind) => vec![kind],
-        _ => Vec::new(),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_) => Vec::new(),
     };
     let fits = |kind: &str| match kind {
         "null" => value.is_null(),
