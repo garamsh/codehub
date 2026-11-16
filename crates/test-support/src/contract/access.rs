@@ -712,7 +712,7 @@ pub async fn a_run_grant_with_a_prefix_is_refused<H: Deployment>() {
 
     assert_eq!(
         admin.try_grant(&bob, "src", Access::Run).await,
-        Err(MembersError::RunGrantOnPrefix)
+        Err(MembersError::WholeRepositoryGrantOnPrefix)
     );
     // Control: a `write` grant on the same prefix is given, and `run` on the whole repository.
     assert_eq!(admin.try_grant(&bob, "src", Access::Write).await, Ok(()));
@@ -721,4 +721,113 @@ pub async fn a_run_grant_with_a_prefix_is_refused<H: Deployment>() {
         decision_on_repository(&harness, &repo, &bob, Action::Run).await,
         Decision::Allow
     );
+}
+
+/// A member holding `image_pull` is allowed `image_pull` and not `image_push`, and the other way
+/// round; neither action is allowed to a holder of `write` or to a non member, an admin is
+/// allowed both, and neither is asked of a path.
+pub async fn an_image_grant_allows_its_own_action_and_no_other<H: Deployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let bob = harness.caller("bob").await;
+    let cat = harness.caller("cat").await;
+    let eve = harness.caller("eve").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let admin = Admin {
+        harness: &harness,
+        caller: &ada,
+    };
+    admin.add(&bob, Role::Member).await;
+    admin.add(&cat, Role::Member).await;
+    admin.grant(&bob, "", Access::Write).await;
+    admin.grant(&bob, "", Access::ImagePull).await;
+    admin.grant(&cat, "", Access::ImagePush).await;
+
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &bob, Action::ImagePull).await,
+        Decision::Allow
+    );
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &cat, Action::ImagePush).await,
+        Decision::Allow
+    );
+    // Neither includes the other, and the holder of `write` holds neither by it.
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &bob, Action::ImagePush).await,
+        Decision::Deny
+    );
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &cat, Action::ImagePull).await,
+        Decision::Deny
+    );
+    // Neither grants a plain action.
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &cat, Action::Read).await,
+        Decision::Deny
+    );
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &cat, Action::Run).await,
+        Decision::Deny
+    );
+    // A non member is denied, an admin allowed both.
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &eve, Action::ImagePull).await,
+        Decision::Deny
+    );
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &ada, Action::ImagePull).await,
+        Decision::Allow
+    );
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &ada, Action::ImagePush).await,
+        Decision::Allow
+    );
+
+    // Control: a holder of `write` and `run` only holds neither image action.
+    admin.ungrant(&bob, "", Access::ImagePull).await;
+    admin.grant(&bob, "", Access::Run).await;
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &bob, Action::ImagePull).await,
+        Decision::Deny
+    );
+
+    let resource = Resource::Path {
+        organisation: acme(),
+        name: "app".parse().unwrap(),
+        repository: repo.id,
+        path: "src/a".parse().unwrap(),
+    };
+    for caller in [&ada, &cat] {
+        for action in [Action::ImagePull, Action::ImagePush] {
+            assert_eq!(
+                harness
+                    .authorisation()
+                    .decide(caller.principal(), action, &resource)
+                    .await,
+                Ok(Decision::Deny)
+            );
+        }
+    }
+}
+
+/// An image grant with a non empty prefix is refused, and one for the whole repository is given.
+pub async fn an_image_grant_with_a_prefix_is_refused<H: Deployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let bob = harness.caller("bob").await;
+    let _repo = harness.repository(&ada, "acme").await;
+    let admin = Admin {
+        harness: &harness,
+        caller: &ada,
+    };
+    admin.add(&bob, Role::Member).await;
+
+    for access in [Access::ImagePull, Access::ImagePush] {
+        assert_eq!(
+            admin.try_grant(&bob, "src", access).await,
+            Err(MembersError::WholeRepositoryGrantOnPrefix)
+        );
+        // Control: the same grant for the whole repository is given.
+        assert_eq!(admin.try_grant(&bob, "", access).await, Ok(()));
+    }
 }

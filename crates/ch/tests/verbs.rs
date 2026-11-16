@@ -109,6 +109,18 @@ async fn gives_a_member_the_run_grant_for_the_whole_repository() {
 }
 
 #[tokio::test]
+async fn gives_a_member_the_image_grants_for_the_whole_repository() {
+    let server = serve().await;
+    let ada = server.user("ada");
+    repository(&ada).await;
+    ada.ok(&["member", "add", "bob", "--image-pull", "--image-push"])
+        .await;
+    // The control: the grants given again are not an error, and removing the member takes them.
+    ada.ok(&["member", "add", "bob", "--image-pull"]).await;
+    ada.ok(&["member", "remove", "bob"]).await;
+}
+
+#[tokio::test]
 async fn names_the_path_of_a_landing_the_caller_may_no_longer_write_and_exits_4() {
     let server = serve().await;
     let ada = server.user("ada");

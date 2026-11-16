@@ -11,8 +11,8 @@ use crate::membership::{Member, Members};
 
 /// The ADR 0021 policy evaluated over the memberships of a [`crate::MemoryMembership`]: an admin
 /// may take every action in its organisation; a member's grants allow `read` and `write` on the
-/// paths they cover, and a member holding any grant on a repository may read, write or run it
-/// as a whole as that grant allows; `run` is asked of a repository only (ADR 0051).
+/// paths they cover, and a member holding any grant on a repository may read, write or run it, or pull or push its images,
+/// as a whole as that grant allows; `run` and the image actions are asked of a repository only (ADR 0051, 0053).
 /// [`MemoryAuthorisationDecision::answer`] fixes the decision for an
 /// action ahead of that policy, as an outside decision point that keeps its own entities would.
 pub struct MemoryAuthorisationDecision {
@@ -41,17 +41,23 @@ const fn covers(held: Access, asked: Action) -> bool {
     match (held, asked) {
         (Access::Write, Action::Read | Action::Write)
         | (Access::Read, Action::Read)
-        | (Access::Run, Action::Run) => true,
+        | (Access::Run, Action::Run)
+        | (Access::ImagePull, Action::ImagePull)
+        | (Access::ImagePush, Action::ImagePush) => true,
         (
-            Access::Write | Access::Read | Access::Run,
+            Access::Write | Access::Read | Access::Run | Access::ImagePull | Access::ImagePush,
             Action::CreateOrganisation
             | Action::CreateRepository
             | Action::AdministerMembers
             | Action::AdministerRunners,
         )
-        | (Access::Read, Action::Write | Action::Run)
-        | (Access::Write, Action::Run)
-        | (Access::Run, Action::Read | Action::Write) => false,
+        | (Access::Read, Action::Write | Action::Run | Action::ImagePull | Action::ImagePush)
+        | (Access::Write, Action::Run | Action::ImagePull | Action::ImagePush)
+        | (Access::Run, Action::Read | Action::Write | Action::ImagePull | Action::ImagePush)
+        | (Access::ImagePull, Action::Read | Action::Write | Action::Run | Action::ImagePush)
+        | (Access::ImagePush, Action::Read | Action::Write | Action::Run | Action::ImagePull) => {
+            false
+        }
     }
 }
 
@@ -64,7 +70,10 @@ fn permits(member: &Member, action: Action, resource: &Resource) -> bool {
             )
         }
         (Role::Admin, Resource::Repository { .. }) => {
-            matches!(action, Action::Read | Action::Write | Action::Run)
+            matches!(
+                action,
+                Action::Read | Action::Write | Action::Run | Action::ImagePull | Action::ImagePush
+            )
         }
         (Role::Admin, Resource::Path { .. }) => matches!(action, Action::Read | Action::Write),
         (Role::Member, Resource::Organisation(_)) => false,
@@ -78,7 +87,7 @@ fn permits(member: &Member, action: Action, resource: &Resource) -> bool {
                 repository, path, ..
             },
         ) => {
-            action != Action::Run
+            !matches!(action, Action::Run | Action::ImagePull | Action::ImagePush)
                 && member.grants.iter().any(|grant| {
                     grant.repository == *repository
                         && covers(grant.access, action)

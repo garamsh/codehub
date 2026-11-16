@@ -186,6 +186,8 @@ impl From<AccessError> for Problem {
                     Access::Read => "read",
                     Access::Write => "write",
                     Access::Run => "run",
+                    Access::ImagePull => "image_pull",
+                    Access::ImagePush => "image_push",
                 };
                 Self::naming(
                     StatusCode::FORBIDDEN,
@@ -215,7 +217,9 @@ impl From<MembersError> for Problem {
             MembersError::Access(error) => error.into(),
             MembersError::Directory(error) => error.into(),
             MembersError::Membership(error) => error.into(),
-            MembersError::RunGrantOnPrefix => Self::new(StatusCode::BAD_REQUEST, error.to_string()),
+            MembersError::WholeRepositoryGrantOnPrefix => {
+                Self::new(StatusCode::BAD_REQUEST, error.to_string())
+            }
             MembersError::ExternallyAdministered => Self::new(
                 StatusCode::FORBIDDEN,
                 "members are administered outside codehub",

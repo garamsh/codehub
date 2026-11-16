@@ -49,8 +49,8 @@ pub trait Members: Send + Sync {
     /// [`MembersError::Directory`] with [`DirectoryError::RepositoryNotFound`] where the
     /// organisation holds no such repository, and [`MembersError::Membership`] with
     /// [`MembershipError::NotAMember`] where `principal` is not a member, and
-    /// [`MembersError::RunGrantOnPrefix`] where `access` is `run` and `prefix` is not the whole
-    /// repository.
+    /// [`MembersError::WholeRepositoryGrantOnPrefix`] where `access` is `run`, `image_pull` or
+    /// `image_push` and `prefix` is not the whole repository.
     async fn add_grant(
         &self,
         caller: &Caller,
@@ -86,8 +86,9 @@ pub enum MembersError {
     Directory(DirectoryError),
     /// Membership refused or failed.
     Membership(MembershipError),
-    /// A `run` grant names a prefix other than the whole repository (ADR 0051).
-    RunGrantOnPrefix,
+    /// A `run`, `image_pull` or `image_push` grant names a prefix other than the whole
+    /// repository (ADR 0051, 0053).
+    WholeRepositoryGrantOnPrefix,
     /// Members are administered outside codehub, which keeps none.
     ExternallyAdministered,
 }
@@ -98,10 +99,10 @@ impl fmt::Display for MembersError {
             Self::Access(error) => write!(f, "{error}"),
             Self::Directory(error) => write!(f, "{error}"),
             Self::Membership(error) => write!(f, "{error}"),
-            Self::RunGrantOnPrefix => {
+            Self::WholeRepositoryGrantOnPrefix => {
                 write!(
                     f,
-                    "a run grant covers the whole repository, with an empty prefix"
+                    "a run, image_pull or image_push grant covers the whole repository, with an empty prefix"
                 )
             }
             Self::ExternallyAdministered => {
@@ -117,7 +118,7 @@ impl std::error::Error for MembersError {
             Self::Access(error) => Some(error),
             Self::Directory(error) => Some(error),
             Self::Membership(error) => Some(error),
-            Self::RunGrantOnPrefix | Self::ExternallyAdministered => None,
+            Self::WholeRepositoryGrantOnPrefix | Self::ExternallyAdministered => None,
         }
     }
 }

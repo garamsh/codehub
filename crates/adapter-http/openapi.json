@@ -449,7 +449,7 @@
             "description": "The grant was given."
           },
           "400": {
-            "description": "A name, path, address or body is malformed, or a `run` grant names a non-empty prefix.",
+            "description": "A name, path, address or body is malformed, or a `run`, `image_pull` or `image_push` grant names a non-empty prefix.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -563,7 +563,9 @@
               "enum": [
                 "read",
                 "write",
-                "run"
+                "run",
+                "image_pull",
+                "image_push"
               ]
             }
           }
@@ -3736,9 +3738,11 @@
             "enum": [
               "read",
               "write",
-              "run"
+              "run",
+              "image_pull",
+              "image_push"
             ],
-            "description": "`write` includes `read`. `run` includes neither and is held for the whole repository, so a `run` grant with a non-empty prefix is refused with 400."
+            "description": "`write` includes `read`. `run`, `image_pull` and `image_push` include nothing else and are held for the whole repository, so such a grant with a non-empty prefix is refused with 400. `image_pull` and `image_push` govern the image registry (ADR 0053)."
           }
         }
       },

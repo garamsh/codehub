@@ -510,6 +510,8 @@ async fn names_every_action_on_the_wire() {
         Action::Read,
         Action::Write,
         Action::Run,
+        Action::ImagePull,
+        Action::ImagePush,
     ] {
         adapter
             .decide(&subject, action, &org("acme"))
@@ -535,7 +537,9 @@ async fn names_every_action_on_the_wire() {
             "administer_members",
             "read",
             "write",
-            "run"
+            "run",
+            "image_pull",
+            "image_push"
         ]
     );
 }
@@ -1892,6 +1896,8 @@ async fn sends_garams_json_for_each_action_in_the_grn_profile() {
         (Action::Write, docs.clone()),
         (Action::Run, repository("acme", "app")),
         (Action::Run, docs),
+        (Action::ImagePull, repository("acme", "app")),
+        (Action::ImagePush, repository("acme", "app")),
     ];
 
     for (action, resource) in &cases {
@@ -1934,6 +1940,8 @@ async fn sends_garams_json_for_each_action_in_the_grn_profile() {
             ),
             request("codehub:repo.run", &repository, None),
             request("codehub:repo.run", &repository, None),
+            request("codehub:repo.image_pull", &repository, None),
+            request("codehub:repo.image_push", &repository, None),
         ]
     );
     assert_eq!(fixture.idp.rejections(), Vec::<String>::new());

@@ -19,11 +19,13 @@ pub enum RoleBody {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum AccessBody {
     Read,
     Write,
     Run,
+    ImagePull,
+    ImagePush,
 }
 
 #[derive(Deserialize)]
@@ -122,5 +124,7 @@ const fn access(body: &AccessBody) -> Access {
         AccessBody::Read => Access::Read,
         AccessBody::Write => Access::Write,
         AccessBody::Run => Access::Run,
+        AccessBody::ImagePull => Access::ImagePull,
+        AccessBody::ImagePush => Access::ImagePush,
     }
 }
