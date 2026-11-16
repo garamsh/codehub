@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use app::domain::address::Address;
 use app::domain::changeset::Changeset;
@@ -14,7 +14,8 @@ use crate::statements::Statements;
 
 /// How many changesets of `main` a settled swap looks through for its own.
 const SETTLE_DEPTH: usize = 1000;
-/// How long a settled swap waits for the backend that ran its statement to stop.
+/// How long a settled swap waits for the backend that ran its statement to stop, the retries of
+/// its looks included.
 const STOP_BOUND: Duration = Duration::from_secs(5);
 /// The pause between two looks at that backend.
 const STOP_POLL: Duration = Duration::from_millis(10);
@@ -33,8 +34,9 @@ fn swap_tag() -> String {
 /// The changeset log and the refs in PostgreSQL.
 ///
 /// A ref moves in one statement, so two moves of the same ref cannot interleave: the second finds
-/// the row the first left and moves nothing. The statement carries a tag of its attempt, and is not
-/// prepared, so the tag does not fill the statement cache. Where the connection fails after the
+/// the row the first left and moves nothing. The statement carries a tag of its attempt, so its
+/// text is new each time: with a statement cache it is prepared by name and the cache evicts it in
+/// turn, and with none it is sent unnamed (ADR 0054). Where the connection fails after the
 /// statement was sent, the backend that runs it may still commit it. The swap is settled in two
 /// steps: the backend is stopped, found by the tag in `pg_stat_activity` and not by a pid kept per
 /// connection, which a transaction pooler would make the wrong backend; then the swap is won
@@ -91,26 +93,30 @@ impl PostgresChangesetLog {
     /// it: a backend that is idle ran its statement to its end, and one that was ended rolled an
     /// unfinished transaction back, so the statement cannot commit after this returns.
     async fn stop_statement(&self, tag: &str) -> Result<(), sqlx::Error> {
-        let deadline = Instant::now() + STOP_BOUND;
-        loop {
-            let running = self
-                .statements
-                .query_scalar::<bool>(
-                    "select pg_terminate_backend(pid) from pg_stat_activity \
+        // A failover that leaves no connection for a moment is ridden out by the retry of each
+        // look, and the whole is bounded by STOP_BOUND, which no retry may outlast.
+        tokio::time::timeout(STOP_BOUND, async {
+            loop {
+                let running = retry::idempotent(|| async {
+                    self.statements
+                        .query_scalar::<bool>(
+                            "select pg_terminate_backend(pid) from pg_stat_activity \
                  where datname = current_database() and pid <> pg_backend_pid() \
                    and state <> 'idle' and position($1 in query) > 0",
-                )
-                .bind(tag)
-                .fetch_all(&self.pool)
+                        )
+                        .bind(tag)
+                        .fetch_all(&self.pool)
+                        .await
+                })
                 .await?;
-            if running.is_empty() {
-                return Ok(());
+                if running.is_empty() {
+                    return Ok(());
+                }
+                tokio::time::sleep(STOP_POLL).await;
             }
-            if Instant::now() >= deadline {
-                return Err(sqlx::Error::PoolTimedOut);
-            }
-            tokio::time::sleep(STOP_POLL).await;
-        }
+        })
+        .await
+        .unwrap_or(Err(sqlx::Error::PoolTimedOut))
     }
 
     /// The answer of a chain that ended without `base`: `None` where the log holds `base`, and
