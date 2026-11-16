@@ -481,7 +481,7 @@ async fn sends_the_mapped_request_for_each_resource_kind() {
             }),
             json!({
                 "subject": subject_value,
-                "action": {"name": "Run"},
+                "action": {"name": "run"},
                 "resource": {
                     "type": "repository",
                     "id": "acme/app",
@@ -530,7 +530,7 @@ async fn names_every_action_on_the_wire() {
             "administer_members",
             "read",
             "write",
-            "Run"
+            "run"
         ]
     );
 }

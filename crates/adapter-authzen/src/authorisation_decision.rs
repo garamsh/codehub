@@ -403,7 +403,7 @@ fn action_name(profile: Profile, action: Action) -> Result<&'static str, Authori
         (Profile::Plain, Action::AdministerRunners) => "administer_runners",
         (Profile::Plain, Action::Read) => "read",
         (Profile::Plain, Action::Write) => "write",
-        (Profile::Plain, Action::Run) => "Run",
+        (Profile::Plain, Action::Run) => "run",
         (Profile::Grn, Action::CreateOrganisation) => "codehub:org.use",
         (Profile::Grn, Action::CreateRepository) => "codehub:repo.create",
         (Profile::Grn, Action::AdministerRunners) => "codehub:runner.administer",
