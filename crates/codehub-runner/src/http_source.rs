@@ -444,6 +444,9 @@ impl HttpJobSource {
             .post(format!("{}{path}", self.server))
             .bearer_auth(token)
             .timeout(timeout);
+        if let Some(traceparent) = crate::traceparent::for_path(path) {
+            request = request.header("traceparent", traceparent);
+        }
         if let Some(body) = body {
             request = request.json(body);
         }

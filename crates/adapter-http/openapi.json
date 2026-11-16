@@ -38,6 +38,23 @@
         }
       }
     },
+    "/metrics": {
+      "get": {
+        "summary": "The process's metrics in the Prometheus text format. Needs no token; it is outside /v1 and served on every role's listen address.",
+        "responses": {
+          "200": {
+            "description": "The metrics.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/readyz": {
       "get": {
         "summary": "Readiness: PostgreSQL and the object store each answer within 2 seconds. Needs no token.",

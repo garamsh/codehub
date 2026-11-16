@@ -702,6 +702,7 @@ async fn documents_every_route_and_routes_every_documented_operation() {
         .iter()
         .chain(adapter_http::RUNNER_ROUTES)
         .chain(adapter_http::HEALTH_ROUTES)
+        .chain(adapter_http::METRICS_ROUTES)
         .flat_map(|(path, methods)| {
             methods
                 .iter()
@@ -724,6 +725,11 @@ async fn documents_every_route_and_routes_every_documented_operation() {
         }
         uri.push_str(rest);
         let method = Method::from_bytes(method.to_uppercase().as_bytes()).unwrap();
+        if uri == "/metrics" {
+            // Its body is text, not JSON: the scrape test below reads it.
+            assert_eq!(scrape("/metrics").await.0, StatusCode::OK);
+            continue;
+        }
         let probe = uri == "/healthz" || uri == "/readyz";
         let reply = if probe {
             send(health(None), method.clone(), &uri, None, None).await
@@ -742,6 +748,58 @@ async fn documents_every_route_and_routes_every_documented_operation() {
     let unknown = api.send(Method::GET, "/v1/nothing", None, None).await;
     assert_eq!(unknown.status, StatusCode::NOT_FOUND);
     assert_eq!(unknown.content_type, PROBLEM);
+}
+
+/// A scrape that renders a fixed text.
+#[cfg(test)]
+struct Rendered(&'static str);
+
+#[cfg(test)]
+impl adapter_http::Scrape for Rendered {
+    fn render(&self) -> String {
+        self.0.to_owned()
+    }
+}
+
+/// The status, content type and text of a GET of `uri` from the `/metrics` router, sent with no
+/// token.
+#[cfg(test)]
+async fn scrape(uri: &str) -> (StatusCode, String, String) {
+    use tower::ServiceExt;
+    let router = adapter_http::metrics_router(Arc::new(Rendered("codehub_up 1\n")));
+    let request = axum::http::Request::builder()
+        .uri(uri)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .map(|value| value.to_str().unwrap().to_owned())
+        .unwrap_or_default();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        content_type,
+        String::from_utf8(bytes.to_vec()).unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn serves_the_scrape_outside_v1_without_a_token_and_only_from_its_router() {
+    let (status, content_type, text) = scrape("/metrics").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.starts_with("text/plain"), "{content_type}");
+    assert_eq!(text, "codehub_up 1\n");
+
+    // The controls: the API routers do not serve it, and a `/v1` path is not the scrape.
+    let api = Api::new();
+    let absent = api.send(Method::GET, "/metrics", None, None).await;
+    assert_eq!(absent.status, StatusCode::NOT_FOUND);
+    assert_eq!(scrape("/v1/metrics").await.0, StatusCode::NOT_FOUND);
 }
 
 /// Readiness that holds, or fails with `reason`.
