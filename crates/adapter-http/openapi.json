@@ -2984,7 +2984,15 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/JobResult"
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/JobResult"
+                  },
+                  {
+                    "$ref": "#/components/schemas/RunReport"
+                  }
+                ],
+                "description": "A check's job takes `JobResult` and a run's job takes `RunReport`; the server tells them apart by the job. A body that does not fit the job's kind is a 400."
               }
             }
           }
@@ -4160,6 +4168,10 @@
               "$ref": "#/components/schemas/ProducedFile"
             },
             "description": "The files the command left under the check's caches, already uploaded; read only where the status is `passed`."
+          },
+          "objects": {
+            "$ref": "#/components/schemas/ObjectCounts",
+            "description": "How many objects the runner fetched and already held; absent from older runners."
           }
         }
       },
@@ -4721,6 +4733,112 @@
           }
         }
       },
+      "ObjectCounts": {
+        "type": "object",
+        "required": [
+          "downloaded",
+          "from_cache"
+        ],
+        "properties": {
+          "downloaded": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Objects the runner fetched from the store."
+          },
+          "from_cache": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Objects the runner already held."
+          }
+        }
+      },
+      "RunReport": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "exit_code",
+          "stdout",
+          "stderr",
+          "objects",
+          "outputs",
+          "caches",
+          "changes",
+          "refused"
+        ],
+        "description": "A runner's report of how a run's job ended, posted to the result route of a job that is a run. The server builds the output tree and each cache path's tree from `outputs` and `caches`.",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "exited",
+              "timed_out",
+              "cancelled",
+              "executor_failed"
+            ],
+            "description": "The same as `RunResult.outcome`; the runner decides it."
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The command's exit code; 128 plus the signal where a signal ended it; null unless the outcome is `exited`."
+          },
+          "stdout": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunStream"
+              }
+            ],
+            "description": "The command's standard output, already uploaded; null where the command never started."
+          },
+          "stderr": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunStream"
+              }
+            ],
+            "description": "The command's standard error, already uploaded; null where the command never started."
+          },
+          "objects": {
+            "$ref": "#/components/schemas/ObjectCounts"
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProducedFile"
+            },
+            "description": "The files the command left under the run's outputs, already uploaded."
+          },
+          "caches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProducedFile"
+            },
+            "description": "The files the command left under the run's cache paths, already uploaded."
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunChange"
+            },
+            "description": "What the command changed, as `RunResult.changes` says."
+          },
+          "refused": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Sent or `add` paths that hold anything other than a regular file, as `RunResult.refused` says."
+          }
+        }
+      },
       "JobUploads": {
         "type": "object",
         "required": [
@@ -4921,23 +5039,7 @@
             "description": "Set by #259."
           },
           "objects": {
-            "type": "object",
-            "required": [
-              "downloaded",
-              "from_cache"
-            ],
-            "properties": {
-              "downloaded": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "Objects the runner fetched from the store. Set by #259."
-              },
-              "from_cache": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "Objects the runner already held. Set by #259."
-              }
-            }
+            "$ref": "#/components/schemas/ObjectCounts"
           },
           "output_tree": {
             "oneOf": [
