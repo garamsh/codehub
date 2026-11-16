@@ -11,6 +11,7 @@ use tokio::task::JoinSet;
 
 use crate::Failure;
 use crate::api::{Api, Session};
+use crate::cpu::{PostgresCpu, Sampler};
 use crate::proxy::Proxy;
 use crate::services::{self, Bucket, Database, Replica};
 use crate::stats::{ExternalCalls, Kind, Recorder, Report, succeeded};
@@ -142,6 +143,13 @@ impl Context {
 
     fn past_deadline(&self) -> bool {
         self.deadline.is_some_and(|end| Instant::now() >= end)
+    }
+
+    /// Whether a landing whose first land request was made at `began` started inside the window
+    /// and is still running after it.
+    fn outlasts_window(&self, began: Instant) -> bool {
+        self.deadline
+            .is_some_and(|end| began < end && Instant::now() >= end)
     }
 
     fn finished(&self, operations: u64) -> bool {
@@ -306,6 +314,7 @@ async fn measure(
         .as_ref()
         .map(|(introspection, decisions)| (introspection.count(), decisions.count()));
     let requests_before = context.api.requests();
+    let sampler = Sampler::start().await?;
     let started = Instant::now();
     if let Limit::Duration(length) = plan.limit {
         context.deadline = Some(started + length);
@@ -327,6 +336,7 @@ async fn measure(
         failure = watch(&mut replicas) => return Err(failure),
     };
     let elapsed = started.elapsed();
+    let cpu = sampler.stop().await?;
 
     // A replica that died at the very end is not seen by the watch.
     for replica in &mut replicas {
@@ -339,6 +349,7 @@ async fn measure(
     }
 
     let mut report = total.report(scenario.name(), plan.agents, elapsed);
+    report.postgres_cpu = Some(PostgresCpu::of(cpu));
     if let (Some((introspection, decisions)), Some((introspection_before, decisions_before))) =
         (proxies, before)
     {
@@ -562,6 +573,7 @@ async fn land(
     let mut lost_swaps = 0;
     let mut conflicts = 0;
     let mut draft: Option<String> = None;
+    let mut first_land: Option<Instant> = None;
     loop {
         let name = if let Some(name) = &draft {
             name.clone()
@@ -576,10 +588,14 @@ async fn land(
             name
         };
         let started = Instant::now();
+        let began = *first_land.get_or_insert(started);
         let landing = session.land(&name, "load").await;
         recorder.record(Kind::Land, started.elapsed(), landing.status);
         if succeeded(landing.status) {
-            recorder.landed(lost_swaps, conflicts);
+            recorder.landed(began.elapsed(), lost_swaps, conflicts);
+            if context.outlasts_window(began) {
+                recorder.ran_past_window();
+            }
             return Outcome::Done;
         }
         if landing.status != 409 {
@@ -594,6 +610,9 @@ async fn land(
         }
         if context.past_deadline() {
             recorder.gave_up(lost_swaps, conflicts);
+            if context.outlasts_window(began) {
+                recorder.ran_past_window();
+            }
             return Outcome::Cut;
         }
         if lost_swaps + conflicts >= ATTEMPTS {
