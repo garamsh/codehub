@@ -9,14 +9,19 @@
 
 use std::time::Duration;
 
+use tokio::sync::Notify;
+
+/// Woken where a statement failed in a way a failover explains, so the supervisor of each
+/// [`Database`](crate::Database) looks for the primary at once and does not wait for its next poll.
+/// It is shared by the databases of a process: a supervisor woken for another's failure asks its
+/// own server, finds it healthy and waits again.
+pub(crate) static FAILOVER_SUSPECTED: Notify = Notify::const_new();
+
 /// The attempts made in all, the first included.
 const ATTEMPTS: u32 = 4;
 
 /// The wait before the second attempt; it doubles up to [`LONGEST`].
 const FIRST: Duration = Duration::from_millis(50);
-
-/// The longest wait between two attempts.
-const LONGEST: Duration = Duration::from_millis(400);
 
 /// Whether `error` proves the statement that failed with it was not applied.
 pub(crate) fn nothing_applied(error: &sqlx::Error) -> bool {
@@ -26,6 +31,27 @@ pub(crate) fn nothing_applied(error: &sqlx::Error) -> bool {
             .is_some_and(|code| matches!(&*code, "40001" | "40P01" | "25006"));
     }
     matches!(error, sqlx::Error::PoolTimedOut)
+}
+
+/// Whether `error` is one a failover explains: a standby refused the statement (25006), or the
+/// connection was lost or the server went away.
+fn failover_suspected(error: &sqlx::Error) -> bool {
+    if let sqlx::Error::Database(error) = error {
+        return error.code().is_some_and(|code| {
+            matches!(&*code, "25006" | "57P01" | "57P02" | "57P03") || code.starts_with("08")
+        });
+    }
+    matches!(
+        error,
+        sqlx::Error::Io(_) | sqlx::Error::Tls(_) | sqlx::Error::WorkerCrashed
+    )
+}
+
+/// Wakes the supervisors where `error` is one a failover explains.
+pub(crate) fn suspect_failover(error: &sqlx::Error) {
+    if failover_suspected(error) {
+        FAILOVER_SUSPECTED.notify_waiters();
+    }
 }
 
 /// Whether `error` may pass on its own: the connection broke, the server restarted or went away
@@ -72,12 +98,16 @@ where
     let mut attempt = 1;
     loop {
         match operation().await {
-            Err(error) if attempt < ATTEMPTS && retryable(&error) => {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                suspect_failover(&error);
+                if attempt >= ATTEMPTS || !retryable(&error) {
+                    return Err(error);
+                }
                 tokio::time::sleep(wait).await;
-                wait = (wait * 2).min(LONGEST);
+                wait *= 2;
                 attempt += 1;
             }
-            outcome => return outcome,
         }
     }
 }
@@ -109,6 +139,36 @@ mod tests {
         })
         .await;
         assert_eq!(outcome.unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn a_failure_a_failover_explains_wakes_the_supervisors_before_the_statement_is_retried() {
+        let woken = FAILOVER_SUSPECTED.notified();
+        tokio::pin!(woken);
+        woken.as_mut().enable();
+
+        let _: Result<(), _> = idempotent(|| async { Err(sqlx::Error::WorkerCrashed) }).await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), woken)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failure_no_failover_explains_wakes_no_one() {
+        let woken = FAILOVER_SUSPECTED.notified();
+        tokio::pin!(woken);
+        woken.as_mut().enable();
+
+        let _: Result<(), _> = idempotent(|| async { Err(sqlx::Error::PoolTimedOut) }).await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), woken)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
