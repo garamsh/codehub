@@ -138,11 +138,15 @@ fn unavailable(event: &Event) -> bool {
 }
 
 /// Seconds from the fault until landings succeed for good: from `fault_at` to the first success
-/// after the last unavailable answer (`unavailable`). Zero where none came after the fault; none
-/// where the last request was unavailable, so the system did not recover.
+/// after the last unavailable answer (`unavailable`). Zero where none was unavailable after the
+/// fault; none where no landing succeeded at or after the fault, or the last request was
+/// unavailable, so the system did not recover.
 pub fn recovery(events: &[Event], fault_at: f64) -> Option<f64> {
     let mut after: Vec<&Event> = events.iter().filter(|event| event.at >= fault_at).collect();
     after.sort_by(|left, right| left.at.total_cmp(&right.at));
+    if !after.iter().any(|event| event.ok) {
+        return None;
+    }
     let Some(last_failure) = after.iter().rposition(|event| unavailable(event)) else {
         return Some(0.0);
     };
@@ -162,6 +166,9 @@ pub enum Verdict {
     Missing,
     /// The changeset is there with other content.
     Changed,
+    /// The changeset is in the file's history, but the file itself is not there: the history
+    /// refers to an object the store does not hold.
+    Dangling,
 }
 
 /// Whether `versions`, the history of `ack.path`, hold the landing `ack`.
@@ -300,9 +307,9 @@ async fn shell(command: &str) -> Result<(), Failure> {
 }
 
 /// Reads `acks` back from the server, the history and the file's bytes, and counts the verdicts:
-/// intact, missing and changed.
-async fn read_back(context: &Arc<Context>, acks: Vec<Ack>) -> Result<[u64; 3], Failure> {
-    let mut counts = [0_u64; 3];
+/// intact, missing, changed and dangling.
+async fn read_back(context: &Arc<Context>, acks: Vec<Ack>) -> Result<[u64; 4], Failure> {
+    let mut counts = [0_u64; 4];
     let mut pending = acks.into_iter();
     let mut running = JoinSet::new();
     loop {
@@ -327,8 +334,10 @@ async fn read_back(context: &Arc<Context>, acks: Vec<Ack>) -> Result<[u64; 3], F
                                 Verdict::Changed
                             });
                         }
+                        // In the history, yet the file is not there: not a landing that never
+                        // arrived, but one whose object is gone.
                         if status == 404 {
-                            return Some(Verdict::Missing);
+                            return Some(Verdict::Dangling);
                         }
                     } else if status == 404 {
                         return Some(Verdict::Missing);
@@ -348,6 +357,7 @@ async fn read_back(context: &Arc<Context>, acks: Vec<Ack>) -> Result<[u64; 3], F
             Verdict::Intact => 0,
             Verdict::Missing => 1,
             Verdict::Changed => 2,
+            Verdict::Dangling => 3,
         };
         if let Some(count) = counts.get_mut(slot) {
             *count += 1;
@@ -374,10 +384,14 @@ fn append_record(path: &Path, acks: &[Ack]) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Whether a read-back that counted `counts` (intact, missing, changed) passes.
-pub const fn passes(counts: [u64; 3], tolerate_missing: bool) -> bool {
-    let [intact, missing, changed] = counts;
-    changed == 0 && (tolerate_missing || missing == 0) && intact + missing + changed > 0
+/// Whether a read-back that counted `counts` (intact, missing, changed, dangling) passes. A
+/// dangling landing fails even where missing is tolerated: it is in the history without its object.
+pub const fn passes(counts: [u64; 4], tolerate_missing: bool) -> bool {
+    let [intact, missing, changed, dangling] = counts;
+    changed == 0
+        && dangling == 0
+        && (tolerate_missing || missing == 0)
+        && intact + missing + changed + dangling > 0
 }
 
 /// Prints an access token for the user the options name.
@@ -392,10 +406,11 @@ pub async fn verify(options: &Options, path: &Path) -> Result<bool, Failure> {
     let context = Arc::new(context(options).await?);
     let total = acks.len();
     let counts = read_back(&context, acks).await?;
-    let [intact, missing, changed] = counts;
+    let [intact, missing, changed, dangling] = counts;
     println!(
-        "verify {}: {total} recorded, {intact} intact, {missing} missing, {changed} changed (missing {})",
-        path.display(),
+        "read-back of {}: {total} recorded, {intact} intact, {missing} missing, {changed} changed, {dangling} dangling (missing {})",
+        path.file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
         if options.tolerate_missing {
             "tolerated"
         } else {
@@ -478,9 +493,9 @@ pub async fn run(options: &Options, agents: u32, seconds: u64) -> Result<bool, F
     }
     let total = acks.len();
     let counts = read_back(&context, acks).await?;
-    let [intact, missing, changed] = counts;
+    let [intact, missing, changed, dangling] = counts;
     println!(
-        "read-back: {total} acknowledged, {intact} intact, {missing} missing, {changed} changed"
+        "read-back: {total} acknowledged, {intact} intact, {missing} missing, {changed} changed, {dangling} dangling"
     );
     Ok(passed && passes(counts, false))
 }
@@ -602,15 +617,33 @@ mod tests {
 
     #[test]
     fn a_missing_landing_fails_unless_missing_is_tolerated() {
-        assert!(!passes([9, 1, 0], false));
-        assert!(passes([9, 1, 0], true));
-        assert!(passes([10, 0, 0], false));
+        assert!(!passes([9, 1, 0, 0], false));
+        assert!(passes([9, 1, 0, 0], true));
+        assert!(passes([10, 0, 0, 0], false));
     }
 
     #[test]
     fn a_changed_landing_and_an_empty_read_back_fail_even_where_missing_is_tolerated() {
-        assert!(!passes([9, 0, 1], true));
-        assert!(!passes([0, 0, 0], true));
+        assert!(!passes([9, 0, 1, 0], true));
+        assert!(!passes([0, 0, 0, 0], true));
+    }
+
+    #[test]
+    fn a_dangling_landing_fails_even_where_missing_is_tolerated() {
+        assert!(!passes([9, 0, 0, 1], true));
+        assert!(!passes([9, 0, 0, 1], false));
+    }
+
+    #[test]
+    fn recovery_needs_a_success_at_or_after_the_fault() {
+        let conflict = |at| Event {
+            at,
+            ok: false,
+            status: 409,
+        };
+        let events = [event(1.0, true), conflict(11.0), conflict(12.0)];
+        assert_eq!(recovery(&events, 10.0), None);
+        assert_eq!(recovery(&[event(1.0, true)], 10.0), None);
     }
 
     #[test]
