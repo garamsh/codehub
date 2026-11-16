@@ -1462,7 +1462,13 @@ async fn starts_reads_waits_for_and_cancels_a_run() {
     let too_long = api.get(&format!("{uri}?wait=61"), &ada).await;
     assert_eq!(too_long.status, StatusCode::BAD_REQUEST);
 
-    // Another principal is told the run does not exist, on every route.
+    // Another principal, a member who may read the repository, is told the run does not exist,
+    // on every route.
+    add_member(&api, &ada, "acme", "bob", "member").await;
+    assert_eq!(
+        grant_access(&api, &ada, "bob", "read").await,
+        StatusCode::NO_CONTENT
+    );
     let bob = api.token("bob");
     let files = format!("{uri}/files");
     for reply in [
@@ -1500,27 +1506,50 @@ async fn starts_reads_waits_for_and_cancels_a_run() {
     assert_eq!(latest.body["id"], id);
 }
 
+#[cfg(test)]
+async fn grant_access(api: &Api, admin: &str, name: &str, access: &str) -> StatusCode {
+    api.send(
+        Method::PUT,
+        "/v1/orgs/acme/repos/app/grants",
+        Some(admin),
+        Some(json!({
+            "issuer": "https://id.test",
+            "subject": name,
+            "prefix": "",
+            "access": access,
+        })),
+    )
+    .await
+    .status
+}
+
 #[tokio::test]
 async fn refuses_a_run_to_a_caller_without_the_run_action() {
     let api = Api::new();
     let ada = api.token("ada");
     api.repository(&ada, "acme").await;
-    assert!(
-        add_member(&api, &ada, "acme", "bob", "member")
-            .await
-            .is_success()
-    );
-    assert!(grant(&api, Method::PUT, &ada, "bob", "").await.is_success());
+    add_member(&api, &ada, "acme", "bob", "member").await;
+    grant_access(&api, &ada, "bob", "write").await;
     let bob = api.token("bob");
+    let start = format!("{RUNS}/drafts/work/runs");
+    api.stage(&ada, "acme", "work", "a.txt", "a\n").await;
     api.stage(&bob, "acme", "work", "a.txt", "a\n").await;
+    let first = api.post(&start, &ada, json!({"command": "make"})).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
 
-    let refused = api
-        .post(
-            &format!("{RUNS}/drafts/work/runs"),
-            &bob,
-            json!({"command": "make"}),
-        )
-        .await;
+    let refused = api.post(&start, &bob, json!({"command": "make"})).await;
 
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    // Control: once granted the run action, bob's run is accepted, and the refusal queued
+    // nothing: it took the next identifier.
+    assert_eq!(
+        grant_access(&api, &ada, "bob", "run").await,
+        StatusCode::NO_CONTENT
+    );
+    let accepted = api.post(&start, &bob, json!({"command": "make"})).await;
+    assert_eq!(accepted.status, StatusCode::OK, "{}", accepted.body);
+    assert_eq!(
+        accepted.body["id"].as_u64().unwrap(),
+        first.body["id"].as_u64().unwrap() + 1
+    );
 }
