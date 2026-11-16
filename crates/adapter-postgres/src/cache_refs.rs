@@ -1,4 +1,5 @@
 use app::domain::address::Address;
+use app::domain::draft::Instance;
 use app::domain::job::CacheRef;
 use app::domain::path::{Path, Prefix};
 use app::domain::repository::RepositoryId;
@@ -25,6 +26,14 @@ impl PostgresCacheRefs {
 
 fn backend(error: impl ToString) -> CacheRefsError {
     CacheRefsError::Backend(error.to_string())
+}
+
+fn instance_column(instance: Instance) -> Result<i64, CacheRefsError> {
+    i64::try_from(instance.get()).map_err(|_| {
+        backend(format!(
+            "workspace instance {instance} is outside the stored range"
+        ))
+    })
 }
 
 #[async_trait::async_trait]
@@ -100,5 +109,84 @@ impl CacheRefs for PostgresCacheRefs {
         .map_err(backend)?
         .rows_affected();
         Ok(moved == 1)
+    }
+
+    async fn workspace_cache_ref(
+        &self,
+        repository: RepositoryId,
+        instance: Instance,
+        path: &Path,
+    ) -> Result<Option<Address>, CacheRefsError> {
+        let tree = sqlx::query_scalar::<_, Vec<u8>>(
+            "select tree from workspace_cache_refs \
+             where repository = $1 and instance = $2 and cache_path = $3",
+        )
+        .bind(conversion::repository_column(repository).map_err(backend)?)
+        .bind(instance_column(instance)?)
+        .bind(conversion::path_column(path))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?;
+        tree.map(conversion::address).transpose().map_err(backend)
+    }
+
+    async fn create_workspace_cache_ref(
+        &self,
+        repository: RepositoryId,
+        instance: Instance,
+        path: &Path,
+        tree: Address,
+    ) -> Result<bool, CacheRefsError> {
+        let created = sqlx::query(
+            "insert into workspace_cache_refs (repository, instance, cache_path, tree) \
+             values ($1, $2, $3, $4) on conflict do nothing",
+        )
+        .bind(conversion::repository_column(repository).map_err(backend)?)
+        .bind(instance_column(instance)?)
+        .bind(conversion::path_column(path))
+        .bind(tree.digest().as_slice())
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?
+        .rows_affected();
+        Ok(created == 1)
+    }
+
+    async fn move_workspace_cache_ref(
+        &self,
+        repository: RepositoryId,
+        instance: Instance,
+        path: &Path,
+        from: Address,
+        to: Address,
+    ) -> Result<bool, CacheRefsError> {
+        let moved = sqlx::query(
+            "update workspace_cache_refs set tree = $4, updated_at = now() \
+             where repository = $1 and instance = $2 and cache_path = $3 and tree = $5",
+        )
+        .bind(conversion::repository_column(repository).map_err(backend)?)
+        .bind(instance_column(instance)?)
+        .bind(conversion::path_column(path))
+        .bind(to.digest().as_slice())
+        .bind(from.digest().as_slice())
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?
+        .rows_affected();
+        Ok(moved == 1)
+    }
+
+    async fn remove_workspace_cache_refs(
+        &self,
+        repository: RepositoryId,
+        instance: Instance,
+    ) -> Result<(), CacheRefsError> {
+        sqlx::query("delete from workspace_cache_refs where repository = $1 and instance = $2")
+            .bind(conversion::repository_column(repository).map_err(backend)?)
+            .bind(instance_column(instance)?)
+            .execute(&self.pool)
+            .await
+            .map_err(backend)?;
+        Ok(())
     }
 }

@@ -1,8 +1,10 @@
 //! Moving a cache ref: forward along `main`, to the tree a passing run left in its cache path
-//! (ADR 0049).
+//! (ADR 0049); and the cache refs of a workspace instance: seeded from `main`'s, moved after a run
+//! and removed when the instance closes (ADR 0051).
 
 use crate::domain::address::Address;
-use crate::domain::job::CacheRef;
+use crate::domain::draft::Instance;
+use crate::domain::job::{CacheRef, empty_output_tree};
 use crate::domain::path::{Path, Prefix};
 use crate::domain::repository::RepositoryId;
 use crate::port::driven::cache_refs::{CacheRefs, CacheRefsError};
@@ -51,4 +53,86 @@ where
         },
     )
     .await
+}
+
+/// The tree of the workspace cache ref of `path` of `instance` in `repository`, which a run
+/// starts from. Where the instance has no ref for `path`, creates it from the cache ref of `path`
+/// in the whole repository's folder, which is `main`'s, or empty where `main` has none. Where the
+/// ref is created between the read and the create, returns the tree that was created.
+///
+/// # Errors
+///
+/// The failure of the cache refs.
+pub async fn seed_workspace_cache_ref(
+    refs: &dyn CacheRefs,
+    repository: RepositoryId,
+    instance: Instance,
+    path: &Path,
+) -> Result<Address, CacheRefsError> {
+    if let Some(held) = refs.workspace_cache_ref(repository, instance, path).await? {
+        return Ok(held);
+    }
+    let seed = match refs.cache_ref(repository, &Prefix::whole(), path).await? {
+        Some(main) => main.tree,
+        None => empty_output_tree(),
+    };
+    if refs
+        .create_workspace_cache_ref(repository, instance, path, seed)
+        .await?
+    {
+        return Ok(seed);
+    }
+    Ok(refs
+        .workspace_cache_ref(repository, instance, path)
+        .await?
+        .unwrap_or(seed))
+}
+
+/// What a run did to one cache path of its workspace.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CacheOutcome {
+    /// The cache path.
+    pub path: Path,
+    /// The tree the run started from.
+    pub started: Address,
+    /// The tree the run left.
+    pub left: Address,
+}
+
+/// Moves the workspace cache ref of each of `caches` of `instance` in `repository` from the tree
+/// its run started from to the tree it left. Returns the paths of the refs that did not move
+/// because another run moved them meanwhile, whose newer trees stay.
+///
+/// # Errors
+///
+/// The failure of the cache refs.
+pub async fn move_workspace_cache_refs(
+    refs: &dyn CacheRefs,
+    repository: RepositoryId,
+    instance: Instance,
+    caches: &[CacheOutcome],
+) -> Result<Vec<Path>, CacheRefsError> {
+    let mut stale = Vec::new();
+    for cache in caches {
+        let moved = refs
+            .move_workspace_cache_ref(repository, instance, &cache.path, cache.started, cache.left)
+            .await?;
+        if !moved {
+            stale.push(cache.path.clone());
+        }
+    }
+    Ok(stale)
+}
+
+/// Removes the workspace cache refs of `instance` in `repository`, as its closing does.
+///
+/// # Errors
+///
+/// The failure of the cache refs.
+pub async fn remove_workspace_cache_refs(
+    refs: &dyn CacheRefs,
+    repository: RepositoryId,
+    instance: Instance,
+) -> Result<(), CacheRefsError> {
+    refs.remove_workspace_cache_refs(repository, instance).await
 }
