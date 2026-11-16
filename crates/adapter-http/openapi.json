@@ -5022,10 +5022,10 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/RunStream"
+                "$ref": "#/components/schemas/RunStreamRead"
               }
             ],
-            "description": "Null where the command never started or the run ended without a report."
+            "description": "The command's standard output with permission to download it; null where the command never started or the run ended without a report."
           },
           "stderr": {
             "oneOf": [
@@ -5033,10 +5033,10 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/RunStream"
+                "$ref": "#/components/schemas/RunStreamRead"
               }
             ],
-            "description": "Null where the command never started or the run ended without a report."
+            "description": "The command's standard error with permission to download it; null where the command never started or the run ended without a report."
           },
           "objects": {
             "$ref": "#/components/schemas/ObjectCounts"
@@ -5084,6 +5084,27 @@
           "cut": {
             "type": "boolean",
             "description": "Whether the stream was cut at the 64 MiB bound."
+          }
+        }
+      },
+      "RunStreamRead": {
+        "type": "object",
+        "required": [
+          "address",
+          "cut",
+          "download"
+        ],
+        "description": "A stream the runner reported, as the principal who started the run reads it.",
+        "properties": {
+          "address": {
+            "$ref": "#/components/schemas/Address"
+          },
+          "cut": {
+            "type": "boolean",
+            "description": "Whether the stream was cut at the 64 MiB bound."
+          },
+          "download": {
+            "$ref": "#/components/schemas/TransferGrant"
           }
         }
       },

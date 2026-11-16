@@ -15,7 +15,16 @@ Exit codes:
   3  Not logged in, or the server answered 401
   4  Landing rejected: 409 or 403 on land; or checks --wait ended with a blocking check
      that did not pass, or timed out
-  5  Denied or not found on any other operation: 403 or 404";
+  5  Denied or not found on any other operation: 403 or 404
+
+`run` exits with the command's own code, or with:
+  122  The command ended but a write was denied, so its changes were not written back
+  123  The command ended but the workspace moved or its instance closed, so its changes
+       were not written back
+  124  The run timed out or was cancelled
+  125  `ch` or the server failed before the command could run, a refusal included
+  126  Something failed after the command started: the executor failed, the run's output
+       could not be read, or `ch` lost the run";
 
 /// The `ch` command line.
 #[derive(Debug, Parser)]
@@ -217,6 +226,11 @@ pub enum Command {
         #[command(subcommand)]
         command: RunnerCommand,
     },
+    /// Run a command on a runner against the workspace, write its changes back, and exit with its
+    /// code (122 to 126 where `ch` has something to say; see the exit codes below).
+    Run(Run),
+    /// Download a file, or the files under a directory, of a run's output tree.
+    Fetch(Fetch),
     /// Show the check results of a changeset of the selected repository, and `last-green`; or, with
     /// `plan`, what landing a draft would do about each check.
     Checks(Checks),
@@ -327,6 +341,42 @@ pub struct Land {
     /// The draft to land; in a view the view's draft is landed.
     #[arg(long, default_value = "default")]
     pub draft: String,
+}
+
+/// Arguments of `run`.
+#[derive(Debug, Args)]
+pub struct Run {
+    /// The workspace to run in; in a view the view's draft, and otherwise `default`.
+    #[arg(long)]
+    pub draft: Option<String>,
+    /// Send only the files under this path of the repository; in a view the view's prefix.
+    #[arg(long)]
+    pub prefix: Option<String>,
+    /// A path where the run's changes may add files; repeatable.
+    #[arg(long = "add", value_name = "PATH")]
+    pub add: Vec<String>,
+    /// A path whose files make the run's output tree; repeatable.
+    #[arg(long = "output", value_name = "PATH")]
+    pub outputs: Vec<String>,
+    /// The command; its words are joined with spaces into one shell command.
+    #[arg(last = true, required = true, value_name = "COMMAND")]
+    pub command: Vec<String>,
+}
+
+/// Arguments of `fetch`.
+#[derive(Debug, Args)]
+pub struct Fetch {
+    /// The path in the run's output tree: a file, or a directory to take every file under.
+    pub path: String,
+    /// Where to write it; defaults to the path's last component in the current directory.
+    pub destination: Option<PathBuf>,
+    /// The workspace whose latest ended run to take; in a view the view's draft, and otherwise
+    /// `default`.
+    #[arg(long, conflicts_with = "run")]
+    pub draft: Option<String>,
+    /// The run to take, instead of the workspace's latest ended one.
+    #[arg(long, value_name = "ID")]
+    pub run: Option<u64>,
 }
 
 /// Arguments of `open`.
@@ -517,6 +567,34 @@ mod tests {
         assert!(parse(&["checks", "plan", "--draft", "work"]).is_ok());
         assert!(parse(&["checks", "plan", "--wait"]).is_err());
         assert!(parse(&["checks", "abc"]).is_ok());
+    }
+
+    #[test]
+    fn takes_the_words_after_the_separator_as_the_command_of_a_run() {
+        let Command::Run(run) = parse(&[
+            "run", "--add", "a", "--add", "b", "--output", "out", "--", "make", "-j", "4",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("not run");
+        };
+        assert_eq!(run.command, ["make", "-j", "4"]);
+        assert_eq!(
+            (run.add, run.outputs),
+            (vec!["a".into(), "b".into()], vec!["out".into()])
+        );
+        assert!(run.draft.is_none() && run.prefix.is_none());
+        assert!(parse(&["run"]).is_err());
+        assert!(parse(&["run", "--add", "a"]).is_err());
+    }
+
+    #[test]
+    fn takes_a_run_or_a_draft_to_fetch_from_and_not_both() {
+        assert!(parse(&["fetch", "out/a"]).is_ok());
+        assert!(parse(&["fetch", "out/a", "dest", "--run", "3"]).is_ok());
+        assert!(parse(&["fetch", "out/a", "--draft", "work"]).is_ok());
+        assert!(parse(&["fetch", "out/a", "--draft", "work", "--run", "3"]).is_err());
     }
 
     #[test]

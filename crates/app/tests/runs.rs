@@ -92,6 +92,11 @@ async fn a_run_lists_its_output_tree_under_a_prefix() {
 }
 
 #[tokio::test]
+async fn a_run_gives_download_grants_for_the_streams_it_reported() {
+    runs::a_run_gives_download_grants_for_the_streams_it_reported::<Harness>().await;
+}
+
+#[tokio::test]
 async fn a_report_of_the_other_kind_is_refused() {
     runs::a_report_of_the_other_kind_is_refused::<Harness>().await;
 }

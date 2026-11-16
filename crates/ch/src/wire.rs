@@ -605,3 +605,208 @@ pub struct Files {
     /// The files, in path order.
     pub files: Vec<ListedFile>,
 }
+
+/// What to run, in the caller's workspace.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StartRun {
+    /// What the shell runs.
+    pub command: String,
+    /// The directory the files sent are limited to; the whole workspace where absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    /// Paths where the run's changes may add files.
+    pub add: Vec<String>,
+    /// Paths whose files make the run's output tree.
+    pub outputs: Vec<String>,
+}
+
+/// How far a run has come.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    /// Waiting for a runner.
+    Queued,
+    /// A runner holds it.
+    Running,
+    /// It has ended.
+    Ended,
+}
+
+/// How the command ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunOutcome {
+    /// The command exited with a code.
+    Exited,
+    /// The run passed its deadline.
+    TimedOut,
+    /// The run was cancelled.
+    Cancelled,
+    /// The executor failed.
+    ExecutorFailed,
+}
+
+/// A stream a runner reported, with permission to download it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunStreamRead {
+    /// The address of the stream's bytes.
+    pub address: String,
+    /// Whether the stream was cut at its bound.
+    pub cut: bool,
+    /// Where its bytes can be downloaded.
+    pub download: TransferGrant,
+}
+
+/// How many objects a runner fetched and how many it held.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ObjectCounts {
+    /// Objects the runner fetched.
+    pub downloaded: u64,
+    /// Objects the runner already held.
+    pub from_cache: u64,
+}
+
+/// What a run changed at a path.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunChange {
+    /// The path.
+    pub path: String,
+    /// The file's kind, or that it was deleted.
+    pub kind: RunChangeKind,
+    /// The address of the file's bytes; null where it was deleted.
+    pub address: Option<String>,
+}
+
+/// What a run did to a file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunChangeKind {
+    /// A regular file.
+    Regular,
+    /// A file with the executable bit.
+    Executable,
+    /// The file is gone.
+    Deleted,
+}
+
+/// Whether a run's changes reached the workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteBackOutcome {
+    /// They were written.
+    Written,
+    /// They were not.
+    NotWritten,
+}
+
+/// Why a run's changes were not written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotWrittenReason {
+    /// The workspace's instance closed.
+    InstanceClosed,
+    /// The workspace changed while the run ran.
+    WorkspaceMoved,
+    /// The caller may not write a changed path.
+    WriteDenied,
+    /// The run timed out.
+    TimedOut,
+    /// The run was cancelled.
+    Cancelled,
+    /// The executor failed.
+    ExecutorFailed,
+}
+
+impl NotWrittenReason {
+    /// The reason as the API writes it.
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        match self {
+            Self::InstanceClosed => "instance_closed",
+            Self::WorkspaceMoved => "workspace_moved",
+            Self::WriteDenied => "write_denied",
+            Self::TimedOut => "timed_out",
+            Self::Cancelled => "cancelled",
+            Self::ExecutorFailed => "executor_failed",
+        }
+    }
+}
+
+/// What became of a run's changes.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunWriteBack {
+    /// Whether they were written.
+    pub outcome: WriteBackOutcome,
+    /// Why not, where they were not.
+    pub reason: Option<NotWrittenReason>,
+    /// The paths written, or those a refusal names.
+    pub paths: Vec<String>,
+}
+
+/// How a run ended.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunResult {
+    /// How the command ended.
+    pub outcome: RunOutcome,
+    /// The command's exit code, where it exited.
+    pub exit_code: Option<i32>,
+    /// The command's standard output, where it started.
+    pub stdout: Option<RunStreamRead>,
+    /// The command's standard error, where it started.
+    pub stderr: Option<RunStreamRead>,
+    /// The object counts.
+    pub objects: ObjectCounts,
+    /// The address of the output tree.
+    pub output_tree: Option<String>,
+    /// What the command changed.
+    pub changes: Vec<RunChange>,
+    /// Sent or added paths that hold anything but a regular file.
+    pub refused: Vec<String>,
+    /// What became of the changes.
+    pub write_back: RunWriteBack,
+}
+
+/// A run of a workspace.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Run {
+    /// The run's identifier.
+    pub id: u64,
+    /// The workspace's name.
+    pub draft: String,
+    /// The workspace instance.
+    pub instance: u64,
+    /// The workspace's version when the run started.
+    pub version: u64,
+    /// What the shell ran.
+    pub command: String,
+    /// The directory the files sent were limited to.
+    pub prefix: String,
+    /// How far the run has come.
+    pub state: RunState,
+    /// When the runner's lease lapses.
+    pub lease_expires_at: Option<i64>,
+    /// When the run times out.
+    pub deadline: Option<i64>,
+    /// How it ended; null until it has.
+    pub result: Option<RunResult>,
+}
+
+/// A file of a run's output tree.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunFile {
+    /// The path.
+    pub path: String,
+    /// The address of its bytes.
+    pub address: String,
+    /// Whether it has the executable bit.
+    pub executable: bool,
+    /// Where its bytes can be downloaded.
+    pub download: TransferGrant,
+}
+
+/// The files of a run's output tree.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunFiles {
+    /// The files, in path order.
+    pub files: Vec<RunFile>,
+}

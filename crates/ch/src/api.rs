@@ -10,8 +10,8 @@ use crate::failure::{Failure, Operation};
 use crate::state::RepositoryRef;
 use crate::wire::{
     Access, Checks, Created, CreatedRepository, Description, Diff, File, Files, Grant, History,
-    Landed, Landing, Member, NewName, NewRunner, Plan, Principal, Ref, Runner, Runners, Snapshot,
-    StagedFile, TransferGrant, TransferMethod, Upload, Workspace,
+    Landed, Landing, Member, NewName, NewRunner, Plan, Principal, Ref, Run, RunFiles, Runner,
+    Runners, Snapshot, StagedFile, StartRun, TransferGrant, TransferMethod, Upload, Workspace,
 };
 
 /// Percent-encodes `text` for use as a URL path segment or a form value.
@@ -403,6 +403,85 @@ impl<'a> Api<'a> {
             "{}/changesets/{}/files?prefix={}",
             repo_path(repository),
             encode(changeset),
+            encode(prefix)
+        );
+        self.call(Method::GET, &path, None::<&()>, Operation::Other)
+            .await
+    }
+
+    /// Starts a run in `draft` and returns it queued.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails.
+    pub async fn start_run(
+        &self,
+        repository: &RepositoryRef,
+        draft: &str,
+        request: &StartRun,
+    ) -> Result<Run, Failure> {
+        let path = format!("{}/runs", draft_path(repository, draft));
+        self.call(Method::POST, &path, Some(request), Operation::Other)
+            .await
+    }
+
+    /// The run `id`, held up to `wait` seconds for it to end.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails.
+    pub async fn run(
+        &self,
+        repository: &RepositoryRef,
+        id: u64,
+        wait: u64,
+    ) -> Result<Run, Failure> {
+        let path = format!("{}/runs/{id}?wait={wait}", repo_path(repository));
+        self.call(Method::GET, &path, None::<&()>, Operation::Other)
+            .await
+    }
+
+    /// Cancels the run `id` and returns it.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails; a run that has ended is answered
+    /// 409.
+    pub async fn cancel_run(&self, repository: &RepositoryRef, id: u64) -> Result<Run, Failure> {
+        let path = format!("{}/runs/{id}/cancel", repo_path(repository));
+        self.call(Method::POST, &path, None::<&()>, Operation::Other)
+            .await
+    }
+
+    /// The latest run of `draft` that has ended.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails.
+    pub async fn latest_run(
+        &self,
+        repository: &RepositoryRef,
+        draft: &str,
+    ) -> Result<Run, Failure> {
+        let path = format!("{}/runs/latest", draft_path(repository, draft));
+        self.call(Method::GET, &path, None::<&()>, Operation::Other)
+            .await
+    }
+
+    /// The files of the output tree of the run `id` under `prefix`.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the request or the server's answer fails.
+    pub async fn run_files(
+        &self,
+        repository: &RepositoryRef,
+        id: u64,
+        prefix: &str,
+    ) -> Result<RunFiles, Failure> {
+        let path = format!(
+            "{}/runs/{id}/files?prefix={}",
+            repo_path(repository),
             encode(prefix)
         );
         self.call(Method::GET, &path, None::<&()>, Operation::Other)

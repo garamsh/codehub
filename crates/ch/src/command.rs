@@ -24,6 +24,7 @@ use crate::wire::{
     ReasonKind, Revert, Role, Runner, StagedFile, Upload,
 };
 
+mod run;
 mod workspace;
 
 /// What the verbs run against: the HTTP client and the local state.
@@ -68,6 +69,8 @@ pub async fn execute(
         } => create_repository(context, &repository, json, out).await,
         Command::Member { command } => member(context, command).await,
         Command::Runner { command } => runner(context, command, json, out).await,
+        Command::Run(arguments) => run::run(context, &arguments, json, out, err).await,
+        Command::Fetch(arguments) => run::fetch(context, &arguments).await,
         Command::Checks(arguments) => checks(context, &arguments, json, out).await,
     }
 }

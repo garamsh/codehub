@@ -13,7 +13,8 @@ use app::domain::path::{Path, Prefix};
 use app::domain::run::{
     NotWritten, Run, RunId, RunOutcome, RunResult, RunState, RunStream, WriteBack,
 };
-use app::port::driving::runs::{OutputFile, StartRun};
+use app::port::driven::object_store::Grant;
+use app::port::driving::runs::{OutputFile, StartRun, StreamDownloads};
 use axum::Json;
 use axum::extract::State;
 use serde::{Deserialize, Serialize};
@@ -77,9 +78,10 @@ pub struct WriteBackBody {
 }
 
 #[derive(Serialize)]
-pub struct StreamBody {
+pub struct StreamReadBody {
     address: String,
     cut: bool,
+    download: GrantBody,
 }
 
 #[derive(Serialize)]
@@ -93,8 +95,8 @@ pub struct ChangeBody {
 pub struct ResultBody {
     outcome: &'static str,
     exit_code: Option<i32>,
-    stdout: Option<StreamBody>,
-    stderr: Option<StreamBody>,
+    stdout: Option<StreamReadBody>,
+    stderr: Option<StreamReadBody>,
     objects: ObjectsBody,
     output_tree: Option<String>,
     changes: Vec<ChangeBody>,
@@ -111,13 +113,14 @@ const fn outcome(outcome: RunOutcome) -> &'static str {
     }
 }
 
-impl From<RunStream> for StreamBody {
-    fn from(stream: RunStream) -> Self {
-        Self {
-            address: stream.address.to_string(),
-            cut: stream.cut,
-        }
-    }
+/// A reported stream with the permission to download it.
+fn stream_read(stream: Option<RunStream>, download: Option<Grant>) -> Option<StreamReadBody> {
+    let (stream, download) = stream.zip(download)?;
+    Some(StreamReadBody {
+        address: stream.address.to_string(),
+        cut: stream.cut,
+        download: download.into(),
+    })
 }
 
 impl From<(Path, Change)> for ChangeBody {
@@ -165,13 +168,13 @@ impl From<WriteBack> for WriteBackBody {
     }
 }
 
-impl From<RunResult> for ResultBody {
-    fn from(result: RunResult) -> Self {
+impl ResultBody {
+    fn new(result: RunResult, streams: StreamDownloads) -> Self {
         Self {
             outcome: outcome(result.outcome),
             exit_code: result.exit_code,
-            stdout: result.stdout.map(Into::into),
-            stderr: result.stderr.map(Into::into),
+            stdout: stream_read(result.stdout, streams.stdout),
+            stderr: stream_read(result.stderr, streams.stderr),
             objects: ObjectsBody {
                 downloaded: result.objects.downloaded,
                 from_cache: result.objects.from_cache,
@@ -198,9 +201,9 @@ pub struct RunBody {
     result: Option<ResultBody>,
 }
 
-impl From<Run> for RunBody {
-    fn from(run: Run) -> Self {
-        let result = run.ended().map(ResultBody::from);
+impl RunBody {
+    fn new(run: Run, streams: StreamDownloads) -> Self {
+        let result = run.ended().map(|result| ResultBody::new(result, streams));
         let (state, lease_expires_at, deadline) = match run.state {
             RunState::Queued => (StateBody::Queued, None, None),
             RunState::Running {
@@ -275,7 +278,18 @@ pub async fn start(
         .runs
         .start(&caller, repository, &draft, body.request()?)
         .await?;
-    Ok(Json(run.into()))
+    Ok(Json(RunBody::new(run, StreamDownloads::default())))
+}
+
+/// `run` as the caller reads it, with the grants to download the streams it reported.
+async fn read(
+    ports: &ApiState,
+    caller: &app::domain::principal::Caller,
+    repository: app::domain::repository::RepositoryId,
+    run: Run,
+) -> Result<Json<RunBody>, Problem> {
+    let streams = ports.runs.streams(caller, repository, &run).await?;
+    Ok(Json(RunBody::new(run, streams)))
 }
 
 pub async fn get(
@@ -298,7 +312,7 @@ pub async fn get(
         let run = ports.runs.get(&caller, repository, RunId::new(id)).await?;
         let remaining = hold.saturating_sub(waited);
         if run.state.ended() || remaining.is_zero() {
-            return Ok(Json(run.into()));
+            return read(&ports, &caller, repository, run).await;
         }
         let step = settings
             .retry_interval
@@ -319,7 +333,7 @@ pub async fn cancel(
         .runs
         .cancel(&caller, repository, RunId::new(id))
         .await?;
-    Ok(Json(run.into()))
+    read(&ports, &caller, repository, run).await
 }
 
 pub async fn latest(
@@ -330,7 +344,7 @@ pub async fn latest(
     let repository = find(&ports, &caller, &organisation, &repository).await?;
     let draft: DraftName = parse("draft name", &draft)?;
     let run = ports.runs.latest(&caller, repository, &draft).await?;
-    Ok(Json(run.into()))
+    read(&ports, &caller, repository, run).await
 }
 
 pub async fn files(
