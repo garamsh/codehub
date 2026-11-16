@@ -9,6 +9,7 @@ pub mod gaon;
 pub mod host;
 pub mod http_source;
 pub mod job_source;
+pub mod object_cache;
 pub mod run_job;
 pub mod token;
 
@@ -121,7 +122,12 @@ pub async fn run(config: Config) -> Result<ExitCode, Error> {
     let executor: Arc<dyn Executor> = match config.executor {
         ExecutorKind::Host => {
             let work_dir = config.work_dir.unwrap_or_else(std::env::temp_dir);
-            Arc::new(HostExecutor::new(work_dir, http, hidden))
+            Arc::new(HostExecutor::new(
+                work_dir,
+                config.object_cache_size,
+                http,
+                hidden,
+            ))
         }
         ExecutorKind::Gaon => Arc::new(gaon_executor(config.gaon).await?),
     };
@@ -140,6 +146,7 @@ async fn check_executor(check: CheckExecutor) -> Result<ExitCode, Error> {
             let work_dir = check.work_dir.unwrap_or_else(std::env::temp_dir);
             Ok(Arc::new(HostExecutor::new(
                 work_dir,
+                check.object_cache_size,
                 reqwest::Client::new(),
                 None,
             )))

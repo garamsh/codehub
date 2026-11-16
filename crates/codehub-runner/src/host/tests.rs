@@ -1,7 +1,7 @@
 //! Tests of the host executor: they start real processes and a stub file server, and need no
 //! codehub server.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use axum::Router;
@@ -46,7 +46,7 @@ fn job(command: &str) -> Job {
 }
 
 fn executor(work: &Path) -> HostExecutor {
-    HostExecutor::new(work.to_owned(), reqwest::Client::new(), None)
+    HostExecutor::new(work.to_owned(), u64::MAX, reqwest::Client::new(), None)
         .with_grace(Duration::from_millis(300))
 }
 
@@ -375,8 +375,172 @@ async fn the_hidden_variable_is_not_passed_to_the_command() {
         .await
         .unwrap();
     assert_ne!(shown.output, "[]\n", "the control variable is set");
-    let hidden = HostExecutor::new(work.clone(), reqwest::Client::new(), Some("HOME".into()));
+    let hidden = HostExecutor::new(
+        work.clone(),
+        u64::MAX,
+        reqwest::Client::new(),
+        Some("HOME".into()),
+    );
     let shown = run(&hidden, &job("echo \"[$HOME]\"")).await.unwrap();
     assert_eq!(shown.output, "[]\n");
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+/// Like [`serve`], and counts the requests it answers.
+async fn serve_counted(bytes: &'static [u8]) -> (String, Arc<AtomicUsize>) {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&requests);
+    let app = Router::new().route(
+        "/file",
+        get(move || async move {
+            seen.fetch_add(1, Ordering::SeqCst);
+            bytes.to_vec()
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    (format!("http://{address}/file"), requests)
+}
+
+async fn run_counted(executor: &HostExecutor, job: &Job) -> (Execution, ObjectCounts) {
+    let (_signal, stop) = Stop::channel();
+    let (result, counts) = executor.run_counted(job, stop).await;
+    (result.unwrap(), counts)
+}
+
+fn cached_name(bytes: &[u8]) -> String {
+    address_of(bytes).to_string().replace("sha256:", "")
+}
+
+#[tokio::test]
+async fn a_second_job_with_the_same_files_downloads_none_and_takes_all_from_the_cache() {
+    let work = scratch();
+    let (url, requests) = serve_counted(b"shared bytes").await;
+    let mut job = job("cat a.txt b.txt");
+    job.files = vec![
+        file("a.txt", b"shared bytes", &url, false),
+        file("b.txt", b"shared bytes", &url, false),
+    ];
+    let executor = executor(&work);
+    let (first, counts) = run_counted(&executor, &job).await;
+    // Two paths of one address: the second is already cached when it is reached.
+    assert_eq!(
+        counts,
+        ObjectCounts {
+            downloaded: 1,
+            cached: 1
+        }
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    let (second, counts) = run_counted(&executor, &job).await;
+    assert_eq!(
+        counts,
+        ObjectCounts {
+            downloaded: 0,
+            cached: 2
+        }
+    );
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        1,
+        "the second job downloaded"
+    );
+    assert_eq!(second.output, first.output);
+    assert_eq!(second.output, "shared bytesshared bytes");
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn a_cached_object_altered_on_disk_is_downloaded_again_and_not_served() {
+    let work = scratch();
+    let (url, requests) = serve_counted(b"genuine").await;
+    let mut job = job("cat a.txt");
+    job.files = vec![file("a.txt", b"genuine", &url, false)];
+    let executor = executor(&work);
+    run_counted(&executor, &job).await;
+    let cached = work.join("objects").join(cached_name(b"genuine"));
+    assert_eq!(std::fs::read(&cached).unwrap(), b"genuine");
+    std::fs::write(&cached, b"tampered").unwrap();
+    let (execution, counts) = run_counted(&executor, &job).await;
+    assert_eq!(execution.output, "genuine");
+    assert_eq!(
+        counts,
+        ObjectCounts {
+            downloaded: 1,
+            cached: 0
+        }
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        std::fs::read(&cached).unwrap(),
+        b"genuine",
+        "the cache is repaired"
+    );
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn a_command_that_writes_into_a_given_file_leaves_the_cached_object_unchanged() {
+    let work = scratch();
+    let (url, requests) = serve_counted(b"original").await;
+    let mut reading = job("cat a.txt");
+    reading.files = vec![file("a.txt", b"original", &url, false)];
+    let mut writing = job("echo changed > a.txt");
+    writing.files = reading.files.clone();
+    let executor = executor(&work);
+    run_counted(&executor, &reading).await;
+    // The writing job's file comes from the cache, so a link would let it reach the object.
+    let (_, counts) = run_counted(&executor, &writing).await;
+    assert_eq!(
+        counts,
+        ObjectCounts {
+            downloaded: 0,
+            cached: 1
+        }
+    );
+    let (execution, counts) = run_counted(&executor, &reading).await;
+    assert_eq!(execution.output, "original");
+    assert_eq!(
+        counts,
+        ObjectCounts {
+            downloaded: 0,
+            cached: 1
+        }
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn the_cache_is_brought_within_its_limit_after_a_job_oldest_used_first() {
+    let work = scratch();
+    let executor = HostExecutor::new(work.clone(), 4, reqwest::Client::new(), None);
+    let objects = work.join("objects");
+    let names = || {
+        let mut names: Vec<String> = std::fs::read_dir(&objects)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let (url, _) = serve_counted(b"1234").await;
+    let mut first = job("true");
+    first.files = vec![file("a", b"1234", &url, false)];
+    run_counted(&executor, &first).await;
+    assert_eq!(names(), [cached_name(b"1234")], "one object fits the limit");
+    // The first object was last used long ago; a second one takes its place.
+    std::fs::File::options()
+        .write(true)
+        .open(objects.join(cached_name(b"1234")))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(600))
+        .unwrap();
+    let (url, _) = serve_counted(b"5678").await;
+    let mut second = job("true");
+    second.files = vec![file("b", b"5678", &url, false)];
+    run_counted(&executor, &second).await;
+    assert_eq!(names(), [cached_name(b"5678")]);
     std::fs::remove_dir_all(&work).unwrap();
 }

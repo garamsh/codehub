@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 use tokio::time::Instant;
 
+use crate::config::DEFAULT_OBJECT_CACHE_SIZE;
 use crate::executor::{End, Execution, Executor, Stop};
 use crate::host::HostExecutor;
 use crate::job_source::{
@@ -268,7 +269,12 @@ async fn run_within(path: &Path, window: Duration) -> Result<ExitCode, String> {
         .map_err(|error| format!("{} is not a job description: {error}", path.display()))?;
     let job = description.job().map_err(|error| error.to_string())?;
     let http = reqwest::Client::new();
-    let executor = HostExecutor::new(std::env::temp_dir(), http.clone(), None);
+    let executor = HostExecutor::new(
+        std::env::temp_dir(),
+        DEFAULT_OBJECT_CACHE_SIZE,
+        http.clone(),
+        None,
+    );
     // The sender stays alive so that nothing stops the job.
     let (_stop, signal) = Stop::channel();
     let posted = match executor.run(&job, signal).await {
