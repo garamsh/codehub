@@ -17,6 +17,8 @@ What existed before:
 - A job kept the last 64 KiB of its combined output.
 - A draft had no version, so nothing could tell whether it changed between two moments.
 
+ADR 0048 rejected "no view, with builds run remotely as jobs", because every edit-and-test loop would become a remote round trip. This decision keeps the view: an agent edits locally and runs remotely only when it chooses, so the round trip is paid per run, not per edit, and against a machine without the toolchain or the download it is the cheaper one.
+
 Systems compared:
 - **Google's Forge and CitC.** A build reads the workspace on the server and writes its outputs to a content-addressed store; the developer fetches what they need.
 - **Bazel's remote execution API.** An action names its input tree by digest, the executor keeps a content-addressed cache, and outputs are fetched on demand.
@@ -33,71 +35,86 @@ Alternatives not taken:
 
 ## Decision
 
-**A workspace has a version** (detail)
-- A workspace's version is a number that starts at 0 when it opens and grows by one each time its changes are recorded: a snapshot, a `put`, a restore or a write-back. Setting the description does not change it.
-- `GET drafts/{draft}` answers it.
+**A workspace has a version and an instance** (detail)
+- A workspace's version is a number that starts at 0 when it opens and grows by one each time its changes are recorded: a snapshot, a `put`, a restore or a write-back. Setting the description does not change it. `GET drafts/{draft}` answers it.
+- Each opening of a workspace is an **instance**. A workspace that lands closes its instance, and opening the same name again starts a new one at version 0. A run is bound to the instance it started in.
 
 **A run**
-- A run executes one command against one workspace of the caller, on a runner. It is an unnamed check on the workspace: a job on the existing claim, heartbeat and result path (decision 8).
+- A run executes one command against one workspace of the caller, on a runner. It is a job on the existing claim, heartbeat and result path, an unnamed check on the workspace (decision 8). Unlike a post-land check, it is not blocking, reverts nothing, enters no result cache, does not move `last-green`, and is not listed by `ch checks`. The job queue holds its record.
 - `POST /v1/orgs/{org}/repos/{repo}/drafts/{draft}/runs` starts one (detail). Its body carries:
   - `command`, run under `/bin/sh -c` as a check's command is;
   - an optional `prefix`;
-  - `add`, a list of paths;
+  - `add`, a list of paths, each under `prefix` where one is given;
   - `outputs`, a list of paths.
 
-  It answers the run, with an `id`.
-- **Input** (decision 2). The run's files are the workspace's tree, its base with its changes applied, at the version current when the run starts, limited to `prefix` where given. The server records the run's files and that version with the run.
-- **Permission.** Starting a run asks, in one decision:
-  - `run` on the repository (decision 4);
-  - `read` on every path the run is sent.
-
-  A caller refused either is refused the run, and no job is queued.
-- **Settings** come from `.codehub/run.toml` at the root of the workspace's tree, read when the run starts (decision 7; detail beyond `caches`):
+  Every path is relative to the repository root and is validated as a path value (`source-control.md`); an invalid one is a 400 problem detail. It answers the run, with an `id`.
+- **Input** (decision 2). The run's files are the workspace's tree, its base with its changes applied, at the version current when the run starts, limited to `prefix` where given. The server records the run's files, the instance and that version with the run.
+- **Settings** come from `.codehub/run.toml` at the root of the workspace's tree, read when the run starts, whatever the prefix (decision 7; detail beyond `caches`):
   - `caches`, paths relative to the root used as build caches, default none;
   - `labels`, the labels a runner must have, default none;
   - `timeout`, in seconds, default 600, as a check's.
 
   A file that does not parse refuses the run with a 400 problem detail naming the file. Where the file is absent, every field takes its default.
-- `GET runs/{id}` (under the repository) answers the run, and with `wait=<seconds>`, at most 60, holds the request until the run ends or the time passes, as a runner's claim is held (detail). A caller sees only its own runs; another's answers 404.
+- **Permission.** Starting a run asks, in one decision:
+  - `run` on the repository (decision 4);
+  - `read` on every path the run is sent, and on `.codehub/run.toml` where it exists;
+  - `read` on the whole repository, where a cache ref of the run would be seeded from `main`'s (below).
+
+  A caller refused any of these is refused the run, and no job is queued.
+- **Runners.** A run's job is handed only to a runner whose executor is `host` (decision 8). The runner states its executor when it claims; a runner on the gaon driver is never handed one.
+- `GET runs/{id}` (under the repository) answers the run, and with `wait=<seconds>`, at most 60, holds the request until the run ends or the time passes, as a runner's claim is held (detail).
+- `POST runs/{id}/cancel` cancels the run (detail).
+- Every route under `runs/{id}`, `runs/{id}/files` included, answers only the principal that started the run, and 404 to any other caller, so a run's existence is not disclosed.
 
 **What a run's job receives**
 - The run's files, each with a download grant.
 - The trees of the workspace's cache refs, written into their paths.
 - The command, `add`, `outputs` and the timeout.
-- `CODEHUB_ORGANISATION`, `CODEHUB_REPOSITORY` and `CODEHUB_DRAFT` in the command's environment, with `CODEHUB_CHANGESET` set to the workspace's base and `CODEHUB_CHECK` unset (detail).
+- `CODEHUB_ORGANISATION`, `CODEHUB_REPOSITORY` and `CODEHUB_DRAFT` in the command's environment, with `CODEHUB_CHANGESET` set to the workspace's base, and `CODEHUB_CHECK` and `CODEHUB_FOLDER` unset (detail).
 
 **What a run reports** (decision 3)
-- The command's exit code, or that it timed out or was cancelled.
-- Its whole standard output and standard error, each uploaded by the runner as one object and recorded by address. `ch run` downloads both and writes them to its own standard output and standard error. A job of a check keeps its 64 KiB tail as before.
+- The command's exit code; for a command ended by a signal, 128 plus the signal's number, as a shell gives it. Otherwise: that it timed out, was cancelled, or failed in the executor.
+- Its standard output and standard error, kept apart, each uploaded by the runner as one object and recorded by address. Each is kept whole up to 64 MiB; past that, the runner keeps the last 64 MiB and the run records that the stream was cut (detail). A job of a check keeps its 64 KiB tail as before.
 - The object counts: how many of the job's objects the runner downloaded, and how many it took from its object cache.
-- The **output tree**: the files under the run's `outputs` and its cache paths when the command ended.
-- The **changes**: each sent path whose content or kind differs from what it was sent as, or which is gone, and each path under `add` that exists, with its kind and address. The runner uploads the bytes the object store lacks before it reports.
+- The **output tree**: the regular files under the run's `outputs` and its cache paths when the command ended, recorded as an encoded tree (ADR 0016), so every path in it is a valid path value.
+- The **changes**: each sent path whose content or kind differs from what it was sent as, or which is gone, and each path under `add` that exists, with its kind and address. Paths under a cache path are never changes.
+  - The runner reads each path without following a symbolic link. A sent or `add` path that holds anything other than a regular file, a symbolic link included, is not reported as a change, and the run records it as refused.
+  - The runner uploads the bytes the object store lacks before it reports.
 
 **Write-back** (decisions 5 and 6)
-- When the command ended with an exit code, whatever the code, the server applies the changes to the workspace:
-  - only if the workspace's version is still the one the run started from;
-  - and only if the caller may `write` every changed path, asked in one decision when the run ends.
+- A run whose changes are empty writes nothing back and conflicts with nothing, whatever happened to the workspace meanwhile.
+- When the command ended with an exit code, whatever the code, the server applies non-empty changes to the workspace, only if all hold:
+  - the run's instance is still open;
+  - the workspace's version is still the one the run started from;
+  - the caller may `write` every changed path, asked in one decision when the run ends.
 
   It is applied as one snapshot, all together, and the version grows by one.
-- Otherwise nothing is written back, and the run records why: the workspace moved, naming the paths it changed since; or a write was denied, naming the paths.
-- A run that timed out or was cancelled writes nothing back.
-- A deleted file is written back as a deletion. A path the base holds and the run left with the base's content is written back as a restore, as a snapshot sends it (ADR 0048).
+- Otherwise nothing is written back, and the run records why: the instance closed; the workspace moved, naming the paths it changed since; or a write was denied, naming the paths.
+- A run that timed out, was cancelled or failed in the executor writes nothing back.
+- A sent path that is gone is written back as a deletion, or as a restore where the base lacks it. A path the base holds and the run left with the base's content is written back as a restore, as a snapshot sends it (ADR 0048).
 
 **Workspace cache refs** (decision 7)
-- A workspace has a cache ref for each cache path `run.toml` names. It maps (repository, workspace, cache path) to a tree.
-- A workspace's ref starts from the root folder's cache ref of the same path on `main` (ADR 0049), or empty where `main` has none.
-- When a run ends with an exit code, whatever the code, each of its cache refs moves to the tree the run left, by compare-and-swap from the tree the run started from. A ref another run moved meanwhile is not moved, and the newer tree stays. Trees are never merged.
-- A run never moves a cache ref of `main`. A workspace's refs are removed when it lands.
+- A workspace instance has a cache ref for each cache path `run.toml` names, created by the first run that names the path. It maps (repository, workspace instance, cache path) to a tree.
+- A new ref starts from the root folder's cache ref of the same path on `main` (ADR 0049), or empty where `main` has none. A caller without `read` on the whole repository is refused a run that would seed a ref from `main`'s, since `main`'s caches are built from files it may not read.
+- When a run ends with an exit code, whatever the code, and its instance is still open, each of its cache refs moves to the tree the run left, by compare-and-swap from the tree the run started from. A ref another run moved meanwhile is not moved, and the newer tree stays. Trees are never merged.
+- This refines ADR 0049's rule that a job on a changeset not on `main` drops its cache changes, and ADR 0007's limit of promotion to trusted jobs. A workspace's ref is read only by that workspace's own runs, started by the principal whose commands wrote it, so no other principal's job reads what it poisons.
+- A run never moves a cache ref of `main`. A workspace's refs are removed when its instance closes.
 - A cache is not written back into the workspace.
 
 **`ch`**
-- `ch run [--draft <name>] [--prefix <path>] [--add <path>]... [--output <path>]... -- <command>...` starts a run, waits for it, and prints its output (decision 3). The command's words are joined with spaces into one shell command (detail).
-  - In a view it first snapshots the view, as ADR 0048's verbs do, and uses the view's draft and, unless given, its prefix. After a write-back it writes the changed files into the view and records them as the view's last snapshot, so the next snapshot sends nothing for them.
+- `ch run [--draft <name>] [--prefix <path>] [--add <path>]... [--output <path>]... -- <command>...` starts a run, waits for it, writes its standard output and standard error to its own, then prints `exit <code>` and any reason for no write-back on standard error (decision 3). The command's words are joined with spaces into one shell command (detail).
+  - In a view it first snapshots the view, and uses the view's draft and, unless given, its prefix. This adds `run` to ADR 0048's list of the commands that snapshot.
+  - After a write-back, it writes each changed file into the view only where the view's file is still what the view last recorded. A file edited in the view during the run is left as it is and named on standard error, so the next snapshot sends the edit over the write-back. The files it writes are recorded as the view's last snapshot.
+  - An interrupt cancels the run, then waits for it to end.
   - Its exit code (detail):
-    - the command's own code, where the command ended with one and nothing failed to write back;
-    - **123** where the command ended but its changes were not written back, with the reason and the paths on standard error;
+    - the command's own code, where the command ended with one and nothing that changed failed to be written back;
+    - **122** where the command ended but its changes were not written back because a write was denied;
+    - **123** where the command ended but its changes were not written back because the workspace moved or its instance closed (the conflict of decision 6);
     - **124** where the run timed out or was cancelled;
-    - **125** where `ch` or the server failed before the command could run, including a refusal, with ch's usual message. ch's own codes 2 to 5 would be read as the command's, so `run` does not use them.
+    - **125** where `ch` or the server failed before the command could run, including a refusal, with ch's usual message;
+    - **126** where something failed after the command started: the executor failed, the run's output could not be read, or `ch` lost the run.
+
+    ch's own codes 2 to 5 would be read as the command's, so `run` does not use them. A command whose own code is between 122 and 126 is told apart from these by `--json`.
   - `--json` prints the run as the server answers it, in place of the output.
 - `ch fetch <path> [<dest>] [--draft <name>] [--run <id>]` downloads the file, or every file under the directory, at `<path>` in the output tree of the workspace's latest ended run, or of the run named, into `<dest>`, default the path's last component in the current directory. An executable file is written executable (detail).
 - `GET drafts/{draft}/runs/latest` answers the workspace's latest ended run, and `GET runs/{id}/files` lists its output tree with a download grant for each file, under an optional `prefix` (detail).
@@ -105,7 +122,7 @@ Alternatives not taken:
 **The `run` action** (decision 4)
 - `run` is an action on a repository. It is granted to a member for the whole repository only: a `run` grant carries the empty prefix, and one with any other prefix is refused (detail).
 - Neither `write` nor `read` includes it. An organisation admin holds it.
-- The AuthZEN plain profile names it `Run`. The GRN profile names it `codehub:repo.run`, sent with no `context.path` (detail).
+- The AuthZEN plain profile names it `Run`, with no path property. The GRN profile names it `codehub:repo.run`, with no `context.path` (detail).
 
 **The runner's object cache** (detail)
 - Every job a runner runs, a run's or a check's, takes its files through the cache.
@@ -117,8 +134,9 @@ Alternatives not taken:
 ## Consequences
 
 - An agent can build, test and format with the toolchain on a runner, and its machine needs only `ch`.
-- A formatter's output reaches the workspace without a second step, and a change the agent made during the run is never overwritten.
+- A formatter's output reaches the workspace without a second step. A change the agent recorded during the run stops the write-back, and one it made in the view without recording is left in the view.
 - A second run in the same workspace downloads only the objects the first did not, and its build starts from the first run's caches.
+- A member who may read only part of a repository runs with no caches seeded from `main`, or not at all where `run.toml` names caches; a first run of such a member builds from nothing.
 - A run costs a runner job: it waits behind landings' checks for the same runners, and the organisation pays for its runners' time.
 - Output that is not streamed means an agent sees nothing of a long run until it ends.
 - Write-back runs whatever the command's exit code, so a command that fails part-way can leave half-written files in the workspace. `ch status` and `ch diff` show them, and `ch restore` removes them.

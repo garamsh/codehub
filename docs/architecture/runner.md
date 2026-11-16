@@ -17,7 +17,7 @@ How a runner joins the system, receives jobs and runs them: registration, pollin
 
 ### Job lifecycle
 
-A job is queued for each post-land check of a landing whose key has not passed, once every check it needs has passed (`source-control.md`, ADR 0035, ADR 0049), and for each run of a workspace, as an unnamed check on it, routed by the labels of `.codehub/run.toml` (ADR 0051). Either job is then:
+A job is queued for each post-land check of a landing whose key has not passed, once every check it needs has passed (`source-control.md`, ADR 0035, ADR 0049), and for each run of a workspace, as an unnamed check on it, routed by the labels of `.codehub/run.toml` and handed only to a runner whose executor is `host`, which a runner states when it claims (ADR 0051). Either job is then:
 - **claimed** by a matching runner, which holds a lease renewed by heartbeats;
 - **returned to the queue** when the lease passes without a heartbeat;
 - **ended as timed out** past its timeout;
@@ -39,9 +39,10 @@ The runner stops its job when a heartbeat answers stop.
 ### What a run's job receives and reports (ADR 0051)
 
 - **It receives** the run's files with a download grant each, the trees of the workspace's cache refs, the command, the run's `add` and `outputs` paths and the timeout.
-- **It reports**, when the command ended with an exit code:
+- **It reads** every sent, `add` and `outputs` path without following a symbolic link; anything but a regular file is not reported as a change, and is recorded as refused.
+- **It reports**, when the command ended with an exit code (128 plus the signal's number for a command ended by a signal):
   - the code;
-  - its whole standard output and standard error, each uploaded as one object;
+  - its standard output and standard error, kept apart, each uploaded as one object, whole up to 64 MiB and otherwise its last 64 MiB with the cut recorded;
   - the output tree of the files under `outputs` and the cache paths;
   - the changes: each sent path whose content or kind changed or which is gone, and each `add` path that exists.
 
@@ -65,9 +66,10 @@ Declared in the application's terms (`docs/architecture/structure.md`).
   - take heartbeats, results with the output tree, and cancellations;
   - expire leases and timeouts;
   - answer the result cache: whether a key passed in a repository, with the output tree of that run. A result-cache entry is a passed job record, so the cache stays on this port;
-  - reserve and record a changeset's revert.
+  - reserve and record a changeset's revert;
+  - hold a workspace's runs: queue one, take its result with its changes, output streams and output tree, and answer it to its principal (ADR 0051).
   Adapters: PostgreSQL, where claims never hand one job out twice, and in-memory.
-- **Cache refs** (server side): read the cache ref of a (repository, folder, cache path), and move it by compare-and-swap from the changeset it records; read, move by compare-and-swap from the tree it holds, and remove a workspace's cache ref of (repository, workspace, cache path) (ADR 0051). That a ref moves only to a later landing on `main`'s first-parent line is the rule of the use case, not of the port. Adapters: PostgreSQL and in-memory.
+- **Cache refs** (server side): read the cache ref of a (repository, folder, cache path), and move it by compare-and-swap from the changeset it records; read, move by compare-and-swap from the tree it holds, and remove a workspace's cache ref of (repository, workspace instance, cache path) (ADR 0051). That a ref moves only to a later landing on `main`'s first-parent line is the rule of the use case, not of the port. Adapters: PostgreSQL and in-memory.
 - **Job source** (runner side): the claim, heartbeat and result conversation. Adapters: HTTP, and a test double.
 - **Executor driver** (runner side): see `execution.md`.
 
