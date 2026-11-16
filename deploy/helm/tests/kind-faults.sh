@@ -123,7 +123,7 @@ if has pooler; then
 	mode=$(k get pooler pg-pooler -o jsonpath='{.spec.pgbouncer.poolMode}')
 	echo "pooler mode: $mode"
 	test "$mode" = transaction
-	install --set "postgres.urlSecret.name=pg-url-pooler" --set "postgres.statementCache=0"
+	install --set "postgres.urlSecret.name=pg-url-pooler"
 	before=$(primary pg)
 	load pooler 120 --fault-after 20 --recover-within 75 \
 		--fault "kubectl --context kind-$cluster -n $ns delete pod $before --grace-period=0 --force"

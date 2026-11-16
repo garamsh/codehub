@@ -16,6 +16,11 @@ s3:
 config:
   CODEHUB_IDENTITY: oidc
   CODEHUB_OIDC_AUDIENCE: codehub
+  # The load is one caller, which the default 100 requests a second (burst 200) answers with 429
+  # (observed: 219 of 228 failed attempts in a 60 s run). The runs measure a fault, not the limit,
+  # so the limit is lifted well above what 8 agents send; the limit has its own tests (#298).
+  CODEHUB_RATE_LIMIT_PER_SECOND: "5000"
+  CODEHUB_RATE_LIMIT_BURST: "10000"
 api:
   replicas: 2
   service: {type: NodePort, port: 8080, nodePort: 30080}

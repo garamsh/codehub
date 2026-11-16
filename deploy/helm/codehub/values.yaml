@@ -25,8 +25,12 @@ postgres:
   migrateUrlSecret: {name: "", key: url}
   # The Secret holding the URL of a read replica; none where it names no Secret.
   readUrlSecret: {name: "", key: url}
-  # Prepared statements each connection keeps; 0 for a pooler in transaction mode. The
-  # server's default where unset.
+  # Prepared statements each connection keeps (the server's default, 100, where unset). Behind a
+  # pooler in transaction mode it must be 1 or more and the pooler must track prepared statements
+  # (PgBouncer 1.21 or later, max_prepared_statements above 0, and ignore_startup_parameters
+  # including options); 0 is for a direct connection or a session-mode pooler. The acquire timeout
+  # (CODEHUB_POSTGRES_ACQUIRE_TIMEOUT, 5 s) and the statement timeout (CODEHUB_POSTGRES_STATEMENT_TIMEOUT,
+  # 30 s) are set through config.
   statementCache: null
   # Connections each pod holds; the sum over every pod stays below PostgreSQL's max_connections.
   poolSize: 40
@@ -140,6 +144,8 @@ migrate:
 ingress:
   enabled: false
   className: ""
+  # The runner routes take bodies up to 64 MiB: set the controller's body limit to at least that, for
+  # ingress-nginx nginx.ingress.kubernetes.io/proxy-body-size: 64m.
   annotations: {}
   host: ""
   tls: []

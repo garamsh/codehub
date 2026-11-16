@@ -111,13 +111,37 @@ pub fn failures_by_status(events: &[Event]) -> String {
         .join(", ")
 }
 
+/// The failed attempts counted per window of 10 seconds from the start, as `20s 31, 30s 112`;
+/// windows without a failure are left out.
+pub fn failures_by_window(events: &[Event]) -> String {
+    let mut counts = std::collections::BTreeMap::new();
+    for event in events.iter().filter(|event| !event.ok) {
+        *counts.entry((event.at / 10.0) as u64 * 10).or_insert(0_usize) += 1;
+    }
+    if counts.is_empty() {
+        return "none".to_owned();
+    }
+    counts
+        .iter()
+        .map(|(start, count)| format!("{start}s {count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Whether a failed attempt says the system was unavailable: no answer, or a 5xx. A 409 is the
+/// answer of a landing that lost the race for `main`, which the load causes with no fault and
+/// which the client does not retry; a 429 is the rate limit.
+fn unavailable(event: &Event) -> bool {
+    !event.ok && (event.status == 0 || event.status >= 500)
+}
+
 /// Seconds from the fault until landings succeed for good: from `fault_at` to the first success
-/// after the last failure. Zero where nothing failed after the fault; none where the last request
-/// failed, so the system did not recover.
+/// after the last unavailable answer (`unavailable`). Zero where none came after the fault; none
+/// where the last request was unavailable, so the system did not recover.
 pub fn recovery(events: &[Event], fault_at: f64) -> Option<f64> {
     let mut after: Vec<&Event> = events.iter().filter(|event| event.at >= fault_at).collect();
     after.sort_by(|left, right| left.at.total_cmp(&right.at));
-    let Some(last_failure) = after.iter().rposition(|event| !event.ok) else {
+    let Some(last_failure) = after.iter().rposition(|event| unavailable(event)) else {
         return Some(0.0);
     };
     after
@@ -292,14 +316,19 @@ async fn read_back(context: &Arc<Context>, acks: Vec<Ack>) -> Result<[u64; 3], F
                             return Some(verdict);
                         }
                         // The history names the object; reading the file proves it is still there.
+                        // A read the server did not answer is tried again, not judged.
                         let (status, bytes) = context.session().read(&ack.path).await;
-                        return Some(if succeeded(status) && bytes == ack.content.as_bytes() {
-                            Verdict::Intact
-                        } else {
-                            Verdict::Changed
-                        });
-                    }
-                    if status == 404 {
+                        if succeeded(status) {
+                            return Some(if bytes == ack.content.as_bytes() {
+                                Verdict::Intact
+                            } else {
+                                Verdict::Changed
+                            });
+                        }
+                        if status == 404 {
+                            return Some(Verdict::Missing);
+                        }
+                    } else if status == 404 {
                         return Some(Verdict::Missing);
                     }
                     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -420,6 +449,7 @@ pub async fn run(options: &Options, agents: u32, seconds: u64) -> Result<bool, F
         acks.len(),
     );
     println!("failed attempts by status: {}", failures_by_status(&events));
+    println!("failed attempts per 10 s: {}", failures_by_window(&events));
     if let Some(path) = &options.record {
         append_record(path, &acks)?;
     }
@@ -499,6 +529,35 @@ mod tests {
         let events = [failed(503), failed(500), failed(503), event(2.0, true)];
         assert_eq!(failures_by_status(&events), "500 x 1, 503 x 2");
         assert_eq!(failures_by_status(&[event(2.0, true)]), "none");
+    }
+
+    #[test]
+    fn failures_are_counted_per_window_of_ten_seconds() {
+        let events = [
+            event(1.0, true),
+            event(21.0, false),
+            event(29.0, false),
+            event(31.0, false),
+            event(32.0, true),
+        ];
+        assert_eq!(failures_by_window(&events), "20s 2, 30s 1");
+        assert_eq!(failures_by_window(&[event(2.0, true)]), "none");
+    }
+
+    #[test]
+    fn a_conflict_after_the_fault_is_not_an_outage() {
+        let conflict = Event {
+            at: 20.0,
+            ok: false,
+            status: 409,
+        };
+        let outage = Event {
+            at: 12.0,
+            ok: false,
+            status: 500,
+        };
+        let events = [outage, event(14.0, true), conflict, event(21.0, true)];
+        assert_eq!(recovery(&events, 10.0), Some(4.0));
     }
 
     #[test]

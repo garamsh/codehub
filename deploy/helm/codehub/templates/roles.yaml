@@ -11,6 +11,11 @@ values and the subcommand the container runs.
 {{- if $values.enabled }}
 {{- $name := printf "%s-%s" (include "codehub.fullname" $) (kebabcase $role.component) }}
 {{- $selector := dict "root" $ "component" $role.component }}
+{{- /* Requests in flight get CODEHUB_SHUTDOWN_DEADLINE_SECONDS (25 by default) after SIGTERM; the pod must outlive it. */ -}}
+{{- $deadline := (get $.Values.config "CODEHUB_SHUTDOWN_DEADLINE_SECONDS") | default 25 | int }}
+{{- if ge $deadline ($values.terminationGracePeriodSeconds | int) }}
+{{- fail (printf "%s: terminationGracePeriodSeconds (%v) must exceed CODEHUB_SHUTDOWN_DEADLINE_SECONDS (%d)" $role.component $values.terminationGracePeriodSeconds $deadline) }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment

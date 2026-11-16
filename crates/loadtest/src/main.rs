@@ -183,7 +183,7 @@ async fn main() -> ExitCode {
     match run(&Cli::parse()).await {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => {
-            eprintln!("loadtest: an operation answered a status the scenario does not expect");
+            eprintln!("loadtest: the run did not pass (an unexpected status, a lost landing or a recovery too slow)");
             ExitCode::FAILURE
         }
         Err(failure) => {

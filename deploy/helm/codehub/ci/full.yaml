@@ -2,7 +2,7 @@ postgres:
   urlSecret: {name: pgbouncer, key: url}
   migrateUrlSecret: {name: pg-direct, key: url}
   readUrlSecret: {name: pg-read, key: url}
-  statementCache: 0
+  statementCache: 50
 s3:
   endpoint: http://minio:9000
   region: us-east-1
