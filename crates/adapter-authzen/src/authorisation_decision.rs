@@ -12,9 +12,6 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-/// Bound on each request to the decision point.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// Authorisation by an AuthZEN 1.0 decision point. A decision is one evaluation request, and
 /// decisions on many resources are one evaluations request where the adapter is enabled for it
 /// and the decision point's metadata advertises it, read on first use (ADR 0041); the bearer
@@ -116,9 +113,10 @@ impl AuthzenAuthorisationDecision {
         base_url: &str,
         tokens: Arc<TokenClient>,
         profile: Profile,
+        timeout: Duration,
     ) -> Result<Self, AuthorisationError> {
         let http = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
+            .timeout(timeout)
             .build()
             .map_err(backend)?;
         let base_url = base_url.trim_end_matches('/');

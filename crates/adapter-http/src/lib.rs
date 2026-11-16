@@ -7,6 +7,7 @@ mod extract;
 mod health;
 mod jobs;
 mod members;
+mod overload;
 mod problem;
 mod registry;
 mod repositories;
@@ -30,11 +31,14 @@ use app::port::driving::runs::Runs;
 use app::port::driving::source_control::SourceControl;
 use async_trait::async_trait;
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::http::header;
 use axum::response::IntoResponse;
 use axum::routing;
 
 use crate::problem::Problem;
+
+pub use crate::overload::{InFlight, Limits, RateLimiter};
 
 /// The OpenAPI 3.1 document of the API, served at `/v1/openapi.json`.
 pub const OPENAPI: &str = include_str!("../openapi.json");
@@ -99,6 +103,8 @@ pub struct ApiState {
     pub settings: RunnerSettings,
     /// Asked on every request to `/readyz`.
     pub readiness: Arc<dyn Readiness>,
+    /// The limits of this process on how much it is asked (ADR 0055).
+    pub limits: Limits,
 }
 
 /// Declares a router's routes once, as both the router and its list of routes, so the two cannot
@@ -204,17 +210,35 @@ impl Readiness for () {
 /// no route matches.
 fn serve(routes: Router<Arc<ApiState>>, state: ApiState) -> Router {
     let readiness = Arc::clone(&state.readiness);
+    let body_bytes = state.limits.body_bytes;
+    let state = Arc::new(state);
     routes
         .fallback(no_route)
-        .with_state(Arc::new(state))
+        .layer(DefaultBodyLimit::max(body_bytes))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            overload::bound,
+        ))
+        .with_state(state)
         .merge(health_routed().with_state(readiness))
+}
+
+/// The largest body a runner route reads, in bytes, where the limit of the settings is lower: a
+/// runner's result and uploads list every file the job produced, and a refused one loses the job
+/// (ADR 0055).
+const RUNNER_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+/// The routes of [`RUNNER_ROUTES`], reading bodies up to [`RUNNER_BODY_BYTES`]. The layer is inner
+/// to the limit of the settings and so overrides it.
+fn runner_bounded() -> Router<Arc<ApiState>> {
+    runner_routed().layer(DefaultBodyLimit::max(RUNNER_BODY_BYTES))
 }
 
 /// The router serving the whole API over `state`: every route of [`ROUTES`], [`REGISTRY_ROUTES`],
 /// [`RUNNER_ROUTES`] and [`HEALTH_ROUTES`], and a fallback for a request no route matches.
 pub fn router(state: ApiState) -> Router {
     serve(
-        routed().merge(registry_routed()).merge(runner_routed()),
+        routed().merge(registry_routed()).merge(runner_bounded()),
         state,
     )
 }
@@ -228,7 +252,7 @@ pub fn api_router(state: ApiState) -> Router {
 /// The router of the runner API: every route of [`RUNNER_ROUTES`] and [`HEALTH_ROUTES`], and a
 /// fallback for a request no route matches.
 pub fn runner_router(state: ApiState) -> Router {
-    serve(runner_routed(), state)
+    serve(runner_bounded(), state)
 }
 
 /// The router of a process that serves only the probes of [`HEALTH_ROUTES`] over `readiness`,
