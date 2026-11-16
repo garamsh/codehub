@@ -7,6 +7,7 @@ mod extract;
 mod health;
 mod jobs;
 mod members;
+mod overload;
 mod problem;
 mod repositories;
 mod runners;
@@ -28,11 +29,14 @@ use app::port::driving::runs::Runs;
 use app::port::driving::source_control::SourceControl;
 use async_trait::async_trait;
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::http::header;
 use axum::response::IntoResponse;
 use axum::routing;
 
 use crate::problem::Problem;
+
+pub use crate::overload::{InFlight, Limits, RateLimiter};
 
 /// The OpenAPI 3.1 document of the API, served at `/v1/openapi.json`.
 pub const OPENAPI: &str = include_str!("../openapi.json");
@@ -94,6 +98,8 @@ pub struct ApiState {
     pub settings: RunnerSettings,
     /// Asked on every request to `/readyz`.
     pub readiness: Arc<dyn Readiness>,
+    /// The limits of this process on how much it is asked (ADR 0055).
+    pub limits: Limits,
 }
 
 /// Declares a router's routes once, as both the router and its list of routes, so the two cannot
@@ -186,9 +192,16 @@ impl Readiness for () {
 /// no route matches.
 fn serve(routes: Router<Arc<ApiState>>, state: ApiState) -> Router {
     let readiness = Arc::clone(&state.readiness);
+    let body_bytes = state.limits.body_bytes;
+    let state = Arc::new(state);
     routes
         .fallback(no_route)
-        .with_state(Arc::new(state))
+        .layer(DefaultBodyLimit::max(body_bytes))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            overload::bound,
+        ))
+        .with_state(state)
         .merge(health_routed().with_state(readiness))
 }
 

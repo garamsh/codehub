@@ -4,6 +4,7 @@
 
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use adapter_garam_directory::GaramDirectoryChanges;
 use app::domain::name::{OrganisationName, RepositoryName};
@@ -67,7 +68,12 @@ impl StandIn {
 
     /// An adapter delivering to this stand-in, authenticating as each organisation's client.
     fn adapter(&self) -> GaramDirectoryChanges {
-        GaramDirectoryChanges::new(&self.url, tokens(&format!("{}/token", self.url))).unwrap()
+        GaramDirectoryChanges::new(
+            &self.url,
+            tokens(&format!("{}/token", self.url)),
+            Duration::from_secs(10),
+        )
+        .unwrap()
     }
 
     /// The requests received at `route`, as text.
@@ -184,6 +190,7 @@ fn tokens(token_endpoint: &str) -> Arc<TokenClient> {
                 key_id: None,
                 issuer: "https://garam.test".to_owned(),
             },
+            Duration::from_secs(10),
         )
         .unwrap(),
     )
@@ -314,7 +321,11 @@ async fn is_not_built_over_something_that_is_not_an_http_url() {
         "http://",
         "http://garam test",
     ] {
-        let built = GaramDirectoryChanges::new(url, tokens("http://garam.test/token"));
+        let built = GaramDirectoryChanges::new(
+            url,
+            tokens("http://garam.test/token"),
+            Duration::from_secs(10),
+        );
 
         assert!(built.is_err(), "{url:?} was taken as garam's URL");
     }
@@ -359,7 +370,12 @@ async fn does_not_accept_a_change_while_garam_is_down_or_unreachable() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         drop(listener);
-        GaramDirectoryChanges::new(&url, tokens(&format!("{url}/token"))).unwrap()
+        GaramDirectoryChanges::new(
+            &url,
+            tokens(&format!("{url}/token")),
+            Duration::from_secs(10),
+        )
+        .unwrap()
     };
     let repository = change("acme", "app", 7, ChangeKind::Created, 1);
 

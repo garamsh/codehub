@@ -17,9 +17,6 @@ const ALGORITHMS: [Algorithm; 3] = [Algorithm::RS256, Algorithm::PS256, Algorith
 /// Seconds a token is still accepted after its `exp` (and before its `nbf`), for clock skew.
 const LEEWAY_SECONDS: u64 = 60;
 
-/// Bound on each request to the issuer.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// Identity verification of OIDC access tokens. Discovery and the key set are fetched on first
 /// use, cached, and fetched again when a token names a key id the cache lacks. One fetch runs at a
 /// time, and a token that finds no key meanwhile waits for it.
@@ -71,9 +68,10 @@ impl OidcIdentityVerification {
         issuer: &str,
         audience: &str,
         min_refetch_interval: Duration,
+        timeout: Duration,
     ) -> Result<Self, IdentityError> {
         let http = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
+            .timeout(timeout)
             .build()
             .map_err(backend)?;
         let mut validation = Validation::new(Algorithm::RS256);

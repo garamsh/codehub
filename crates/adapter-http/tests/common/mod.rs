@@ -2,7 +2,8 @@
 //!
 //! Every helper panics when a reply is not the one expected, as a failed assertion does.
 
-use adapter_http::{ApiState, Pause, Readiness, RunnerSettings};
+use adapter_http::{ApiState, InFlight, Limits, Pause, RateLimiter, Readiness, RunnerSettings};
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,6 +17,7 @@ use app::domain::revert::Revert;
 use app::port::driven::job_queue::JobQueue;
 use app::port::driven::object_store::ObjectStore;
 use app::port::driven::repository_directory::RepositoryDirectory;
+use app::port::driving::authentication::Authentication;
 use app::port::driving::repositories::Repositories;
 use app::use_case::administration::Administration;
 use app::use_case::assembly::Assembly;
@@ -36,6 +38,8 @@ pub struct Reply {
     pub status: StatusCode,
     /// The `Content-Type` header, empty where absent.
     pub content_type: String,
+    /// The `Retry-After` header, empty where absent.
+    pub retry_after: String,
     /// The JSON body, `null` where empty.
     pub body: Value,
 }
@@ -69,12 +73,41 @@ pub fn state(stores: &MemoryDeployment<Taught>, administration: Administration) 
         runs: Arc::new(assembly.runs()),
         settings: settings(),
         readiness: Arc::new(()),
+        limits: limits(),
+    }
+}
+
+/// Limits no test but the ones of the limits reaches: a thousand requests a second a principal,
+/// ten thousand in flight, a minute a request and a mebibyte a body.
+pub fn limits() -> Limits {
+    Limits {
+        rate: RateLimiter::new(
+            NonZeroU32::MIN.saturating_add(999),
+            NonZeroU32::MIN.saturating_add(999),
+        ),
+        in_flight: InFlight::new(NonZeroUsize::MIN.saturating_add(9_999)),
+        request_timeout: Duration::from_secs(60),
+        body_bytes: 1 << 20,
     }
 }
 
 /// The router over `stores`, with members administered as `administration` says.
 pub fn router(stores: &MemoryDeployment<Taught>, administration: Administration) -> Router {
     adapter_http::router(state(stores, administration))
+}
+
+/// The router over `stores` under `limits`, with `authentication` identifying callers in place of
+/// the fixture's.
+pub fn router_limited(
+    stores: &MemoryDeployment<Taught>,
+    authentication: Arc<dyn Authentication>,
+    limits: Limits,
+) -> Router {
+    adapter_http::router(ApiState {
+        authentication,
+        limits,
+        ..state(stores, Administration::BuiltIn)
+    })
 }
 
 /// The router over `stores`, with the repositories port replaced by `repositories`.
@@ -348,6 +381,11 @@ pub async fn send(
         .get(header::CONTENT_TYPE)
         .map(|value| value.to_str().unwrap().to_owned())
         .unwrap_or_default();
+    let retry_after = response
+        .headers()
+        .get(header::RETRY_AFTER)
+        .map(|value| value.to_str().unwrap().to_owned())
+        .unwrap_or_default();
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let body = if bytes.is_empty() {
         Value::Null
@@ -357,6 +395,7 @@ pub async fn send(
     Reply {
         status,
         content_type,
+        retry_after,
         body,
     }
 }

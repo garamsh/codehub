@@ -3,6 +3,7 @@
 //!
 //! Every helper panics when something is not as expected, as a failed assertion does.
 
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,9 +11,9 @@ use std::time::Duration;
 
 use base64::Engine;
 
-use adapter_http::{ApiState, Pause, RunnerSettings};
+use adapter_http::{ApiState, InFlight, Limits, Pause, RateLimiter, RunnerSettings};
 use adapter_oidc::OidcIdentityVerification;
-use adapter_s3::S3ObjectStore;
+use adapter_s3::{S3ObjectStore, Timeouts};
 use app::domain::address::Address;
 use app::domain::check::{CheckDefinition, Command, Timeout};
 use app::domain::name::{OrganisationName, RepositoryName};
@@ -93,6 +94,7 @@ pub async fn serve_oidc() -> Server {
             &env("CODEHUB_TEST_KEYCLOAK_ISSUER"),
             "codehub",
             Duration::from_secs(1),
+            Duration::from_secs(10),
         )
         .unwrap(),
     );
@@ -107,6 +109,10 @@ fn objects() -> S3ObjectStore {
         &env("CODEHUB_TEST_S3_ACCESS_KEY"),
         &env("CODEHUB_TEST_S3_SECRET_KEY"),
         MAX_UPLOAD_SIZE,
+        Timeouts {
+            connect: Duration::from_secs(5),
+            total: Duration::from_secs(10),
+        },
     )
     .unwrap()
 }
@@ -132,6 +138,15 @@ async fn bind(stores: Arc<Stores>, identity: Arc<dyn IdentityVerification>) -> S
             pause,
         },
         readiness: Arc::new(()),
+        limits: Limits {
+            rate: RateLimiter::new(
+                NonZeroU32::MIN.saturating_add(999),
+                NonZeroU32::MIN.saturating_add(999),
+            ),
+            in_flight: InFlight::new(NonZeroUsize::MIN.saturating_add(9_999)),
+            request_timeout: Duration::from_secs(60),
+            body_bytes: 1 << 20,
+        },
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());

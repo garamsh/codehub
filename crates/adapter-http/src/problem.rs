@@ -36,6 +36,7 @@ pub struct Problem {
     status: StatusCode,
     detail: String,
     paths: Vec<String>,
+    retry_after: Option<u64>,
 }
 
 impl Problem {
@@ -44,6 +45,7 @@ impl Problem {
             status,
             detail: detail.into(),
             paths: Vec::new(),
+            retry_after: None,
         }
     }
 
@@ -56,6 +58,7 @@ impl Problem {
             status,
             detail: detail.into(),
             paths: paths.into_iter().collect(),
+            retry_after: None,
         }
     }
 
@@ -84,6 +87,46 @@ impl Problem {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, detail)
     }
 
+    /// The caller sent more requests than its bucket allows; it may try again in `retry_after`
+    /// seconds.
+    pub(crate) fn rate_limited(retry_after: u64) -> Self {
+        Self {
+            retry_after: Some(retry_after),
+            ..Self::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many requests; slow down",
+            )
+        }
+    }
+
+    /// The request body is larger than the server reads.
+    pub(crate) fn payload_too_large() -> Self {
+        Self::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "the request body is larger than the server accepts",
+        )
+    }
+
+    /// The process is serving as many requests as it takes at once; the caller may try again in
+    /// `retry_after` seconds.
+    pub(crate) fn overloaded(retry_after: u64) -> Self {
+        Self {
+            retry_after: Some(retry_after),
+            ..Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the server is serving as many requests as it can; try again",
+            )
+        }
+    }
+
+    /// The request took longer than the server allows.
+    pub(crate) fn timed_out() -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the request took longer than the server allows",
+        )
+    }
+
     /// A failure of ours; the body names no internals.
     fn internal() -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "the server failed")
@@ -106,6 +149,11 @@ impl IntoResponse for Problem {
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/problem+json"),
         );
+        if let Some(seconds) = self.retry_after {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from(seconds));
+        }
         if self.status == StatusCode::UNAUTHORIZED {
             response
                 .headers_mut()

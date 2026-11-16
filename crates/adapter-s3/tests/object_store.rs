@@ -6,7 +6,7 @@ use std::hash::BuildHasher;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use adapter_s3::S3ObjectStore;
+use adapter_s3::{S3ObjectStore, Timeouts};
 use app::domain::address::Address;
 use app::domain::repository::RepositoryId;
 use app::port::driven::object_store::{Grant, GrantMethod, ObjectStore, ObjectStoreError};
@@ -28,6 +28,10 @@ fn store(max_upload_size: u64) -> S3ObjectStore {
         &env("CODEHUB_TEST_S3_ACCESS_KEY"),
         &env("CODEHUB_TEST_S3_SECRET_KEY"),
         max_upload_size,
+        Timeouts {
+            connect: Duration::from_secs(5),
+            total: Duration::from_secs(10),
+        },
     )
     .unwrap()
 }
@@ -248,4 +252,50 @@ async fn answers_the_size_of_a_stored_blob_and_not_found_for_a_missing_one() {
         fresh_repository(),
     )
     .await;
+}
+
+#[tokio::test]
+async fn fails_a_request_the_store_never_answers_within_its_total_timeout() {
+    // The listener takes connections into its backlog and never reads or answers one.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let timeouts = Timeouts {
+        connect: Duration::from_secs(5),
+        total: Duration::from_millis(300),
+    };
+    let hung = S3ObjectStore::new(
+        &format!("http://{}", silent.local_addr().unwrap()),
+        "us-east-1",
+        "b",
+        "k",
+        "s",
+        MAX_UPLOAD_SIZE,
+        timeouts,
+    )
+    .unwrap();
+    let repository = fresh_repository();
+    let blob = Address::of(b"never stored");
+
+    let started = std::time::Instant::now();
+    let outcome = hung.size(repository, blob).await;
+
+    assert!(
+        matches!(outcome, Err(ObjectStoreError::Backend(_))),
+        "{outcome:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+    // The control: the same timeouts against the real store get an answer, not a timeout.
+    let real = S3ObjectStore::new(
+        &env("CODEHUB_TEST_S3_ENDPOINT"),
+        &env("CODEHUB_TEST_S3_REGION"),
+        &env("CODEHUB_TEST_S3_BUCKET"),
+        &env("CODEHUB_TEST_S3_ACCESS_KEY"),
+        &env("CODEHUB_TEST_S3_SECRET_KEY"),
+        MAX_UPLOAD_SIZE,
+        timeouts,
+    )
+    .unwrap();
+    assert!(matches!(
+        real.size(repository, blob).await,
+        Err(ObjectStoreError::NotFound(_))
+    ));
 }

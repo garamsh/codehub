@@ -16,6 +16,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use oauth_client::Authentication;
 
 use crate::Error;
+use crate::overload::{OverloadOptions, TimingOptions};
 
 /// The default of `--runner-claim-hold`, in seconds.
 const DEFAULT_CLAIM_HOLD: u64 = 30;
@@ -169,6 +170,10 @@ pub struct ApiOptions {
     pub(crate) directory: DirectoryOptions,
     #[command(flatten)]
     pub(crate) delivery: DeliveryOptions,
+    #[command(flatten)]
+    pub(crate) overload: OverloadOptions,
+    #[command(flatten)]
+    pub(crate) timing: TimingOptions,
 }
 
 /// The options of `runner-api`.
@@ -190,6 +195,10 @@ pub struct RunnerApiOptions {
     pub(crate) landing: LandingOptions,
     #[command(flatten)]
     pub(crate) runner: RunnerOptions,
+    #[command(flatten)]
+    pub(crate) overload: OverloadOptions,
+    #[command(flatten)]
+    pub(crate) timing: TimingOptions,
 }
 
 /// The options of `worker`.
@@ -203,6 +212,8 @@ pub struct WorkerOptions {
     pub(crate) authzen: AuthzenClientOptions,
     #[command(flatten)]
     pub(crate) directory: DirectoryOptions,
+    #[command(flatten)]
+    pub(crate) timing: TimingOptions,
 }
 
 /// The options of `migrate`.
@@ -235,6 +246,10 @@ pub struct AllOptions {
     pub(crate) directory: DirectoryOptions,
     #[command(flatten)]
     pub(crate) delivery: DeliveryOptions,
+    #[command(flatten)]
+    pub(crate) overload: OverloadOptions,
+    #[command(flatten)]
+    pub(crate) timing: TimingOptions,
 }
 
 /// Where a serving role listens.
@@ -902,6 +917,7 @@ fn require<'a>(value: &'a Option<String>, setting: &'static str) -> Result<&'a s
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
     use std::sync::OnceLock;
 
     use clap::CommandFactory;
@@ -967,6 +983,20 @@ mod tests {
             },
             delivery: DeliveryOptions {
                 directory_delivery_wait: 2,
+            },
+            overload: OverloadOptions {
+                rate_limit_per_second: NonZeroU32::MIN,
+                rate_limit_burst: NonZeroU32::MIN,
+                max_body_size: NonZeroUsize::MIN,
+                request_timeout_seconds: 1,
+                max_in_flight: NonZeroUsize::MIN,
+                identity_timeout_seconds: 1,
+                s3_connect_timeout_seconds: 1,
+                s3_timeout_seconds: 1,
+            },
+            timing: TimingOptions {
+                authzen_timeout_seconds: 1,
+                shutdown_deadline_seconds: 1,
             },
         }
     }
@@ -1054,7 +1084,7 @@ mod tests {
     #[test]
     fn each_role_takes_the_options_it_uses_and_no_others() {
         let all = options_of("all");
-        assert_eq!(all.len(), 38, "{all:?}");
+        assert_eq!(all.len(), 48, "{all:?}");
         let without = |role: &str, left_out: &[&str]| {
             let taken = options_of(role);
             let expected: Vec<String> = all
@@ -1093,6 +1123,16 @@ mod tests {
         let directory_settings = ["directory-changes", "directory-garam-url"];
         let creation_wait = ["directory-delivery-wait"];
         let landing = ["landing-attempts"];
+        let overload_settings = [
+            "rate-limit-per-second",
+            "rate-limit-burst",
+            "max-body-size",
+            "request-timeout-seconds",
+            "max-in-flight",
+            "identity-timeout-seconds",
+            "s3-connect-timeout-seconds",
+            "s3-timeout-seconds",
+        ];
         let concat = |parts: &[&[&'static str]]| -> Vec<&'static str> {
             parts.iter().flat_map(|part| part.iter().copied()).collect()
         };
@@ -1110,6 +1150,7 @@ mod tests {
                 &runner_settings,
                 &creation_wait,
                 &landing,
+                &overload_settings,
             ]),
         );
         assert_eq!(
