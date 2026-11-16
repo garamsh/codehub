@@ -27,7 +27,7 @@ A tag `vX.Y.Z`, `vX.Y.Z-dev.N` or `vX.Y.Z-rc.N` of this repository publishes bot
 - Both run as user 10001, not root, and are based on `debian:trixie-slim` with CA certificates.
 - Both carry `org.opencontainers.image.version` and `org.opencontainers.image.revision` labels.
 - No address, URL or secret is set at build time. Every setting comes from the variables below at run.
-- Arguments given to the container are the options below, after the entrypoint.
+- The container takes a role first (`api`, `runner-api`, `worker`, `migrate` or `all`), then that role's options, after the entrypoint; with no role it runs `all`.
 - A push that fails between the two images leaves only the server published. The repositories are tag-immutable, so a re-run cannot repair it and the repair is the next version.
 
 ## Server roles
@@ -150,4 +150,4 @@ With the host driver the runner serves no port; with the gaon driver it serves o
 
 ## How the runner reaches the server
 
-The runner calls the server's HTTP API under `/v1/runner/` at `CODEHUB_RUNNER_SERVER`, outbound only: the server never connects to a runner. It presents a bearer token from the issuer the server accepts, and the principal it names must be registered as a runner of the organisation or repository with the labels its jobs need (`docs/architecture/runner.md`, ADR 0034).
+The runner calls the server's HTTP API under `/v1/runner/` at `CODEHUB_RUNNER_SERVER`, outbound only: the server never connects to a runner. With the roles split, route `/v1/runner/` to `runner-api` and every other path under `/v1` to `api`; `api` answers 404 for the runner's paths and `runner-api` for every other `/v1` path. It presents a bearer token from the issuer the server accepts, and the principal it names must be registered as a runner of the organisation or repository with the labels its jobs need (`docs/architecture/runner.md`, ADR 0034).

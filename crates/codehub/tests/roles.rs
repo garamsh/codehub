@@ -126,6 +126,40 @@ async fn the_worker_delivers_the_directory_outbox() {
     }
 }
 
+/// A migrated database holding one outbox entry.
+#[cfg(test)]
+async fn database_with_an_entry() -> TestDatabase {
+    let database = TestDatabase::new().await;
+    migrate(&database);
+    let mut connection = PgConnection::connect(&database.url()).await.unwrap();
+    sqlx::query(
+        "insert into directory_outbox (repository, organisation, name, kind, sequence) \
+         values (1, 'acme', 'app', 'created', 1)",
+    )
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    database
+}
+
+#[tokio::test]
+async fn api_leaves_an_outbox_entry_that_all_delivers() {
+    let entries = "select count(*) from directory_outbox";
+    let for_api = database_with_an_entry().await;
+    let for_all = database_with_an_entry().await;
+    let _api = Server::start_role("api", &for_api, &[]);
+    let _all = Server::start_role("all", &for_all, &[]);
+
+    // The control: `all` delivers its entry within the bound.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while count(&for_all, entries).await != 0 {
+        assert!(Instant::now() < deadline, "all did not relay the entry");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    // `api` started beside it with the same chance and delivered nothing.
+    assert_eq!(count(&for_api, entries).await, 1);
+}
+
 #[tokio::test]
 async fn a_serving_role_is_alive_but_not_ready_until_the_database_is_migrated() {
     for role in ["api", "runner-api", "worker"] {
@@ -166,6 +200,16 @@ async fn a_role_does_not_migrate_where_it_starts() {
         .await
         .unwrap();
     assert_eq!(table, None);
+
+    // The control: `all` migrates a fresh database where it starts.
+    let migrated = TestDatabase::new().await;
+    let _all = Server::start_role("all", &migrated, &[]);
+    let mut connection = PgConnection::connect(&migrated.url()).await.unwrap();
+    let table: Option<String> = sqlx::query_scalar("select to_regclass('_sqlx_migrations')::text")
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+    assert!(table.is_some());
 }
 
 #[tokio::test]

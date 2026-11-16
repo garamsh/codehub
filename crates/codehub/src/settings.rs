@@ -1019,6 +1019,8 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(with(&[]), ["all"]);
+        // A flag's value that is a role's name is a value, not a role.
+        assert_eq!(with(&["--identity", "api"]), ["all", "--identity", "api"]);
         assert_eq!(
             with(&["--listen=127.0.0.1:1"]),
             ["all", "--listen=127.0.0.1:1"]
