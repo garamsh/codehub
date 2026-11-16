@@ -3,6 +3,7 @@
 
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -17,11 +18,17 @@ use tokio::net::unix::pipe;
 use tokio::process::Command;
 
 use crate::executor::{End, Execution, Executor, ExecutorError, Stop};
-use crate::job_source::{Address, Job, JobFile, Produced, ProducedFile, RelativePath};
+use crate::job_source::{
+    Address, Change, Job, JobFile, Produced, ProducedFile, RelativePath, RunOutcome, RunWork,
+    Stream,
+};
 use crate::object_cache::{ObjectCache, ObjectCounts};
 
 /// How much of a command's output a report carries.
 pub const OUTPUT_LIMIT: usize = 64 * 1024;
+
+/// How much of each of a run's output streams is kept whole; past it, the last of it is kept.
+pub const STREAM_LIMIT: usize = 64 * 1024 * 1024;
 
 /// How long a stopped command has to end after it is asked to, before it is killed.
 pub const STOP_GRACE: Duration = Duration::from_secs(5);
@@ -29,22 +36,40 @@ pub const STOP_GRACE: Duration = Duration::from_secs(5);
 /// How long the runner waits for the command's output to end once its shell has exited.
 const DRAIN_WAIT: Duration = Duration::from_secs(5);
 
-/// The end of a byte stream, at most [`OUTPUT_LIMIT`] bytes of it kept.
-#[derive(Default)]
-struct Tail(Vec<u8>);
+/// The end of a byte stream, at most `limit` bytes of it kept.
+struct Tail {
+    bytes: Vec<u8>,
+    limit: usize,
+    cut: bool,
+}
+
+impl Default for Tail {
+    fn default() -> Self {
+        Self::with_limit(OUTPUT_LIMIT)
+    }
+}
 
 impl Tail {
+    const fn with_limit(limit: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            limit,
+            cut: false,
+        }
+    }
+
     fn push(&mut self, bytes: &[u8]) {
-        self.0.extend_from_slice(bytes);
-        if self.0.len() > 2 * OUTPUT_LIMIT {
-            self.0.drain(..self.0.len() - OUTPUT_LIMIT);
+        self.bytes.extend_from_slice(bytes);
+        if self.bytes.len() > 2 * self.limit {
+            self.bytes.drain(..self.bytes.len() - self.limit);
+            self.cut = true;
         }
     }
 
     /// The kept bytes as text, cut so that it starts on a character boundary.
     fn text(&self) -> String {
-        let start = self.0.len().saturating_sub(OUTPUT_LIMIT);
-        let kept = self.0.get(start..).unwrap_or_default();
+        let start = self.bytes.len().saturating_sub(self.limit);
+        let kept = self.bytes.get(start..).unwrap_or_default();
         let skip = kept
             .iter()
             .take(3)
@@ -52,11 +77,19 @@ impl Tail {
             .count();
         let kept = kept.get(skip..).unwrap_or_default();
         let text = String::from_utf8_lossy(kept).into_owned();
-        let mut from = text.len().saturating_sub(OUTPUT_LIMIT);
+        let mut from = text.len().saturating_sub(self.limit);
         while !text.is_char_boundary(from) {
             from += 1;
         }
         text.get(from..).unwrap_or_default().to_owned()
+    }
+
+    /// The last `limit` bytes, and whether anything before them was dropped.
+    fn into_stream(mut self) -> Stream {
+        let cut = self.cut || self.bytes.len() > self.limit;
+        self.bytes
+            .drain(..self.bytes.len().saturating_sub(self.limit));
+        Stream::new(self.bytes, cut)
     }
 }
 
@@ -89,6 +122,16 @@ impl HostExecutor {
         }
     }
 
+    /// Removes the partial files an earlier runner left in the object cache. Call it once, before
+    /// the first job.
+    ///
+    /// # Errors
+    ///
+    /// An I/O error while listing or removing.
+    pub async fn clean(&self) -> std::io::Result<()> {
+        self.cache.clean().await
+    }
+
     /// The same executor, giving a stopped command `grace` to end before it is killed.
     #[must_use]
     pub const fn with_grace(mut self, grace: Duration) -> Self {
@@ -109,17 +152,25 @@ impl HostExecutor {
                     end: End::Stopped(reason),
                     output: String::new(),
                     produced: Produced::default(),
+                    objects: None,
+                    run: None,
                 });
             }
             fetched = self.fetch_all(job, dir, counts) => fetched,
         };
         fetched?;
         let mut execution = self.command(job, dir, stop).await?;
-        if execution.end == End::Exited(0) {
-            execution.produced = Produced {
-                outputs: collect(dir, &job.outputs).await?,
-                caches: collect(dir, &job.caches).await?,
-            };
+        match (&job.run, execution.end) {
+            (None, End::Exited(0)) => execution.produced = collect_produced(dir, job).await?,
+            (Some(run), End::Exited(_)) => {
+                execution.produced = collect_produced(dir, job).await?;
+                let (changes, refused) = changes(dir, job, run).await?;
+                if let Some(outcome) = &mut execution.run {
+                    outcome.changes = changes;
+                    outcome.refused = refused;
+                }
+            }
+            _ => {}
         }
         Ok(execution)
     }
@@ -133,10 +184,22 @@ impl HostExecutor {
         for file in &job.files {
             self.fetch(file, dir, counts).await?;
         }
+        for cache in job.run.iter().flat_map(|run| &run.caches) {
+            let base = dir.join(cache.path.as_path());
+            tokio::fs::create_dir_all(&base)
+                .await
+                .map_err(|error| ExecutorError::Download {
+                    path: cache.path.to_string(),
+                    reason: error.to_string(),
+                })?;
+            for file in &cache.files {
+                self.fetch(file, &base, counts).await?;
+            }
+        }
         Ok(())
     }
 
-    /// Writes the file into the job's directory from the object cache, or else from the server
+    /// Writes the file into `dir` from the object cache, or else from the server
     /// and then into the cache.
     async fn fetch(
         &self,
@@ -220,23 +283,44 @@ impl HostExecutor {
         dir: &Path,
         stop: &mut Stop,
     ) -> Result<Execution, ExecutorError> {
-        let (reader, writer) = std::io::pipe().map_err(ExecutorError::Spawn)?;
-        let writer_again = writer.try_clone().map_err(ExecutorError::Spawn)?;
+        let is_run = job.run.is_some();
+        let (out_reader, out_writer) = std::io::pipe().map_err(ExecutorError::Spawn)?;
+        // A check's streams share one pipe; a run's are kept apart.
+        let (err_reader, err_writer) = if is_run {
+            let (reader, writer) = std::io::pipe().map_err(ExecutorError::Spawn)?;
+            (Some(reader), writer)
+        } else {
+            (None, out_writer.try_clone().map_err(ExecutorError::Spawn)?)
+        };
         let mut command = Command::new("/bin/sh");
         command
             .arg("-c")
             .arg(&job.command)
             .current_dir(dir)
-            .env("CODEHUB_ORGANISATION", &job.organisation)
-            .env("CODEHUB_REPOSITORY", job.repository.to_string())
-            .env("CODEHUB_CHANGESET", job.changeset.to_string())
-            .env("CODEHUB_CHECK", &job.check)
-            .env("CODEHUB_FOLDER", &job.folder)
             .stdin(Stdio::null())
-            .stdout(writer)
-            .stderr(writer_again)
+            .stdout(out_writer)
+            .stderr(err_writer)
             .process_group(0)
             .kill_on_drop(true);
+        match &job.run {
+            Some(run) => {
+                // The job's `env` is the whole of the command's CODEHUB_* variables.
+                for (name, _) in std::env::vars_os() {
+                    if name.to_string_lossy().starts_with("CODEHUB_") {
+                        command.env_remove(name);
+                    }
+                }
+                command.envs(run.env.iter().map(|(name, value)| (name, value)));
+            }
+            None => {
+                command
+                    .env("CODEHUB_ORGANISATION", &job.organisation)
+                    .env("CODEHUB_REPOSITORY", job.repository.to_string())
+                    .env("CODEHUB_CHANGESET", job.changeset.to_string())
+                    .env("CODEHUB_CHECK", &job.check)
+                    .env("CODEHUB_FOLDER", &job.folder);
+            }
+        }
         if let Some(hidden) = &self.hidden {
             command.env_remove(hidden);
         }
@@ -248,13 +332,24 @@ impl HostExecutor {
             .id()
             .and_then(|id| i32::try_from(id).ok())
             .and_then(Pid::from_raw);
-        let receiver =
-            pipe::Receiver::from_owned_fd(OwnedFd::from(reader)).map_err(ExecutorError::Spawn)?;
-        let tail = Arc::new(Mutex::new(Tail::default()));
-        let drain = tokio::spawn(read_into(receiver, Arc::clone(&tail)));
+        let limit = if is_run { STREAM_LIMIT } else { OUTPUT_LIMIT };
+        let out_tail = Arc::new(Mutex::new(Tail::with_limit(limit)));
+        let err_tail = Arc::new(Mutex::new(Tail::with_limit(limit)));
+        let mut drains = vec![tokio::spawn(read_into(
+            pipe::Receiver::from_owned_fd(OwnedFd::from(out_reader))
+                .map_err(ExecutorError::Spawn)?,
+            Arc::clone(&out_tail),
+        ))];
+        if let Some(reader) = err_reader {
+            drains.push(tokio::spawn(read_into(
+                pipe::Receiver::from_owned_fd(OwnedFd::from(reader))
+                    .map_err(ExecutorError::Spawn)?,
+                Arc::clone(&err_tail),
+            )));
+        }
 
         let end = tokio::select! {
-            status = child.wait() => classify(status.map_err(ExecutorError::Spawn)?),
+            status = child.wait() => classify(status.map_err(ExecutorError::Spawn)?, is_run),
             reason = stop.requested() => {
                 signal(group, Signal::TERM);
                 if tokio::time::timeout(self.grace, child.wait()).await.is_err() {
@@ -266,15 +361,42 @@ impl HostExecutor {
         };
         // Whatever the command left running in its group goes with it.
         signal(group, Signal::KILL);
-        let drain_abort = drain.abort_handle();
-        if tokio::time::timeout(DRAIN_WAIT, drain).await.is_err() {
-            drain_abort.abort();
+        let aborts: Vec<_> = drains
+            .iter()
+            .map(tokio::task::JoinHandle::abort_handle)
+            .collect();
+        let drained = async {
+            for drain in drains {
+                let _ = drain.await;
+            }
+        };
+        if tokio::time::timeout(DRAIN_WAIT, drained).await.is_err() {
+            for abort in aborts {
+                abort.abort();
+            }
         }
-        let output = tail.lock().unwrap_or_else(PoisonError::into_inner).text();
+        let take = |tail: Arc<Mutex<Tail>>| {
+            std::mem::replace(
+                &mut *tail.lock().unwrap_or_else(PoisonError::into_inner),
+                Tail::with_limit(limit),
+            )
+        };
+        let (output, run) = if is_run {
+            let outcome = RunOutcome {
+                stdout: Some(take(out_tail).into_stream()),
+                stderr: Some(take(err_tail).into_stream()),
+                ..RunOutcome::default()
+            };
+            (String::new(), Some(outcome))
+        } else {
+            (take(out_tail).text(), None)
+        };
         Ok(Execution {
             end,
             output,
             produced: Produced::default(),
+            objects: None,
+            run,
         })
     }
 }
@@ -323,6 +445,169 @@ async fn collect(
     Ok(found)
 }
 
+/// What lies at `path` under `dir`, looking at every component without following a link.
+enum Place {
+    /// The path leads only through directories; the last component's metadata, if it exists.
+    Reached(Option<std::fs::Metadata>),
+    /// A component before the last is a link.
+    Linked,
+}
+
+async fn place(dir: &Path, path: &RelativePath) -> Result<Place, ExecutorError> {
+    let mut at = dir.to_path_buf();
+    let mut parts = path.as_path().components().peekable();
+    while let Some(part) = parts.next() {
+        at.push(part);
+        let metadata = match tokio::fs::symlink_metadata(&at).await {
+            Ok(metadata) => metadata,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Ok(Place::Reached(None));
+            }
+            Err(error) => {
+                return Err(ExecutorError::Collect {
+                    path: path.to_string(),
+                    reason: error.to_string(),
+                });
+            }
+        };
+        if parts.peek().is_none() {
+            return Ok(Place::Reached(Some(metadata)));
+        }
+        if metadata.file_type().is_symlink() {
+            return Ok(Place::Linked);
+        }
+        if !metadata.is_dir() {
+            return Ok(Place::Reached(None));
+        }
+    }
+    Ok(Place::Reached(None))
+}
+
+/// The files the job declares as outputs and caches, none of them reached through a link.
+async fn collect_produced(dir: &Path, job: &Job) -> Result<Produced, ExecutorError> {
+    let mut outputs = Vec::new();
+    let mut caches = Vec::new();
+    for (declared, kept) in [(&job.outputs, &mut outputs), (&job.caches, &mut caches)] {
+        let mut clear = Vec::new();
+        for path in declared {
+            if matches!(place(dir, path).await?, Place::Reached(_)) {
+                clear.push(path.clone());
+            }
+        }
+        *kept = collect(dir, &clear).await?;
+    }
+    Ok(Produced { outputs, caches })
+}
+
+/// The run's changes to the workspace's files, and what it left that cannot be a change.
+/// A path under a cache path is never a change.
+async fn changes(
+    dir: &Path,
+    job: &Job,
+    run: &RunWork,
+) -> Result<(Vec<Change>, Vec<String>), ExecutorError> {
+    let under_cache = |path: &Path| {
+        job.caches
+            .iter()
+            .any(|cache| path.starts_with(cache.as_path()))
+    };
+    let mut changes = Vec::new();
+    let mut refused = Vec::new();
+    for declared in job.outputs.iter().chain(&job.caches) {
+        if matches!(place(dir, declared).await?, Place::Linked) {
+            refused.push(declared.to_string());
+        }
+    }
+    let sent: std::collections::HashSet<String> =
+        job.files.iter().map(|file| file.path.to_string()).collect();
+    for file in &job.files {
+        if under_cache(file.path.as_path()) {
+            continue;
+        }
+        match place(dir, &file.path).await? {
+            Place::Reached(None) => changes.push(Change::Deleted(file.path.clone())),
+            Place::Linked => refused.push(file.path.to_string()),
+            Place::Reached(Some(metadata)) if metadata.is_file() => {
+                let executable = metadata.permissions().mode() & 0o111 != 0;
+                let bytes = read_file(dir, &file.path).await?;
+                let address = Address::new(Sha256::digest(&bytes).into());
+                if address != file.address || executable != file.executable {
+                    changes.push(Change::Written(ProducedFile {
+                        path: file.path.clone(),
+                        address,
+                        executable,
+                        bytes,
+                    }));
+                }
+            }
+            Place::Reached(Some(_)) => refused.push(file.path.to_string()),
+        }
+    }
+    let mut written = std::collections::HashSet::new();
+    for added in &run.add {
+        let mut pending = vec![(dir.join(added.as_path()), added.to_string())];
+        if matches!(place(dir, added).await?, Place::Linked) {
+            refused.push(added.to_string());
+            continue;
+        }
+        while let Some((at, name)) = pending.pop() {
+            if under_cache(Path::new(&name)) {
+                continue;
+            }
+            let fail = |error: std::io::Error| ExecutorError::Collect {
+                path: name.clone(),
+                reason: error.to_string(),
+            };
+            let metadata = match tokio::fs::symlink_metadata(&at).await {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(fail(error)),
+            };
+            if metadata.is_dir() {
+                let mut entries = tokio::fs::read_dir(&at).await.map_err(fail)?;
+                while let Some(entry) = entries.next_entry().await.map_err(fail)? {
+                    let child = entry.file_name().to_string_lossy().into_owned();
+                    pending.push((entry.path(), format!("{name}/{child}")));
+                }
+            } else if metadata.is_file() {
+                if sent.contains(&name) || !written.insert(name.clone()) {
+                    continue;
+                }
+                let path: RelativePath = name.parse().map_err(|error| ExecutorError::Collect {
+                    path: name.clone(),
+                    reason: format!("{error}"),
+                })?;
+                let bytes = tokio::fs::read(&at).await.map_err(fail)?;
+                changes.push(Change::Written(ProducedFile {
+                    address: Address::new(Sha256::digest(&bytes).into()),
+                    executable: metadata.permissions().mode() & 0o111 != 0,
+                    path,
+                    bytes,
+                }));
+            } else {
+                refused.push(name);
+            }
+        }
+    }
+    refused.sort();
+    refused.dedup();
+    Ok((changes, refused))
+}
+
+async fn read_file(dir: &Path, path: &RelativePath) -> Result<Vec<u8>, ExecutorError> {
+    tokio::fs::read(dir.join(path.as_path()))
+        .await
+        .map_err(|error| ExecutorError::Collect {
+            path: path.to_string(),
+            reason: error.to_string(),
+        })
+}
+
 async fn read_into(mut receiver: pipe::Receiver, tail: Arc<Mutex<Tail>>) {
     let mut buffer = vec![0_u8; 16 * 1024];
     loop {
@@ -336,8 +621,13 @@ async fn read_into(mut receiver: pipe::Receiver, tail: Arc<Mutex<Tail>>) {
     }
 }
 
-fn classify(status: ExitStatus) -> End {
-    status.code().map_or(End::Signalled, End::Exited)
+/// A run reports a signal as the shell does, 128 plus its number; a check reports none.
+fn classify(status: ExitStatus, is_run: bool) -> End {
+    match (status.code(), status.signal()) {
+        (Some(code), _) => End::Exited(code),
+        (None, Some(number)) if is_run => End::Exited(128 + number),
+        (None, _) => End::Signalled,
+    }
 }
 
 /// Sends `signal` to every process of `group`, ignoring that none is left.
@@ -400,7 +690,10 @@ impl Executor for HostExecutor {
             "job {}: {} objects downloaded, {} taken from the object cache",
             job.id, counts.downloaded, counts.cached
         );
-        result
+        result.map(|execution| Execution {
+            objects: Some(counts),
+            ..execution
+        })
     }
 }
 

@@ -53,10 +53,16 @@ pub async fn run(
 }
 
 async fn run_job(source: &dyn JobSource, executor: &dyn Executor, job: &Job) {
-    eprintln!(
-        "job {} started: {} check {} of {} in repository {}",
-        job.id, job.check, job.changeset, job.organisation, job.repository
-    );
+    match &job.run {
+        Some(run) => eprintln!(
+            "job {} started: run in draft {} of {} in repository {}",
+            job.id, run.draft, job.organisation, job.repository
+        ),
+        None => eprintln!(
+            "job {} started: {} check {} of {} in repository {}",
+            job.id, job.check, job.changeset, job.organisation, job.repository
+        ),
+    }
     let (signal, stop) = Stop::channel();
     let execution = executor.run(job, stop);
     tokio::pin!(execution);
@@ -64,7 +70,7 @@ async fn run_job(source: &dyn JobSource, executor: &dyn Executor, job: &Job) {
         result = &mut execution => result,
         never = keep_alive(source, job, &signal) => match never {},
     };
-    let report = report_of(result);
+    let report = report_of(job, result);
     eprintln!("job {} ended: {:?}", job.id, report.status);
     if let Err(error) = source.report(job.id, &report).await {
         eprintln!("job {}: reporting failed: {error}", job.id);
@@ -91,12 +97,15 @@ async fn keep_alive(source: &dyn JobSource, job: &Job, signal: &StopSignal) -> I
     }
 }
 
-fn report_of(result: Result<Execution, ExecutorError>) -> Report {
+fn report_of(job: &Job, result: Result<Execution, ExecutorError>) -> Report {
+    let is_run = job.run.is_some();
     match result {
         Ok(Execution {
             end,
             output,
             produced,
+            objects,
+            run,
         }) => {
             let (status, exit_code) = match end {
                 End::Exited(0) => (Status::Passed, Some(0)),
@@ -105,23 +114,30 @@ fn report_of(result: Result<Execution, ExecutorError>) -> Report {
                 End::Stopped(StopReason::TimedOut) => (Status::TimedOut, None),
                 End::Stopped(StopReason::Cancelled) => (Status::Cancelled, None),
             };
+            // A run's files count whatever the exit code; a check's only when it passed.
+            let kept = status == Status::Passed || (is_run && exit_code.is_some());
             Report {
                 status,
                 exit_code,
                 output,
-                produced: if status == Status::Passed {
-                    produced
-                } else {
-                    Produced::default()
-                },
+                produced: if kept { produced } else { Produced::default() },
+                objects,
+                run: is_run.then(|| run.unwrap_or_default()),
             }
         }
-        Err(error) => Report {
-            status: Status::Failed,
-            exit_code: None,
-            output: error.to_string(),
-            produced: Produced::default(),
-        },
+        Err(error) => {
+            if is_run {
+                eprintln!("job {}: the executor failed: {error}", job.id);
+            }
+            Report {
+                status: Status::Failed,
+                exit_code: None,
+                output: error.to_string(),
+                produced: Produced::default(),
+                objects: None,
+                run: is_run.then(Default::default),
+            }
+        }
     }
 }
 
@@ -149,6 +165,7 @@ mod tests {
             command: "true".into(),
             heartbeat_interval: Duration::from_secs(5),
             files: Vec::new(),
+            run: None,
         }
     }
 
@@ -217,12 +234,16 @@ mod tests {
                     end: End::Stopped(reason),
                     output: "stopped".into(),
                     produced: Produced::default(),
+                    objects: None,
+                    run: None,
                 }),
                 () = tokio::time::sleep(self.after) => match &self.end {
                     Ok(end) => Ok(Execution {
                         end: *end,
                         output: "out".into(),
                         produced: Produced::default(),
+                        objects: None,
+                        run: None,
                     }),
                     Err(text) => Err(ExecutorError::Mismatch { path: text.clone() }),
                 },
@@ -250,6 +271,8 @@ mod tests {
                 exit_code: Some(0),
                 output: "out".into(),
                 produced: Produced::default(),
+                objects: None,
+                run: None,
             }]
         );
     }
@@ -285,6 +308,105 @@ mod tests {
         let [report] = source.reported().try_into().unwrap();
         assert_eq!(report.status, Status::Failed);
         assert!(report.output.contains("bad"), "{}", report.output);
+    }
+
+    /// Answers every job with `execution`.
+    struct Answers(Execution);
+
+    #[async_trait]
+    impl Executor for Answers {
+        async fn run(&self, _: &Job, _: Stop) -> Result<Execution, ExecutorError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn run_source() -> Source {
+        let mut run = job();
+        run.run = Some(crate::job_source::RunWork {
+            draft: "feature".into(),
+            add: Vec::new(),
+            env: Vec::new(),
+            caches: Vec::new(),
+        });
+        let source = Source::default();
+        source.claims.lock().unwrap().push_back(Ok(Some(run)));
+        source
+    }
+
+    fn produced_one() -> Produced {
+        Produced {
+            outputs: vec![crate::job_source::ProducedFile {
+                path: "out/a".parse().unwrap(),
+                address: Address::new([5; 32]),
+                executable: false,
+                bytes: b"a".to_vec(),
+            }],
+            caches: Vec::new(),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_run_that_exits_nonzero_is_reported_with_its_outcome_and_its_files() {
+        let source = run_source();
+        let outcome = crate::job_source::RunOutcome {
+            refused: vec!["x".into()],
+            ..Default::default()
+        };
+        let executor = Answers(Execution {
+            end: End::Exited(2),
+            output: String::new(),
+            produced: produced_one(),
+            objects: None,
+            run: Some(outcome.clone()),
+        });
+        run(&source, &executor, Mode::Once).await.unwrap();
+        let [report] = source.reported().try_into().unwrap();
+        assert_eq!(report.exit_code, Some(2));
+        assert_eq!(report.run, Some(outcome));
+        assert_eq!(report.produced.outputs.len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_check_that_exits_nonzero_reports_no_files() {
+        let source = Source::with_job();
+        let executor = Answers(Execution {
+            end: End::Exited(2),
+            output: String::new(),
+            produced: produced_one(),
+            objects: None,
+            run: None,
+        });
+        run(&source, &executor, Mode::Once).await.unwrap();
+        let [report] = source.reported().try_into().unwrap();
+        assert!(report.produced.outputs.is_empty());
+        assert_eq!(report.run, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_run_stopped_or_failed_by_its_executor_reports_an_empty_outcome_and_no_files() {
+        let source = run_source();
+        let executor = Answers(Execution {
+            end: End::Stopped(StopReason::TimedOut),
+            output: String::new(),
+            produced: produced_one(),
+            objects: None,
+            run: None,
+        });
+        run(&source, &executor, Mode::Once).await.unwrap();
+        let [report] = source.reported().try_into().unwrap();
+        assert_eq!(report.status, Status::TimedOut);
+        assert_eq!(report.run, Some(crate::job_source::RunOutcome::default()));
+        assert!(report.produced.outputs.is_empty());
+
+        let source = run_source();
+        let executor = Executes {
+            after: Duration::from_secs(1),
+            end: Err("bad".into()),
+        };
+        run(&source, &executor, Mode::Once).await.unwrap();
+        let [report] = source.reported().try_into().unwrap();
+        assert_eq!(report.exit_code, None);
+        assert_eq!(report.run, Some(crate::job_source::RunOutcome::default()));
     }
 
     #[tokio::test(start_paused = true)]

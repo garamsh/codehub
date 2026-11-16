@@ -53,6 +53,7 @@ fn job(id: u64, command: &str) -> Job {
         command: command.into(),
         heartbeat_interval: Duration::from_secs(5),
         files: Vec::new(),
+        run: None,
     }
 }
 

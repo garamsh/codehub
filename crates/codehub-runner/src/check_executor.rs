@@ -91,6 +91,7 @@ async fn execute(
         command: command.to_owned(),
         heartbeat_interval: Duration::ZERO,
         files: Vec::new(),
+        run: None,
     };
     let (signal, stop) = Stop::channel();
     let running = executor.run(&job, stop);

@@ -5,7 +5,8 @@ use std::fmt;
 use async_trait::async_trait;
 use tokio::sync::watch;
 
-use crate::job_source::{Job, Produced, StopReason};
+use crate::job_source::{Job, Produced, RunOutcome, StopReason};
+use crate::object_cache::ObjectCounts;
 
 /// How the job's command ended.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -25,8 +26,14 @@ pub struct Execution {
     pub end: End,
     /// The end of the command's combined output.
     pub output: String,
-    /// The files the command left under the check's outputs and caches; none unless it exited 0.
+    /// The files the command left under the outputs and caches; none unless it exited 0, or, for a
+    /// run, exited with any code.
     pub produced: Produced,
+    /// The objects the job's files took, where the driver counts them.
+    pub objects: Option<ObjectCounts>,
+    /// What a run's command left; none unless the job is a run and its command ended with an
+    /// exit code.
+    pub run: Option<RunOutcome>,
 }
 
 /// Why a driver could not run the job's command.

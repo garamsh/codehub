@@ -8,7 +8,7 @@ use axum::Router;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 
-use crate::job_source::{Download, JobId, StopReason};
+use crate::job_source::{Download, JobId, RunCache, StopReason};
 
 use super::*;
 
@@ -42,6 +42,7 @@ fn job(command: &str) -> Job {
         command: command.into(),
         heartbeat_interval: Duration::from_secs(5),
         files: Vec::new(),
+        run: None,
     }
 }
 
@@ -542,5 +543,415 @@ async fn the_cache_is_brought_within_its_limit_after_a_job_oldest_used_first() {
     second.files = vec![file("b", b"5678", &url, false)];
     run_counted(&executor, &second).await;
     assert_eq!(names(), [cached_name(b"5678")]);
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+/// A run of `command`, whose workspace holds `files` and whose `add` paths are `add`.
+fn run_of(command: &str, files: Vec<JobFile>, add: &[&str]) -> Job {
+    let mut job = job(command);
+    job.check = String::new();
+    job.files = files;
+    job.run = Some(RunWork {
+        draft: "feature".into(),
+        add: add.iter().map(|path| path.parse().unwrap()).collect(),
+        env: vec![
+            ("CODEHUB_ORGANISATION".into(), "acme".into()),
+            ("CODEHUB_DRAFT".into(), "feature".into()),
+        ],
+        caches: Vec::new(),
+    });
+    job
+}
+
+fn outcome(execution: &Execution) -> &RunOutcome {
+    execution.run.as_ref().unwrap()
+}
+
+fn written(outcome: &RunOutcome, path: &str) -> Option<ProducedFile> {
+    outcome.changes.iter().find_map(|change| match change {
+        Change::Written(file) if file.path.to_string() == path => Some(file.clone()),
+        Change::Written(_) | Change::Deleted(_) => None,
+    })
+}
+
+fn deleted(outcome: &RunOutcome, path: &str) -> bool {
+    outcome
+        .changes
+        .iter()
+        .any(|change| matches!(change, Change::Deleted(gone) if gone.to_string() == path))
+}
+
+#[tokio::test]
+async fn a_run_reports_its_modified_deleted_and_added_files_and_not_an_untracked_one() {
+    let work = scratch();
+    let (kept, edited, removed) = (
+        serve(b"kept").await,
+        serve(b"old").await,
+        serve(b"gone").await,
+    );
+    let job = run_of(
+        "echo new > edited.txt; rm removed.txt; mkdir -p docs; echo fresh > docs/new.md; echo x > stray.txt",
+        vec![
+            file("kept.txt", b"kept", &kept, false),
+            file("edited.txt", b"old", &edited, false),
+            file("removed.txt", b"gone", &removed, false),
+        ],
+        &["docs"],
+    );
+    let execution = run(&executor(&work), &job).await.unwrap();
+    assert_eq!(execution.end, End::Exited(0));
+    let outcome = outcome(&execution);
+    assert_eq!(
+        written(outcome, "edited.txt").unwrap().address,
+        address_of(b"new\n")
+    );
+    assert!(deleted(outcome, "removed.txt"));
+    assert_eq!(
+        written(outcome, "docs/new.md").unwrap().bytes,
+        b"fresh\n".to_vec()
+    );
+    assert_eq!(outcome.changes.len(), 3, "{:?}", outcome.changes);
+    assert!(outcome.refused.is_empty());
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn a_changed_executable_bit_is_a_change_and_the_new_bit_is_reported() {
+    let work = scratch();
+    let url = serve(b"#!/bin/sh\n").await;
+    let job = run_of(
+        "chmod +x tool.sh",
+        vec![file("tool.sh", b"#!/bin/sh\n", &url, false)],
+        &[],
+    );
+    let execution = run(&executor(&work), &job).await.unwrap();
+    assert!(written(outcome(&execution), "tool.sh").unwrap().executable);
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn a_run_that_fails_still_reports_its_changes_and_streams() {
+    let work = scratch();
+    let url = serve(b"old").await;
+    let job = run_of(
+        "echo new > a.txt; echo out; echo err >&2; exit 4",
+        vec![file("a.txt", b"old", &url, false)],
+        &[],
+    );
+    let execution = run(&executor(&work), &job).await.unwrap();
+    assert_eq!(execution.end, End::Exited(4));
+    let outcome = outcome(&execution);
+    assert!(written(outcome, "a.txt").is_some());
+    assert_eq!(outcome.stdout.as_ref().unwrap().bytes, b"out\n".to_vec());
+    assert_eq!(outcome.stderr.as_ref().unwrap().bytes, b"err\n".to_vec());
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn a_run_keeps_stdout_and_stderr_apart_and_whole_beyond_the_check_limit() {
+    let work = scratch();
+    let job = run_of(
+        "head -c 200000 /dev/zero | tr '\\0' o; head -c 100000 /dev/zero | tr '\\0' e >&2",
+        Vec::new(),
+        &[],
+    );
+    let execution = run(&executor(&work), &job).await.unwrap();
+    let outcome = outcome(&execution);
+    let (out, err) = (
+        outcome.stdout.as_ref().unwrap(),
+        outcome.stderr.as_ref().unwrap(),
+    );
+    assert_eq!(out.bytes, vec![b'o'; 200_000]);
+    assert_eq!(err.bytes, vec![b'e'; 100_000]);
+    assert!(!out.cut && !err.cut);
+    assert_eq!(out.address, address_of(&out.bytes));
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[test]
+fn a_stream_past_its_limit_keeps_the_last_of_it_and_says_it_was_cut() {
+    let mut tail = Tail::with_limit(10);
+    tail.push(b"0123456789");
+    tail.push(b"abcdefghij");
+    tail.push(b"XYZ");
+    let stream = tail.into_stream();
+    assert_eq!(stream.bytes, b"defghijXYZ".to_vec());
+    assert!(stream.cut);
+    let mut tail = Tail::with_limit(10);
+    tail.push(b"0123456789");
+    let stream = tail.into_stream();
+    assert_eq!(stream.bytes, b"0123456789".to_vec());
+    assert!(!stream.cut, "exactly the limit is whole");
+}
+
+#[tokio::test]
+async fn a_run_killed_by_a_signal_exits_with_128_plus_the_signal() {
+    let work = scratch();
+    let execution = run(&executor(&work), &run_of("kill -9 $$", Vec::new(), &[]))
+        .await
+        .unwrap();
+    assert_eq!(execution.end, End::Exited(137));
+    assert!(execution.run.is_some());
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn a_run_stopped_after_it_started_reports_its_streams() {
+    let work = scratch();
+    let (signal, stop) = Stop::channel();
+    let executor = executor(&work);
+    let job = run_of("echo begun; echo trouble >&2; sleep 30", Vec::new(), &[]);
+    let running = tokio::spawn(async move { executor.run(&job, stop).await });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    signal.send(StopReason::Cancelled);
+    let execution = running.await.unwrap().unwrap();
+    assert_eq!(execution.end, End::Stopped(StopReason::Cancelled));
+    let outcome = outcome(&execution);
+    assert_eq!(outcome.stdout.as_ref().unwrap().bytes, b"begun\n".to_vec());
+    assert_eq!(
+        outcome.stderr.as_ref().unwrap().bytes,
+        b"trouble\n".to_vec()
+    );
+    assert!(outcome.changes.is_empty());
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn a_run_collects_its_outputs_and_cache_paths_with_their_executable_bits() {
+    let work = scratch();
+    let mut job = run_of(
+        "mkdir -p out target; echo a > out/a; echo '#!/bin/sh' > out/run; chmod +x out/run; echo c > target/c",
+        Vec::new(),
+        &[],
+    );
+    job.outputs = vec!["out".parse().unwrap()];
+    job.caches = vec!["target".parse().unwrap()];
+    let execution = run(&executor(&work), &job).await.unwrap();
+    let paths = |files: &[ProducedFile]| {
+        files
+            .iter()
+            .map(|file| (file.path.to_string(), file.executable))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        paths(&execution.produced.outputs),
+        [("out/a".to_owned(), false), ("out/run".to_owned(), true)]
+    );
+    assert_eq!(
+        paths(&execution.produced.caches),
+        [("target/c".to_owned(), false)]
+    );
+    assert!(
+        outcome(&execution).changes.is_empty(),
+        "a cache path is never a change"
+    );
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn a_cache_tree_is_written_at_its_cache_path_and_changes_under_it_are_no_changes() {
+    let work = scratch();
+    let url = serve(b"warm").await;
+    let mut job = run_of(
+        "cat target/deps/lib > seen.txt; echo changed > target/deps/lib; echo z > target/extra",
+        Vec::new(),
+        &["seen.txt", "target"],
+    );
+    job.caches = vec!["target".parse().unwrap()];
+    if let Some(run) = &mut job.run {
+        run.caches = vec![RunCache {
+            path: "target".parse().unwrap(),
+            files: vec![file("deps/lib", b"warm", &url, false)],
+        }];
+    }
+    let execution = run(&executor(&work), &job).await.unwrap();
+    let outcome = outcome(&execution);
+    assert_eq!(
+        written(outcome, "seen.txt").unwrap().bytes,
+        b"warm".to_vec()
+    );
+    assert_eq!(outcome.changes.len(), 1, "{:?}", outcome.changes);
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn an_empty_cache_path_is_a_directory_the_command_can_write_to() {
+    let work = scratch();
+    let mut job = run_of("echo x > target/new", Vec::new(), &[]);
+    job.caches = vec!["target".parse().unwrap()];
+    if let Some(run) = &mut job.run {
+        run.caches = vec![RunCache {
+            path: "target".parse().unwrap(),
+            files: Vec::new(),
+        }];
+    }
+    let execution = run(&executor(&work), &job).await.unwrap();
+    assert_eq!(execution.end, End::Exited(0));
+    assert_eq!(execution.produced.caches.len(), 1);
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn a_link_and_a_path_through_a_link_are_refused_and_never_read() {
+    let work = scratch();
+    let secret = scratch();
+    std::fs::write(secret.join("key"), "secret").unwrap();
+    let (a, b) = (serve(b"a").await, serve(b"b").await);
+    let job = run_of(
+        &format!(
+            "rm a.txt; ln -s {0}/key a.txt; rm -r sub; ln -s {0} sub; ln -s {0}/key docs-link; mkdir docs; ln -s {0}/key docs/l; echo ok > docs/plain",
+            secret.display()
+        ),
+        vec![
+            file("a.txt", b"a", &a, false),
+            file("sub/b.txt", b"b", &b, false),
+        ],
+        &["docs", "docs-link"],
+    );
+    let execution = run(&executor(&work), &job).await.unwrap();
+    let outcome = outcome(&execution);
+    assert_eq!(
+        outcome.refused,
+        ["a.txt", "docs-link", "docs/l", "sub/b.txt"]
+    );
+    // The control: the plain file next to the refused link is an ordinary change.
+    assert_eq!(
+        written(outcome, "docs/plain").unwrap().bytes,
+        b"ok\n".to_vec()
+    );
+    assert_eq!(outcome.changes.len(), 1, "{:?}", outcome.changes);
+    assert!(
+        outcome
+            .changes
+            .iter()
+            .all(|change| !matches!(change, Change::Written(file) if file.bytes == b"secret"))
+    );
+    std::fs::remove_dir_all(&work).unwrap();
+    std::fs::remove_dir_all(&secret).unwrap();
+}
+
+#[tokio::test]
+async fn an_output_reached_through_a_link_is_not_collected() {
+    let work = scratch();
+    let secret = scratch();
+    std::fs::write(secret.join("key"), "secret").unwrap();
+    let mut job = run_of(&format!("ln -s {} out", secret.display()), Vec::new(), &[]);
+    job.outputs = vec!["out/key".parse().unwrap()];
+    let execution = run(&executor(&work), &job).await.unwrap();
+    assert!(execution.produced.outputs.is_empty());
+    assert_eq!(outcome(&execution).refused, ["out/key"]);
+    std::fs::remove_dir_all(&work).unwrap();
+    std::fs::remove_dir_all(&secret).unwrap();
+}
+
+#[tokio::test]
+async fn a_run_has_its_own_environment_and_neither_check_nor_folder() {
+    let work = scratch();
+    let mut job = run_of(
+        "printf '%s|%s|%s|%s' \"$CODEHUB_DRAFT\" \"${CODEHUB_CHECK-unset}\" \"${CODEHUB_FOLDER-unset}\" \"${CODEHUB_CHANGESET-unset}\"",
+        Vec::new(),
+        &[],
+    );
+    job.folder = "ignored".into();
+    let execution = run(&executor(&work), &job).await.unwrap();
+    assert_eq!(
+        outcome(&execution).stdout.as_ref().unwrap().bytes,
+        b"feature|unset|unset|unset".to_vec()
+    );
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn a_host_execution_reports_the_objects_it_took() {
+    let work = scratch();
+    let url = serve(b"x").await;
+    let mut job = job("true");
+    job.files = vec![file("x", b"x", &url, false)];
+    let execution = run(&executor(&work), &job).await.unwrap();
+    assert_eq!(
+        execution.objects,
+        Some(ObjectCounts {
+            downloaded: 1,
+            cached: 0
+        })
+    );
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn cleaning_removes_old_partial_files_and_keeps_objects_and_recent_partial_files() {
+    let work = scratch();
+    let objects = work.join("objects");
+    std::fs::create_dir_all(&objects).unwrap();
+    std::fs::write(objects.join("tmp-1-abc"), "half").unwrap();
+    std::fs::write(objects.join("abc"), "whole").unwrap();
+    std::fs::write(objects.join("tmp-2-fresh"), "live").unwrap();
+    let old = std::fs::File::options()
+        .write(true)
+        .open(objects.join("tmp-1-abc"))
+        .unwrap();
+    old.set_modified(std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60))
+        .unwrap();
+    executor(&work).clean().await.unwrap();
+    assert!(!objects.join("tmp-1-abc").exists());
+    assert!(
+        objects.join("tmp-2-fresh").exists(),
+        "a recent partial file may be a running runner's"
+    );
+    assert!(objects.join("abc").exists());
+    executor(&scratch()).clean().await.unwrap();
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn a_sent_file_under_a_cache_path_is_no_change_when_the_command_leaves_it() {
+    let work = scratch();
+    let (sent, cached) = (serve(b"sent").await, serve(b"from the cache").await);
+    let mut job = run_of(
+        "true",
+        vec![file("target/tracked", b"sent", &sent, false)],
+        &[],
+    );
+    job.caches = vec!["target".parse().unwrap()];
+    if let Some(run) = &mut job.run {
+        run.caches = vec![RunCache {
+            path: "target".parse().unwrap(),
+            files: vec![file("tracked", b"from the cache", &cached, false)],
+        }];
+    }
+    let execution = run(&executor(&work), &job).await.unwrap();
+    let outcome = outcome(&execution);
+    assert!(outcome.changes.is_empty(), "{:?}", outcome.changes);
+    assert!(outcome.refused.is_empty());
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn an_add_path_over_a_cache_path_neither_changes_nor_refuses_what_is_under_it() {
+    let work = scratch();
+    let mut job = run_of(
+        "mkdir -p docs/target; echo a > docs/a; ln -s /nowhere docs/target/l; echo b > docs/target/b",
+        Vec::new(),
+        &["docs"],
+    );
+    job.caches = vec!["docs/target".parse().unwrap()];
+    let execution = run(&executor(&work), &job).await.unwrap();
+    let outcome = outcome(&execution);
+    assert_eq!(outcome.changes.len(), 1, "{:?}", outcome.changes);
+    assert!(written(outcome, "docs/a").is_some());
+    assert!(outcome.refused.is_empty(), "{:?}", outcome.refused);
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn overlapping_add_paths_report_each_file_once() {
+    let work = scratch();
+    let job = run_of(
+        "mkdir -p docs; echo a > docs/a",
+        Vec::new(),
+        &["docs", "docs/a", "docs"],
+    );
+    let execution = run(&executor(&work), &job).await.unwrap();
+    assert_eq!(outcome(&execution).changes.len(), 1);
     std::fs::remove_dir_all(&work).unwrap();
 }
