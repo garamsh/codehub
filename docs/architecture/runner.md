@@ -40,13 +40,13 @@ The runner stops its job when a heartbeat answers stop.
 
 - **It receives** the run's files with a download grant each, the trees of the workspace's cache refs, the command, the run's `add` and `outputs` paths and the timeout.
 - **It reads** every sent, `add` and `outputs` path without following a symbolic link; anything but a regular file is not reported as a change, and is recorded as refused.
-- **It reports**, when the command ended with an exit code (128 plus the signal's number for a command ended by a signal):
-  - the code;
+- **It reports** how the run ended: exited with a code (128 plus the signal's number for a command ended by a signal), timed out, cancelled, or failed in the executor. Where the command started, whatever its end, it reports:
   - its standard output and standard error, kept apart, each uploaded as one object, whole up to 64 MiB and otherwise its last 64 MiB with the cut recorded;
-  - the output tree of the files under `outputs` and the cache paths;
-  - the changes: each sent path whose content or kind changed or which is gone, and each `add` path that exists.
+  - the files under `outputs` and the cache paths, from which the server builds the output tree and the cache trees;
+  - the object counts;
+  - where it exited, the changes: each sent path whose content or kind changed or which is gone, and each `add` path that exists, never a path under a cache path.
 
-  The runner uploads what the object store lacks before it reports.
+  The runner uploads what the object store lacks before it reports; a run whose upload fails reports a failure in the executor and names no object.
 
 ### Object cache (ADR 0051)
 
