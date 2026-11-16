@@ -9,6 +9,7 @@ How types, trust boundaries, and error handling keep runtime errors out of produ
 - Illegal states
 - Total functions and exhaustive matching
 - Errors reach a handler
+- Schema changes span two versions
 
 ## Core principle
 
@@ -57,3 +58,13 @@ This section states which failure reaches which kind of place, not the form an e
 - **Expected failure** (validation, lookup miss, network error) is declared where it is produced and reaches exactly one place obliged to handle it. Where the language can force that, the return type is the place: failure sits in the signature, and the caller cannot reach the value without it. Where the language cannot — no checked exceptions — one declared boundary handler is the place, registered once for that failure rather than written as a `catch` at each call site.
 - **Unexpected failure** (programmer bug, OOM, invariant violation): exceptions / panics are fine — they should crash visibly and be logged.
 - **A failure that reaches no one is the defect.** A `try { ... } catch { /* ignore */ }` is one shape of it. A raised domain error that no handler maps is the other: it travels past every frame that knew what it meant and surfaces at whatever catch-all is outermost, as an unhandled failure rather than the specific one it was.
+
+## Schema changes span two versions
+
+This section states what a change to a shared store's schema must keep working, not the migration tool or the deployment that applies it.
+
+During a rolling deployment the previous version and the new one run against one database, and the migration runs before either stops. So every migration is checked against the previous version's code as well as the new one.
+
+- **Expand, then contract.** A migration only adds: a table, a column the previous version can ignore (nullable, or with a default), an index, a constraint that the previous version's writes already meet. Dropping, renaming or retyping anything the previous version reads or writes waits for a later release, after no running version uses it. A rename is three releases: add the new and write both, read the new, drop the old.
+- **A new value is read before it is written.** A variant the previous version cannot parse fails the previous version's requests that meet it. A release that only reads the variant ships first, and the release that writes it follows, where a request failing during the rollout is not acceptable.
+- **A migration does not hold a long lock.** A step that rewrites or scans a large table while it holds a lock stops the previous version as surely as a drop does. Such a step is split into a form that does not hold that lock, or is recorded in the pull request with the table's expected size.
