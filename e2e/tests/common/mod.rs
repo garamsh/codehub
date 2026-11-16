@@ -389,6 +389,33 @@ impl TokenUser {
         self.run(&[], arguments).await
     }
 
+    /// Runs `ch` as [`TokenUser::ch`] does, with `dir` as its working directory: a view's.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ch` cannot be started or does not finish within the bound.
+    pub async fn ch_in(&self, dir: &Path, arguments: &[&str]) -> Run {
+        let mut all = vec![
+            "--server",
+            &self.server,
+            "--token-file",
+            self.token_file.to_str().unwrap(),
+        ];
+        all.extend(arguments);
+        let mut command = self.ch.command(&all);
+        command.current_dir(dir);
+        let child = command.spawn().unwrap();
+        let output = tokio::time::timeout(BOUND, child.wait_with_output())
+            .await
+            .unwrap_or_else(|_| panic!("ch {arguments:?} did not finish within the bound"))
+            .unwrap();
+        Run {
+            code: output.status.code(),
+            stdout: output.stdout,
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }
+    }
+
     /// Runs `ch` as [`TokenUser::ch`] does, expects exit 0 and returns its stdout as text.
     ///
     /// # Panics
