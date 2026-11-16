@@ -241,22 +241,33 @@ impl DraftStore for PostgresDraftStore {
         &self,
         repository: RepositoryId,
         draft: &DraftId,
+        instance: Instance,
+        expected: u64,
     ) -> Result<(), DraftStoreError> {
-        let removed = sqlx::query(
-            "delete from drafts \
-             where repository = $1 and issuer = $2 and subject = $3 and name = $4",
+        let mut transaction = self.pool.begin().await.map_err(backend)?;
+        let (id, version) = sqlx::query_as::<_, (i64, i64)>(
+            "select id, version from drafts \
+             where repository = $1 and issuer = $2 and subject = $3 and name = $4 \
+             for update",
         )
         .bind(repository_column(repository)?)
         .bind(draft.principal.issuer())
         .bind(draft.principal.subject())
         .bind(draft.name.as_str())
-        .execute(&self.pool)
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(backend)?
-        .rows_affected();
-        if removed == 0 {
-            return Err(DraftStoreError::NotFound(draft.clone()));
+        .filter(|(id, _)| u64::try_from(*id).is_ok_and(|id| id == instance.get()))
+        .ok_or_else(|| DraftStoreError::NotFound(draft.clone()))?;
+        let version = u64::try_from(version).map_err(backend)?;
+        if version != expected {
+            return Err(DraftStoreError::Moved { current: version });
         }
-        Ok(())
+        sqlx::query("delete from drafts where id = $1")
+            .bind(id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(backend)?;
+        transaction.commit().await.map_err(backend)
     }
 }

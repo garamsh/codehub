@@ -65,15 +65,20 @@ pub trait DraftStore: Send + Sync {
         draft: &DraftId,
     ) -> Result<Draft, DraftStoreError>;
 
-    /// Removes the draft held under `draft`.
+    /// Removes the draft held under `draft`, only where it is the instance `instance` and its
+    /// version is `expected`.
     ///
     /// # Errors
     ///
-    /// [`DraftStoreError::NotFound`] where no draft is held under `draft`.
+    /// [`DraftStoreError::NotFound`] where no draft is held under `draft` or the one held is
+    /// another instance, and [`DraftStoreError::Moved`] where its version is not `expected`; the
+    /// draft stays.
     async fn remove(
         &self,
         repository: RepositoryId,
         draft: &DraftId,
+        instance: Instance,
+        expected: u64,
     ) -> Result<(), DraftStoreError>;
 }
 
