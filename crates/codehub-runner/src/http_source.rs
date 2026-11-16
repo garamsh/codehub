@@ -414,7 +414,7 @@ impl HttpJobSource {
     }
 
     /// The same source, claiming as a runner that runs jobs on `executor`. Without it a claim
-    /// names none, and the server never hands the runner a run.
+    /// names none, and the server takes it as `host`.
     #[must_use]
     pub const fn with_executor(mut self, executor: ExecutorKind) -> Self {
         self.executor = Some(executor);
