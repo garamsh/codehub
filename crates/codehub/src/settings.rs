@@ -15,7 +15,9 @@ use app::use_case::landing_attempts::LandingAttempts;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use oauth_client::Authentication;
 
-use crate::Error;
+use crate::overload::{OverloadOptions, TimingOptions};
+use crate::telemetry::{BacklogOptions, TelemetryOptions};
+use crate::{Error, RegistryOptions};
 
 /// The default of `--runner-claim-hold`, in seconds.
 const DEFAULT_CLAIM_HOLD: u64 = 30;
@@ -152,6 +154,8 @@ pub enum Role {
 #[derive(Args, Debug)]
 pub struct ApiOptions {
     #[command(flatten)]
+    pub(crate) telemetry: TelemetryOptions,
+    #[command(flatten)]
     pub(crate) listen: ListenOptions,
     #[command(flatten)]
     pub(crate) database: DatabaseOptions,
@@ -169,11 +173,19 @@ pub struct ApiOptions {
     pub(crate) directory: DirectoryOptions,
     #[command(flatten)]
     pub(crate) delivery: DeliveryOptions,
+    #[command(flatten)]
+    pub(crate) registry: RegistryOptions,
+    #[command(flatten)]
+    pub(crate) overload: OverloadOptions,
+    #[command(flatten)]
+    pub(crate) timing: TimingOptions,
 }
 
 /// The options of `runner-api`.
 #[derive(Args, Debug)]
 pub struct RunnerApiOptions {
+    #[command(flatten)]
+    pub(crate) telemetry: TelemetryOptions,
     #[command(flatten)]
     pub(crate) listen: ListenOptions,
     #[command(flatten)]
@@ -190,11 +202,19 @@ pub struct RunnerApiOptions {
     pub(crate) landing: LandingOptions,
     #[command(flatten)]
     pub(crate) runner: RunnerOptions,
+    #[command(flatten)]
+    pub(crate) overload: OverloadOptions,
+    #[command(flatten)]
+    pub(crate) timing: TimingOptions,
 }
 
 /// The options of `worker`.
 #[derive(Args, Debug)]
 pub struct WorkerOptions {
+    #[command(flatten)]
+    pub(crate) telemetry: TelemetryOptions,
+    #[command(flatten)]
+    pub(crate) backlog: BacklogOptions,
     #[command(flatten)]
     pub(crate) listen: ListenOptions,
     #[command(flatten)]
@@ -203,11 +223,15 @@ pub struct WorkerOptions {
     pub(crate) authzen: AuthzenClientOptions,
     #[command(flatten)]
     pub(crate) directory: DirectoryOptions,
+    #[command(flatten)]
+    pub(crate) timing: TimingOptions,
 }
 
 /// The options of `migrate`.
 #[derive(Args, Debug)]
 pub struct MigrateOptions {
+    #[command(flatten)]
+    pub(crate) telemetry: TelemetryOptions,
     #[command(flatten)]
     pub(crate) database: DatabaseOptions,
 }
@@ -216,6 +240,10 @@ pub struct MigrateOptions {
 #[derive(Args, Debug)]
 pub struct AllOptions {
     #[command(flatten)]
+    pub(crate) telemetry: TelemetryOptions,
+    #[command(flatten)]
+    pub(crate) backlog: BacklogOptions,
+    #[command(flatten)]
     pub(crate) listen: ListenOptions,
     #[command(flatten)]
     pub(crate) database: DatabaseOptions,
@@ -235,6 +263,12 @@ pub struct AllOptions {
     pub(crate) directory: DirectoryOptions,
     #[command(flatten)]
     pub(crate) delivery: DeliveryOptions,
+    #[command(flatten)]
+    pub(crate) registry: RegistryOptions,
+    #[command(flatten)]
+    pub(crate) overload: OverloadOptions,
+    #[command(flatten)]
+    pub(crate) timing: TimingOptions,
 }
 
 /// Where a serving role listens.
@@ -902,6 +936,7 @@ fn require<'a>(value: &'a Option<String>, setting: &'static str) -> Result<&'a s
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
     use std::sync::OnceLock;
 
     use clap::CommandFactory;
@@ -910,6 +945,13 @@ mod tests {
 
     fn config(postgres_url: &str) -> AllOptions {
         AllOptions {
+            telemetry: TelemetryOptions {
+                log_format: crate::telemetry::LogFormat::Json,
+                log_filter: "info".to_owned(),
+            },
+            backlog: BacklogOptions {
+                backlog_interval: NonZeroU32::MIN,
+            },
             listen: ListenOptions {
                 listen: SocketAddr::from(([127, 0, 0, 1], 8080)),
             },
@@ -967,6 +1009,21 @@ mod tests {
             },
             delivery: DeliveryOptions {
                 directory_delivery_wait: 2,
+            },
+            registry: RegistryOptions::default(),
+            overload: OverloadOptions {
+                rate_limit_per_second: NonZeroU32::MIN,
+                rate_limit_burst: NonZeroU32::MIN,
+                max_body_size: NonZeroUsize::MIN,
+                request_timeout_seconds: 1,
+                max_in_flight: NonZeroUsize::MIN,
+                identity_timeout_seconds: 1,
+                s3_connect_timeout_seconds: 1,
+                s3_timeout_seconds: 1,
+            },
+            timing: TimingOptions {
+                authzen_timeout_seconds: 1,
+                shutdown_deadline_seconds: 1,
             },
         }
     }
@@ -1054,7 +1111,7 @@ mod tests {
     #[test]
     fn each_role_takes_the_options_it_uses_and_no_others() {
         let all = options_of("all");
-        assert_eq!(all.len(), 38, "{all:?}");
+        assert_eq!(all.len(), 55, "{all:?}");
         let without = |role: &str, left_out: &[&str]| {
             let taken = options_of(role);
             let expected: Vec<String> = all
@@ -1092,14 +1149,36 @@ mod tests {
         ];
         let directory_settings = ["directory-changes", "directory-garam-url"];
         let creation_wait = ["directory-delivery-wait"];
+        let registry_settings = [
+            "registry-issuer",
+            "registry-service",
+            "registry-key-file",
+            "registry-key-id",
+        ];
         let landing = ["landing-attempts"];
+        let backlog = ["backlog-interval"];
+        let overload_settings = [
+            "rate-limit-per-second",
+            "rate-limit-burst",
+            "max-body-size",
+            "request-timeout-seconds",
+            "max-in-flight",
+            "identity-timeout-seconds",
+            "s3-connect-timeout-seconds",
+            "s3-timeout-seconds",
+        ];
         let concat = |parts: &[&[&'static str]]| -> Vec<&'static str> {
             parts.iter().flat_map(|part| part.iter().copied()).collect()
         };
-        without("api", &concat(&[&runner_settings]));
+        without("api", &concat(&[&runner_settings, &backlog]));
         without(
             "runner-api",
-            &concat(&[&directory_settings, &creation_wait]),
+            &concat(&[
+                &directory_settings,
+                &creation_wait,
+                &registry_settings,
+                &backlog,
+            ]),
         );
         without(
             "worker",
@@ -1109,12 +1188,19 @@ mod tests {
                 &decision_settings,
                 &runner_settings,
                 &creation_wait,
+                &registry_settings,
                 &landing,
+                &overload_settings,
             ]),
         );
         assert_eq!(
             options_of("migrate"),
-            ["postgres-pool-size", "postgres-url"]
+            [
+                "log-filter",
+                "log-format",
+                "postgres-pool-size",
+                "postgres-url"
+            ]
         );
     }
 

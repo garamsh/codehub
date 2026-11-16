@@ -1,6 +1,7 @@
 //! The driven ports: what the application asks of the outside.
 
 pub mod authorisation_decision;
+pub mod backlog;
 pub mod cache_refs;
 pub mod changeset_log;
 pub mod check_definitions;
@@ -12,5 +13,6 @@ pub mod identity_verification;
 pub mod job_queue;
 pub mod membership;
 pub mod object_store;
+pub mod registry_token_issuance;
 pub mod repository_directory;
 pub mod runner_registry;

@@ -64,3 +64,13 @@ async fn a_member_holding_run_is_allowed_run_and_one_holding_write_is_not() {
 async fn a_run_grant_with_a_prefix_is_refused() {
     access::a_run_grant_with_a_prefix_is_refused::<Harness>().await;
 }
+
+#[tokio::test]
+async fn an_image_grant_allows_its_own_action_and_no_other() {
+    access::an_image_grant_allows_its_own_action_and_no_other::<Harness>().await;
+}
+
+#[tokio::test]
+async fn an_image_grant_with_a_prefix_is_refused() {
+    access::an_image_grant_with_a_prefix_is_refused::<Harness>().await;
+}

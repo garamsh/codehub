@@ -16,6 +16,16 @@ pub const DEFAULT_EXPIRY: Duration = Duration::from_secs(15 * 60);
 /// The largest object S3 accepts in one `PUT`, in bytes (5 GB, ADR 0023).
 pub const SINGLE_PUT_LIMIT: u64 = 5 * 1024 * 1024 * 1024;
 
+/// How long a request to the store may take.
+#[derive(Clone, Copy, Debug)]
+pub struct Timeouts {
+    /// The most time to establish the connection.
+    pub connect: Duration,
+    /// The most time to wait for the response to start and, once it has, for each next byte of it.
+    /// A transfer as a whole has no bound, since an object may be a gibibyte.
+    pub read: Duration,
+}
+
 /// Objects in one bucket of an S3-compatible store, each under `<repository id>/<sha256 hex>`.
 /// The store addresses the bucket by path.
 pub struct S3ObjectStore {
@@ -59,12 +69,13 @@ fn now() -> i64 {
 }
 
 impl S3ObjectStore {
-    /// A store over `bucket` at `endpoint`, refusing uploads above `max_upload_size` bytes.
+    /// A store over `bucket` at `endpoint`, refusing uploads above `max_upload_size` bytes, whose
+    /// requests to the store are bounded by `timeouts`.
     ///
     /// # Errors
     ///
-    /// [`ObjectStoreError::Backend`] where `endpoint` is not an `http` or `https` URL, or
-    /// `max_upload_size` exceeds [`SINGLE_PUT_LIMIT`].
+    /// [`ObjectStoreError::Backend`] where `endpoint` is not an `http` or `https` URL,
+    /// `max_upload_size` exceeds [`SINGLE_PUT_LIMIT`] or the HTTP client cannot be built.
     pub fn new(
         endpoint: &str,
         region: &str,
@@ -72,6 +83,7 @@ impl S3ObjectStore {
         access_key: &str,
         secret_key: &str,
         max_upload_size: u64,
+        timeouts: Timeouts,
     ) -> Result<Self, ObjectStoreError> {
         if max_upload_size > SINGLE_PUT_LIMIT {
             return Err(backend(format!(
@@ -85,10 +97,15 @@ impl S3ObjectStore {
             region.to_owned(),
         )
         .map_err(backend)?;
+        let client = Client::builder()
+            .connect_timeout(timeouts.connect)
+            .read_timeout(timeouts.read)
+            .build()
+            .map_err(backend)?;
         Ok(Self {
             bucket,
             credentials: Credentials::new(access_key, secret_key),
-            client: Client::new(),
+            client,
             expiry: DEFAULT_EXPIRY,
             max_upload_size,
         })
@@ -298,6 +315,10 @@ mod tests {
             "k",
             "s",
             SINGLE_PUT_LIMIT + 1,
+            Timeouts {
+                connect: Duration::from_secs(1),
+                read: Duration::from_secs(1),
+            },
         );
         assert!(refused.is_err());
     }

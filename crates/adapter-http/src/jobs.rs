@@ -11,14 +11,13 @@ use app::domain::path::{Path, Prefix};
 use app::domain::run::{ObjectCounts, RunId, RunOutcome, RunReport, RunStream};
 use app::port::driving::jobs::{Claimed, ClaimedFile, ClaimedRun, Upload};
 use axum::Json;
-use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::ApiState;
-use crate::extract::{Authenticated, Body, Params, parse};
+use crate::extract::{AuthenticatedRunner, Body, Params, Raw, parse};
 use crate::problem::Problem;
 use crate::source_control::{GrantBody, now};
 
@@ -398,8 +397,8 @@ pub struct UploadGrantsBody {
 
 pub async fn claim(
     State(ports): State<Arc<ApiState>>,
-    Authenticated(caller): Authenticated,
-    body: Bytes,
+    AuthenticatedRunner(caller): AuthenticatedRunner,
+    Raw(body): Raw,
 ) -> Result<Response, Problem> {
     let request: ClaimRequest = if body.is_empty() {
         ClaimRequest::default()
@@ -436,7 +435,7 @@ pub async fn claim(
 
 pub async fn heartbeat(
     State(ports): State<Arc<ApiState>>,
-    Authenticated(caller): Authenticated,
+    AuthenticatedRunner(caller): AuthenticatedRunner,
     Params(job): Params<u64>,
 ) -> Result<Json<HeartbeatBody>, Problem> {
     let answer = ports
@@ -456,7 +455,7 @@ pub async fn heartbeat(
 
 pub async fn report(
     State(ports): State<Arc<ApiState>>,
-    Authenticated(caller): Authenticated,
+    AuthenticatedRunner(caller): AuthenticatedRunner,
     Params(job): Params<u64>,
     Body(result): Body<ReportBody>,
 ) -> Result<StatusCode, Problem> {
@@ -502,7 +501,7 @@ pub async fn report(
 
 pub async fn uploads(
     State(ports): State<Arc<ApiState>>,
-    Authenticated(caller): Authenticated,
+    AuthenticatedRunner(caller): AuthenticatedRunner,
     Params(job): Params<u64>,
     Body(request): Body<UploadsBody>,
 ) -> Result<Json<UploadGrantsBody>, Problem> {

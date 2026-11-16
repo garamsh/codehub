@@ -2,4 +2,4 @@
 
 mod object_store;
 
-pub use object_store::{DEFAULT_EXPIRY, S3ObjectStore, SINGLE_PUT_LIMIT};
+pub use object_store::{DEFAULT_EXPIRY, S3ObjectStore, SINGLE_PUT_LIMIT, Timeouts};

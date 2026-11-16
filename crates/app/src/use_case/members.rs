@@ -77,8 +77,9 @@ impl MembersService {
         prefix: Prefix,
         access: Access,
     ) -> Result<Grant, MembersError> {
-        if access == Access::Run && prefix != Prefix::whole() {
-            return Err(MembersError::RunGrantOnPrefix);
+        let whole_only = matches!(access, Access::Run | Access::ImagePull | Access::ImagePush);
+        if whole_only && prefix != Prefix::whole() {
+            return Err(MembersError::WholeRepositoryGrantOnPrefix);
         }
         Ok(Grant {
             repository: self

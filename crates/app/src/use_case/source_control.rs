@@ -6,6 +6,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Instant;
+
+use tracing::Instrument;
 
 use crate::domain::address::Address;
 use crate::domain::changeset::Change;
@@ -14,6 +17,7 @@ use crate::domain::name::{DraftName, OrganisationName, RepositoryName};
 use crate::domain::path::{Path, Prefix};
 use crate::domain::principal::Caller;
 use crate::domain::repository::RepositoryId;
+use crate::observability;
 use crate::port::driven::authorisation_decision::{Action, AuthorisationDecision, Resource};
 use crate::port::driven::cache_refs::CacheRefs;
 use crate::port::driven::changeset_log::{ChangesetLog, Ref};
@@ -577,8 +581,14 @@ impl<P: AfterLanding> SourceControl for SourceControlService<P> {
         // so removing the draft after it orders nothing a landing reads.
         let landed = {
             let arrival = self.gates.reach(repository);
-            let _one_at_a_time = arrival.pass().await;
-            land(
+            let reached = Instant::now();
+            let one_at_a_time = arrival
+                .pass()
+                .instrument(tracing::info_span!("landing.gate_wait"))
+                .await;
+            let passed = Instant::now();
+            observability::landing_gate_waited(passed - reached);
+            let landed = land(
                 &*self.objects,
                 &*self.log,
                 &*self.derived,
@@ -588,7 +598,10 @@ impl<P: AfterLanding> SourceControl for SourceControlService<P> {
                 landing,
                 self.attempts,
             )
-            .await?
+            .await;
+            drop(one_at_a_time);
+            observability::landing_gate_held(passed.elapsed());
+            landed?
         };
         // A record committed after the draft was read moves its version: the draft and its
         // instance stay open for the next landing, and the landing is answered as it landed.

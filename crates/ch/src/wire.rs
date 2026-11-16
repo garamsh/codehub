@@ -47,7 +47,7 @@ pub enum Role {
 
 /// What a grant allows.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Access {
     /// Read the prefix.
     Read,
@@ -55,6 +55,10 @@ pub enum Access {
     Write,
     /// Run commands against the caller's workspace; the whole repository only.
     Run,
+    /// Pull the repository's images; the whole repository only.
+    ImagePull,
+    /// Push the repository's images; the whole repository only.
+    ImagePush,
 }
 
 /// A principal and its role in an organisation.

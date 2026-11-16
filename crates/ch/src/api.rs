@@ -198,6 +198,8 @@ impl<'a> Api<'a> {
                 Access::Read => "read",
                 Access::Write => "write",
                 Access::Run => "run",
+                Access::ImagePull => "image_pull",
+                Access::ImagePush => "image_push",
             };
             let query = [
                 ("issuer", grant.issuer.as_str()),
