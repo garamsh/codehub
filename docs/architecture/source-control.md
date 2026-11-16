@@ -66,7 +66,7 @@ How versions of a repository's content are stored, changed, landed and queried.
   - overlapping binary files are merged at path level;
   - a true conflict rejects the landing and returns the conflicting paths for the author's agent to resolve.
 - **Details of the landing merge** (ADR 0017):
-  - lines are diffed with the Histogram algorithm of the `imara-diff` crate; the 3-way merge over those diffs is the domain ring's own;
+  - lines are diffed with the Histogram algorithm of the `gix-imara-diff` crate (the maintained fork of `imara-diff`; upstream 0.2.0 misprints the first hunk of a unified diff, ADR 0017); the 3-way merge over those diffs is the domain ring's own;
   - a file version is binary when a NUL byte occurs in its first 8000 bytes or it is not valid UTF-8, and text otherwise; a path is merged by lines only when its base and both sides are text;
   - lines are compared byte for byte, so whitespace-only and line-ending differences are differences;
   - renames are not detected: a rename is a deletion and an addition;
