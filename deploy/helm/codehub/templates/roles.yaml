@@ -91,16 +91,19 @@ spec:
             {{- with $values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- if and $.Values.registry.enabled (eq $role.command "api") }}
           volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if and $.Values.registry.enabled (eq $role.command "api") }}
             - name: registry-key
               mountPath: /etc/codehub/registry
               readOnly: true
-          {{- end }}
+            {{- end }}
           resources:
             {{- toYaml $values.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
           startupProbe:
@@ -112,15 +115,17 @@ spec:
           readinessProbe:
             httpGet: {path: /readyz, port: http}
             {{- toYaml $values.probes.readiness | nindent 12 }}
-      {{- if and $.Values.registry.enabled (eq $role.command "api") }}
       volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if and $.Values.registry.enabled (eq $role.command "api") }}
         - name: registry-key
           secret:
             secretName: {{ required "registry.keySecret.name is required" $.Values.registry.keySecret.name }}
             items:
               - key: {{ $.Values.registry.keySecret.pemKey }}
                 path: signing.pem
-      {{- end }}
+        {{- end }}
 {{- if $role.service }}
 ---
 apiVersion: v1

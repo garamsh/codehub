@@ -23,7 +23,11 @@ config:
   CODEHUB_OIDC_ISSUER: https://idp.example.com
 secretEnv:
   - {name: CODEHUB_AUTHZEN_TOKEN, secretName: authzen, key: token}
-ingress: {enabled: true, host: codehub.example.com}
+ingress:
+  enabled: true
+  host: codehub.example.com
+  className: nginx
+  annotations: {nginx.ingress.kubernetes.io/proxy-body-size: 64m}
 registry:
   enabled: true
   keyId: key-1

@@ -32,8 +32,13 @@ postgres:
   # (CODEHUB_POSTGRES_ACQUIRE_TIMEOUT, 5 s) and the statement timeout (CODEHUB_POSTGRES_STATEMENT_TIMEOUT,
   # 30 s) are set through config.
   statementCache: null
-  # Connections each pod holds; the sum over every pod stays below PostgreSQL's max_connections.
-  poolSize: 40
+  # Connections each pod holds. The sum over every pod that can run at once must stay below
+  # PostgreSQL's max_connections (ADR 0037), which is 100 by default and is shared with the
+  # migrate Job, the operator and anything else that connects: replicas times poolSize, summed over
+  # api, runnerApi and worker, at their autoscaler's maximum where it is enabled. At the defaults
+  # that is 5 pods x 10 = 50; with all three autoscalers on, at 10 + 10 + 3 pods it is 230, which
+  # needs a larger max_connections, a pooler in front of PostgreSQL, or a smaller poolSize.
+  poolSize: 10
 
 s3:
   endpoint: ""
@@ -144,8 +149,10 @@ migrate:
 ingress:
   enabled: false
   className: ""
-  # The runner routes take bodies up to 64 MiB: set the controller's body limit to at least that, for
-  # ingress-nginx nginx.ingress.kubernetes.io/proxy-body-size: 64m.
+  # The runner routes (/v1/runner/) need the controller to pass bodies up to 64 MiB (ADR 0055): a
+  # result or an upload list over the controller's limit is refused before the server sees it and
+  # the job is lost at its lease. Set the controller's body limit to at least that; for
+  # ingress-nginx, nginx.ingress.kubernetes.io/proxy-body-size: 64m. ci/full.yaml sets it.
   annotations: {}
   host: ""
   tls: []
@@ -232,7 +239,10 @@ keda:
   cooldownPeriod: 300
   prometheus:
     serverAddress: ""
-    # Jobs queued across every label set.
-    query: sum(codehub_jobs_queued)
+    # Jobs queued (ADR 0056's codehub_queue_depth, kind "job"). Every worker pod reports the whole
+    # backlog, not a share of it, so the query takes the depth of the one pod that reports the most
+    # (summed over its label sets) and does not add the pods up. It assumes the scrape labels each
+    # series with the pod it came from, as a scrape by pod annotation does.
+    query: max(sum by (pod) (codehub_queue_depth{kind="job"}))
     # Jobs one runner replica is meant to have waiting.
     threshold: "2"
