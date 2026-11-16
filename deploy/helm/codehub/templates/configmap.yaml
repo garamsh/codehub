@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "codehub.fullname" . }}
+  labels:
+    {{- include "codehub.labels" . | nindent 4 }}
+data:
+  CODEHUB_POSTGRES_POOL_SIZE: {{ .Values.postgres.poolSize | quote }}
+  {{- if not (kindIs "invalid" .Values.postgres.statementCache) }}
+  CODEHUB_POSTGRES_STATEMENT_CACHE: {{ .Values.postgres.statementCache | quote }}
+  {{- end }}
+  CODEHUB_S3_ENDPOINT: {{ required "s3.endpoint is required" .Values.s3.endpoint | quote }}
+  CODEHUB_S3_REGION: {{ required "s3.region is required" .Values.s3.region | quote }}
+  CODEHUB_S3_BUCKET: {{ required "s3.bucket is required" .Values.s3.bucket | quote }}
+  CODEHUB_S3_ACCESS_KEY: {{ required "s3.accessKey is required" .Values.s3.accessKey | quote }}
+  {{- if .Values.registry.enabled }}
+  CODEHUB_REGISTRY_ISSUER: {{ .Values.registry.issuer | quote }}
+  CODEHUB_REGISTRY_SERVICE: {{ .Values.registry.tokenService | quote }}
+  CODEHUB_REGISTRY_KEY_FILE: /etc/codehub/registry/signing.pem
+  CODEHUB_REGISTRY_KEY_ID: {{ required "registry.keyId is required" .Values.registry.keyId | quote }}
+  {{- end }}
+  {{- range $name, $value := .Values.config }}
+  {{ $name }}: {{ $value | quote }}
+  {{- end }}

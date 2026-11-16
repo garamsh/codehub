@@ -1,0 +1,149 @@
+{{- /*
+One Deployment per role, with its Service, autoscaler and disruption budget. A role is a key of the
+values and the subcommand the container runs.
+*/ -}}
+{{- $roles := list
+    (dict "component" "api" "command" "api" "values" .Values.api "service" true)
+    (dict "component" "runnerApi" "command" "runner-api" "values" .Values.runnerApi "service" true)
+    (dict "component" "worker" "command" "worker" "values" .Values.worker "service" false) -}}
+{{- range $role := $roles }}
+{{- $values := $role.values }}
+{{- if $values.enabled }}
+{{- $name := printf "%s-%s" (include "codehub.fullname" $) (kebabcase $role.component) }}
+{{- $selector := dict "root" $ "component" $role.component }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "codehub.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $role.component }}
+spec:
+  {{- if not $values.autoscaling.enabled }}
+  replicas: {{ $values.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "codehub.selector" $selector | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") $ | sha256sum }}
+        {{- if $.Values.metrics.annotations }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ $values.service.port | default $.Values.api.service.port | quote }}
+        prometheus.io/path: /metrics
+        {{- end }}
+        {{- with $values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "codehub.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $role.component }}
+    spec:
+      terminationGracePeriodSeconds: {{ $values.terminationGracePeriodSeconds }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      {{- include "codehub.antiAffinity" (merge (dict "mode" $values.antiAffinity) $selector) | nindent 6 }}
+      {{- with $values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $role.command }}
+          image: {{ include "codehub.image" $ }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args: [{{ $role.command }}]
+          ports:
+            - name: http
+              containerPort: {{ $values.service.port | default $.Values.api.service.port }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "codehub.fullname" $ }}
+          env:
+            - name: CODEHUB_LISTEN
+              value: {{ printf "0.0.0.0:%v" ($values.service.port | default $.Values.api.service.port) | quote }}
+            {{- include "codehub.secretEnv" (dict "name" "CODEHUB_POSTGRES_URL" "secret" $.Values.postgres.urlSecret "what" "postgres.urlSecret") | nindent 12 }}
+            {{- if $.Values.postgres.readUrlSecret.name }}
+            {{- include "codehub.secretEnv" (dict "name" "CODEHUB_POSTGRES_READ_URL" "secret" $.Values.postgres.readUrlSecret "what" "postgres.readUrlSecret") | nindent 12 }}
+            {{- end }}
+            {{- include "codehub.secretEnv" (dict "name" "CODEHUB_S3_SECRET_KEY" "secret" $.Values.s3.secretKeySecret "what" "s3.secretKeySecret") | nindent 12 }}
+            {{- range $.Values.secretEnv }}
+            {{- include "codehub.secretEnv" (dict "name" .name "secret" (dict "name" .secretName "key" .key) "what" (printf "secretEnv %s" .name)) | nindent 12 }}
+            {{- end }}
+            {{- with $values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if and $.Values.registry.enabled (eq $role.command "api") }}
+          volumeMounts:
+            - name: registry-key
+              mountPath: /etc/codehub/registry
+              readOnly: true
+          {{- end }}
+          resources:
+            {{- toYaml $values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            {{- toYaml $values.probes.startup | nindent 12 }}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            {{- toYaml $values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            {{- toYaml $values.probes.readiness | nindent 12 }}
+      {{- if and $.Values.registry.enabled (eq $role.command "api") }}
+      volumes:
+        - name: registry-key
+          secret:
+            secretName: {{ required "registry.keySecret.name is required" $.Values.registry.keySecret.name }}
+            items:
+              - key: {{ $.Values.registry.keySecret.pemKey }}
+                path: signing.pem
+      {{- end }}
+{{- if $role.service }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "codehub.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $role.component }}
+spec:
+  type: {{ $values.service.type }}
+  selector:
+    {{- include "codehub.selector" $selector | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $values.service.port }}
+      targetPort: http
+      {{- if $values.service.nodePort }}
+      nodePort: {{ $values.service.nodePort }}
+      {{- end }}
+{{- end }}
+{{- if $values.autoscaling.enabled }}
+---
+{{ include "codehub.hpa" (merge (dict "target" $name "values" $values) $selector) }}
+{{- end }}
+{{- if $values.podDisruptionBudget.enabled }}
+---
+{{ include "codehub.pdb" (merge (dict "target" $name "values" $values) $selector) }}
+{{- end }}
+{{- end }}
+{{- end }}

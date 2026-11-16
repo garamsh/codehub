@@ -1,0 +1,42 @@
+postgres:
+  urlSecret: {name: pgbouncer, key: url}
+  migrateUrlSecret: {name: pg-direct, key: url}
+  readUrlSecret: {name: pg-read, key: url}
+  statementCache: 0
+s3:
+  endpoint: http://minio:9000
+  region: us-east-1
+  bucket: codehub
+  accessKey: access
+  secretKeySecret: {name: s3, key: secret-key}
+api:
+  replicas: 3
+  antiAffinity: hard
+  service: {type: NodePort, port: 8080, nodePort: 30080}
+runnerApi:
+  autoscaling: {enabled: true, minReplicas: 2, maxReplicas: 6, targetCPUUtilizationPercentage: 60}
+worker:
+  podDisruptionBudget: {enabled: true, minAvailable: null, maxUnavailable: 1}
+  autoscaling: {enabled: true, minReplicas: 1, maxReplicas: 2, targetCPUUtilizationPercentage: 70}
+config:
+  CODEHUB_IDENTITY: oidc
+  CODEHUB_OIDC_ISSUER: https://idp.example.com
+secretEnv:
+  - {name: CODEHUB_AUTHZEN_TOKEN, secretName: authzen, key: token}
+ingress: {enabled: true, host: codehub.example.com}
+registry:
+  enabled: true
+  keyId: key-1
+  realm: https://codehub.example.com/v1/registry/token
+  storage: {endpoint: http://minio:9000, region: us-east-1, bucket: registry, accessKey: access, secretKeySecret: {name: s3, key: secret-key}}
+  httpSecret: {name: registry-http, key: http-secret}
+  keySecret: {name: registry-key}
+  autoscaling: {enabled: true, minReplicas: 2, maxReplicas: 5, targetCPUUtilizationPercentage: 70}
+runner:
+  enabled: true
+  tokenEndpoint: https://idp.example.com/token
+  clientId: runner
+  clientSecretSecret: {name: runner, key: client-secret}
+keda:
+  enabled: true
+  prometheus: {serverAddress: http://prometheus:9090}

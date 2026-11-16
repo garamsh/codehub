@@ -1,0 +1,153 @@
+{{- if .Values.registry.enabled }}
+{{- $r := .Values.registry }}
+{{- $name := printf "%s-registry" (include "codehub.fullname" .) }}
+{{- $selector := dict "root" . "component" "registry" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "codehub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: registry
+data:
+  config.yml: |
+    version: 0.1
+    log:
+      level: info
+    http:
+      addr: :{{ $r.service.port }}
+      # The secret comes from REGISTRY_HTTP_SECRET.
+    storage:
+      s3:
+        regionendpoint: {{ required "registry.storage.endpoint is required" $r.storage.endpoint | quote }}
+        region: {{ required "registry.storage.region is required" $r.storage.region | quote }}
+        bucket: {{ required "registry.storage.bucket is required" $r.storage.bucket | quote }}
+        forcepathstyle: {{ $r.storage.pathStyle }}
+      delete:
+        enabled: true
+      redirect:
+        disable: false
+    auth:
+      token:
+        realm: {{ required "registry.realm is required" $r.realm | quote }}
+        service: {{ $r.tokenService | quote }}
+        issuer: {{ $r.issuer | quote }}
+        jwks: /etc/registry/key/{{ $r.keySecret.jwksKey }}
+        signingalgorithms:
+          - ES256
+    health:
+      storagedriver:
+        enabled: true
+        interval: 10s
+        threshold: 3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "codehub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: registry
+spec:
+  {{- if not $r.autoscaling.enabled }}
+  replicas: {{ $r.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "codehub.selector" $selector | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ toYaml $r | sha256sum }}
+      labels:
+        {{- include "codehub.labels" . | nindent 8 }}
+        app.kubernetes.io/component: registry
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      {{- include "codehub.antiAffinity" (merge (dict "mode" $r.antiAffinity) $selector) | nindent 6 }}
+      {{- with $r.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $r.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: registry
+          image: {{ printf "%s:%s@%s" $r.image.repository $r.image.tag $r.image.digest }}
+          args: [serve, /etc/registry/config/config.yml]
+          ports:
+            - name: http
+              containerPort: {{ $r.service.port }}
+          env:
+            {{- include "codehub.secretEnv" (dict "name" "REGISTRY_HTTP_SECRET" "secret" $r.httpSecret "what" "registry.httpSecret") | nindent 12 }}
+            - name: REGISTRY_STORAGE_S3_ACCESSKEY
+              value: {{ required "registry.storage.accessKey is required" $r.storage.accessKey | quote }}
+            {{- include "codehub.secretEnv" (dict "name" "REGISTRY_STORAGE_S3_SECRETKEY" "secret" $r.storage.secretKeySecret "what" "registry.storage.secretKeySecret") | nindent 12 }}
+          volumeMounts:
+            - {name: config, mountPath: /etc/registry/config, readOnly: true}
+            - {name: key, mountPath: /etc/registry/key, readOnly: true}
+          resources:
+            {{- toYaml $r.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          startupProbe:
+            httpGet: {path: /, port: http}
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /, port: http}
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: {path: /, port: http}
+            periodSeconds: 5
+            failureThreshold: 2
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        - name: key
+          secret:
+            secretName: {{ required "registry.keySecret.name is required" $r.keySecret.name }}
+            items:
+              - key: {{ $r.keySecret.jwksKey }}
+                path: {{ $r.keySecret.jwksKey }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "codehub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: registry
+spec:
+  type: {{ $r.service.type }}
+  selector:
+    {{- include "codehub.selector" $selector | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $r.service.port }}
+      targetPort: http
+      {{- if $r.service.nodePort }}
+      nodePort: {{ $r.service.nodePort }}
+      {{- end }}
+{{- if $r.autoscaling.enabled }}
+---
+{{ include "codehub.hpa" (merge (dict "target" $name "values" $r) $selector) }}
+{{- end }}
+{{- if $r.podDisruptionBudget.enabled }}
+---
+{{ include "codehub.pdb" (merge (dict "target" $name "values" $r) $selector) }}
+{{- end }}
+{{- end }}
