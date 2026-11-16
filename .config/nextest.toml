@@ -1,2 +1,7 @@
 # The oldest nextest the entry points run with; an older binary refuses to start.
 nextest-version = "0.9.152"
+
+[profile.default]
+# The tests mostly wait on postgres, S3 and the other check services, so more of them run at once
+# than there are cores.
+test-threads = 8

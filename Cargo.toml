@@ -42,3 +42,9 @@ indexing_slicing = "deny"
 wildcard_enum_match_arm = "deny"
 missing_errors_doc = "warn"
 missing_panics_doc = "warn"
+
+# Line tables keep backtraces and panic locations; the variable and type information a debugger
+# reads is not built, which shortens each compile and link and shrinks the target directory the
+# CI cache stores. The test profile inherits it.
+[profile.dev]
+debug = "line-tables-only"
