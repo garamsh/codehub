@@ -98,6 +98,17 @@ async fn names_the_path_of_a_conflicting_landing_and_exits_4() {
 }
 
 #[tokio::test]
+async fn gives_a_member_the_run_grant_for_the_whole_repository() {
+    let server = serve().await;
+    let ada = server.user("ada");
+    repository(&ada).await;
+    ada.ok(&["member", "add", "bob", "--run"]).await;
+    // The control: the same grant given again is not an error, and removing the member takes it.
+    ada.ok(&["member", "add", "bob", "--run"]).await;
+    ada.ok(&["member", "remove", "bob"]).await;
+}
+
+#[tokio::test]
 async fn names_the_path_of_a_landing_the_caller_may_no_longer_write_and_exits_4() {
     let server = serve().await;
     let ada = server.user("ada");

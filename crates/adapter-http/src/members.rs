@@ -23,6 +23,7 @@ pub enum RoleBody {
 pub enum AccessBody {
     Read,
     Write,
+    Run,
 }
 
 #[derive(Deserialize)]
@@ -120,5 +121,6 @@ const fn access(body: &AccessBody) -> Access {
     match body {
         AccessBody::Read => Access::Read,
         AccessBody::Write => Access::Write,
+        AccessBody::Run => Access::Run,
     }
 }

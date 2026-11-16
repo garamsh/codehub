@@ -403,11 +403,13 @@ fn action_name(profile: Profile, action: Action) -> Result<&'static str, Authori
         (Profile::Plain, Action::AdministerRunners) => "administer_runners",
         (Profile::Plain, Action::Read) => "read",
         (Profile::Plain, Action::Write) => "write",
+        (Profile::Plain, Action::Run) => "Run",
         (Profile::Grn, Action::CreateOrganisation) => "codehub:org.use",
         (Profile::Grn, Action::CreateRepository) => "codehub:repo.create",
         (Profile::Grn, Action::AdministerRunners) => "codehub:runner.administer",
         (Profile::Grn, Action::Read) => "codehub:repo.read",
         (Profile::Grn, Action::Write) => "codehub:repo.write",
+        (Profile::Grn, Action::Run) => "codehub:repo.run",
         (Profile::Grn, Action::AdministerMembers) => {
             return Err(AuthorisationError::Backend(
                 "the grn profile has no action for administering members".to_owned(),

@@ -11,8 +11,8 @@ use crate::database::Database;
 
 /// The ADR 0021 policy evaluated over the memberships of [`crate::PostgresMembership`]: an admin
 /// may take every action in its organisation; a member's grants allow `read` and `write` on the
-/// paths they cover, and a member holding any grant on a repository may read or write it as a
-/// whole as that grant allows.
+/// paths they cover, and a member holding any grant on a repository may read, write or run it
+/// as a whole as that grant allows; `run` is asked of a repository only (ADR 0051).
 pub struct PostgresAuthorisationDecision {
     pool: PgPool,
 }
@@ -33,15 +33,19 @@ fn backend(error: impl ToString) -> AuthorisationError {
 
 const fn covers(held: Access, asked: Action) -> bool {
     match (held, asked) {
-        (Access::Write, Action::Read | Action::Write) | (Access::Read, Action::Read) => true,
+        (Access::Write, Action::Read | Action::Write)
+        | (Access::Read, Action::Read)
+        | (Access::Run, Action::Run) => true,
         (
-            Access::Write | Access::Read,
+            Access::Write | Access::Read | Access::Run,
             Action::CreateOrganisation
             | Action::CreateRepository
             | Action::AdministerMembers
             | Action::AdministerRunners,
         )
-        | (Access::Read, Action::Write) => false,
+        | (Access::Read, Action::Write | Action::Run)
+        | (Access::Write, Action::Run)
+        | (Access::Run, Action::Read | Action::Write) => false,
     }
 }
 
@@ -56,16 +60,20 @@ fn permits(role: Role, grants: &Grants, action: Action, resource: &Resource) -> 
                 Action::CreateRepository | Action::AdministerMembers | Action::AdministerRunners
             )
         }
-        (Role::Admin, Resource::Repository { .. } | Resource::Path { .. }) => {
-            matches!(action, Action::Read | Action::Write)
+        (Role::Admin, Resource::Repository { .. }) => {
+            matches!(action, Action::Read | Action::Write | Action::Run)
         }
+        (Role::Admin, Resource::Path { .. }) => matches!(action, Action::Read | Action::Write),
         (Role::Member, Resource::Organisation(_)) => false,
         (Role::Member, Resource::Repository { .. }) => {
             grants.iter().any(|(_, access)| covers(*access, action))
         }
-        (Role::Member, Resource::Path { path, .. }) => grants
-            .iter()
-            .any(|(prefix, access)| covers(*access, action) && prefix.covers(path)),
+        (Role::Member, Resource::Path { path, .. }) => {
+            action != Action::Run
+                && grants
+                    .iter()
+                    .any(|(prefix, access)| covers(*access, action) && prefix.covers(path))
+        }
     }
 }
 

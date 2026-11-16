@@ -433,6 +433,7 @@ async fn sends_the_mapped_request_for_each_resource_kind() {
         (Action::CreateOrganisation, org("acme")),
         (Action::Read, repository("acme", "app")),
         (Action::Write, path("acme", "app", "docs/guide/a.md")),
+        (Action::Run, repository("acme", "app")),
     ] {
         adapter.decide(&subject, action, &resource).await.unwrap();
     }
@@ -478,6 +479,15 @@ async fn sends_the_mapped_request_for_each_resource_kind() {
                     },
                 },
             }),
+            json!({
+                "subject": subject_value,
+                "action": {"name": "Run"},
+                "resource": {
+                    "type": "repository",
+                    "id": "acme/app",
+                    "properties": repository_properties,
+                },
+            }),
         ]
     );
 }
@@ -494,6 +504,7 @@ async fn names_every_action_on_the_wire() {
         Action::AdministerMembers,
         Action::Read,
         Action::Write,
+        Action::Run,
     ] {
         adapter
             .decide(&subject, action, &org("acme"))
@@ -518,7 +529,8 @@ async fn names_every_action_on_the_wire() {
             "create_repository",
             "administer_members",
             "read",
-            "write"
+            "write",
+            "Run"
         ]
     );
 }
@@ -1872,7 +1884,9 @@ async fn sends_garams_json_for_each_action_in_the_grn_profile() {
         (Action::Read, repository("acme", "app")),
         (Action::Write, repository("acme", "app")),
         (Action::Read, docs.clone()),
-        (Action::Write, docs),
+        (Action::Write, docs.clone()),
+        (Action::Run, repository("acme", "app")),
+        (Action::Run, docs),
     ];
 
     for (action, resource) in &cases {
@@ -1913,6 +1927,8 @@ async fn sends_garams_json_for_each_action_in_the_grn_profile() {
                 &repository,
                 Some(json!({"path": "docs/guide/a.md"}))
             ),
+            request("codehub:repo.run", &repository, None),
+            request("codehub:repo.run", &repository, None),
         ]
     );
     assert_eq!(fixture.idp.rejections(), Vec::<String>::new());

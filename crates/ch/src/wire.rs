@@ -53,6 +53,8 @@ pub enum Access {
     Read,
     /// Write, and so read, the prefix.
     Write,
+    /// Run commands against the caller's workspace; the whole repository only.
+    Run,
 }
 
 /// A principal and its role in an organisation.

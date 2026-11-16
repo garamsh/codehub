@@ -77,6 +77,9 @@ impl MembersService {
         prefix: Prefix,
         access: Access,
     ) -> Result<Grant, MembersError> {
+        if access == Access::Run && prefix != Prefix::whole() {
+            return Err(MembersError::RunGrantOnPrefix);
+        }
         Ok(Grant {
             repository: self
                 .directory

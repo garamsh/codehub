@@ -267,6 +267,7 @@ pub(crate) const fn access_column(access: Access) -> &'static str {
     match access {
         Access::Read => "read",
         Access::Write => "write",
+        Access::Run => "run",
     }
 }
 
@@ -275,6 +276,7 @@ pub(crate) fn access(text: &str) -> Result<Access, String> {
     match text {
         "read" => Ok(Access::Read),
         "write" => Ok(Access::Write),
+        "run" => Ok(Access::Run),
         other => Err(format!("a stored access is unknown: {other:?}")),
     }
 }
@@ -317,7 +319,7 @@ mod tests {
         for held in [Role::Admin, Role::Member] {
             assert_eq!(role(role_column(held)), Ok(held));
         }
-        for held in [Access::Read, Access::Write] {
+        for held in [Access::Read, Access::Write, Access::Run] {
             assert_eq!(access(access_column(held)), Ok(held));
         }
         assert!(role("owner").is_err());

@@ -197,6 +197,7 @@ impl<'a> Api<'a> {
             let access = match grant.access {
                 Access::Read => "read",
                 Access::Write => "write",
+                Access::Run => "run",
             };
             let query = [
                 ("issuer", grant.issuer.as_str()),
