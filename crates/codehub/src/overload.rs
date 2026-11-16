@@ -7,11 +7,18 @@ use std::time::Duration;
 
 use adapter_http::{InFlight, Limits, RateLimiter};
 use adapter_s3::Timeouts;
+use app::use_case::relay::LEASE;
 use clap::Args;
 
-/// The longest the decision point may take to answer, in seconds. One delivery to garam is at most
-/// four requests, so four of these stay inside the relay's lease of 60 seconds.
+/// The longest the decision point may take to answer, in seconds. One delivery of one entry to
+/// garam is at most four requests, so four of these stay inside the relay's lease, which a pass
+/// holds for all the entries it delivers (ADR 0055).
 const MAX_AUTHZEN_TIMEOUT: u64 = 14;
+
+const _: () = assert!(
+    4 * MAX_AUTHZEN_TIMEOUT <= LEASE.as_secs(),
+    "four requests at the longest timeout must fit in the relay's lease"
+);
 
 /// The default of `--rate-limit-per-second`.
 const DEFAULT_RATE: NonZeroU32 = NonZeroU32::MIN.saturating_add(99);
@@ -54,7 +61,8 @@ pub struct OverloadOptions {
     /// How long connecting to the object store may take, in seconds.
     #[arg(long, env = "CODEHUB_S3_CONNECT_TIMEOUT_SECONDS", default_value_t = 3, value_parser = clap::value_parser!(u64).range(1..=3600))]
     pub s3_connect_timeout_seconds: u64,
-    /// How long a request to the object store may take in all, in seconds.
+    /// How long a request to the object store may wait for its response to start and then for each
+    /// next byte of it, in seconds; a transfer as a whole has no bound.
     #[arg(long, env = "CODEHUB_S3_TIMEOUT_SECONDS", default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..=3600))]
     pub s3_timeout_seconds: u64,
 }
@@ -74,7 +82,7 @@ impl OverloadOptions {
     pub(crate) const fn object_timeouts(&self) -> Timeouts {
         Timeouts {
             connect: Duration::from_secs(self.s3_connect_timeout_seconds),
-            total: Duration::from_secs(self.s3_timeout_seconds),
+            read: Duration::from_secs(self.s3_timeout_seconds),
         }
     }
 
@@ -90,7 +98,7 @@ impl OverloadOptions {
 pub struct TimingOptions {
     /// How long a request to the AuthZEN decision point, its token endpoint or garam may take, in
     /// seconds. A timeout fails the request as a server error (ADR 0033). At most 14, so that the
-    /// four requests of one delivery to garam end inside the relay's lease.
+    /// four requests of one entry's delivery to garam end inside the relay's lease.
     #[arg(long, env = "CODEHUB_AUTHZEN_TIMEOUT_SECONDS", default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..=MAX_AUTHZEN_TIMEOUT))]
     pub authzen_timeout_seconds: u64,
     /// How long, after SIGTERM or SIGINT, the requests in flight may take to finish before they

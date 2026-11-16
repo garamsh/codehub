@@ -21,8 +21,9 @@ pub const SINGLE_PUT_LIMIT: u64 = 5 * 1024 * 1024 * 1024;
 pub struct Timeouts {
     /// The most time to establish the connection.
     pub connect: Duration,
-    /// The most time from the start of the request to the end of its response.
-    pub total: Duration,
+    /// The most time to wait for the response to start and, once it has, for each next byte of it.
+    /// A transfer as a whole has no bound, since an object may be a gibibyte.
+    pub read: Duration,
 }
 
 /// Objects in one bucket of an S3-compatible store, each under `<repository id>/<sha256 hex>`.
@@ -98,7 +99,7 @@ impl S3ObjectStore {
         .map_err(backend)?;
         let client = Client::builder()
             .connect_timeout(timeouts.connect)
-            .timeout(timeouts.total)
+            .read_timeout(timeouts.read)
             .build()
             .map_err(backend)?;
         Ok(Self {
@@ -316,7 +317,7 @@ mod tests {
             SINGLE_PUT_LIMIT + 1,
             Timeouts {
                 connect: Duration::from_secs(1),
-                total: Duration::from_secs(1),
+                read: Duration::from_secs(1),
             },
         );
         assert!(refused.is_err());

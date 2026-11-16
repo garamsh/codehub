@@ -111,7 +111,7 @@ fn objects() -> S3ObjectStore {
         MAX_UPLOAD_SIZE,
         Timeouts {
             connect: Duration::from_secs(5),
-            total: Duration::from_secs(10),
+            read: Duration::from_secs(10),
         },
     )
     .unwrap()

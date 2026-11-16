@@ -30,7 +30,7 @@ fn store(max_upload_size: u64) -> S3ObjectStore {
         max_upload_size,
         Timeouts {
             connect: Duration::from_secs(5),
-            total: Duration::from_secs(10),
+            read: Duration::from_secs(10),
         },
     )
     .unwrap()
@@ -254,29 +254,53 @@ async fn answers_the_size_of_a_stored_blob_and_not_found_for_a_missing_one() {
     .await;
 }
 
-#[tokio::test]
-async fn fails_a_request_the_store_never_answers_within_its_total_timeout() {
-    // The listener takes connections into its backlog and never reads or answers one.
+/// The timeouts the tests below use: short, so that a hang shows at once.
+#[cfg(test)]
+const SHORT: Timeouts = Timeouts {
+    connect: Duration::from_secs(5),
+    read: Duration::from_millis(300),
+};
+
+/// A store at `endpoint`, with the short timeouts.
+#[cfg(test)]
+fn store_at(endpoint: &str) -> S3ObjectStore {
+    S3ObjectStore::new(endpoint, "us-east-1", "b", "k", "s", MAX_UPLOAD_SIZE, SHORT).unwrap()
+}
+
+/// A store at a listener that takes connections into its backlog and never reads or answers one;
+/// the listener is returned to keep it open.
+#[cfg(test)]
+fn hung_store() -> (S3ObjectStore, std::net::TcpListener) {
     let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let timeouts = Timeouts {
-        connect: Duration::from_secs(5),
-        total: Duration::from_millis(300),
-    };
-    let hung = S3ObjectStore::new(
-        &format!("http://{}", silent.local_addr().unwrap()),
-        "us-east-1",
-        "b",
-        "k",
-        "s",
+    let store = store_at(&format!("http://{}", silent.local_addr().unwrap()));
+    (store, silent)
+}
+
+/// A store at the real MinIO with the same short timeouts.
+#[cfg(test)]
+fn short_store() -> S3ObjectStore {
+    S3ObjectStore::new(
+        &env("CODEHUB_TEST_S3_ENDPOINT"),
+        &env("CODEHUB_TEST_S3_REGION"),
+        &env("CODEHUB_TEST_S3_BUCKET"),
+        &env("CODEHUB_TEST_S3_ACCESS_KEY"),
+        &env("CODEHUB_TEST_S3_SECRET_KEY"),
         MAX_UPLOAD_SIZE,
-        timeouts,
+        SHORT,
     )
-    .unwrap();
+    .unwrap()
+}
+
+#[tokio::test]
+async fn fails_a_request_the_store_never_answers_within_the_timeout() {
+    let (hung, _silent) = hung_store();
     let repository = fresh_repository();
     let blob = Address::of(b"never stored");
 
     let started = std::time::Instant::now();
-    let outcome = hung.size(repository, blob).await;
+    let outcome = tokio::time::timeout(Duration::from_secs(10), hung.size(repository, blob))
+        .await
+        .expect("the request was not bounded");
 
     assert!(
         matches!(outcome, Err(ObjectStoreError::Backend(_))),
@@ -284,18 +308,29 @@ async fn fails_a_request_the_store_never_answers_within_its_total_timeout() {
     );
     assert!(started.elapsed() < Duration::from_secs(5));
     // The control: the same timeouts against the real store get an answer, not a timeout.
-    let real = S3ObjectStore::new(
-        &env("CODEHUB_TEST_S3_ENDPOINT"),
-        &env("CODEHUB_TEST_S3_REGION"),
-        &env("CODEHUB_TEST_S3_BUCKET"),
-        &env("CODEHUB_TEST_S3_ACCESS_KEY"),
-        &env("CODEHUB_TEST_S3_SECRET_KEY"),
-        MAX_UPLOAD_SIZE,
-        timeouts,
-    )
-    .unwrap();
     assert!(matches!(
-        real.size(repository, blob).await,
+        short_store().size(repository, blob).await,
+        Err(ObjectStoreError::NotFound(_))
+    ));
+}
+
+#[tokio::test]
+async fn fails_a_transfer_that_goes_idle_for_longer_than_the_timeout() {
+    let (hung, _silent) = hung_store();
+    let repository = fresh_repository();
+    let blob = Address::of(b"never stored");
+
+    let outcome = tokio::time::timeout(Duration::from_secs(10), hung.get(repository, blob))
+        .await
+        .expect("the transfer was not bounded");
+
+    assert!(
+        matches!(outcome, Err(ObjectStoreError::Backend(_))),
+        "{outcome:?}"
+    );
+    // The control: the same timeouts against the real store get an answer, not a timeout.
+    assert!(matches!(
+        short_store().get(repository, blob).await,
         Err(ObjectStoreError::NotFound(_))
     ));
 }
