@@ -2,8 +2,12 @@
 //! server's spans for one job's calls share one trace.
 //!
 //! The runner exports no spans of its own: it names the trace and the server records it. A call
-//! for a job takes its trace id from the job's identifier, so a job's heartbeats and its result
-//! are one trace; a call for no job, the claim, starts a trace of its own.
+//! for a job takes its trace id from the job's identifier and a random value drawn once per runner
+//! process, so a job's heartbeats and its result are one trace, and the same job number of two
+//! installations, or of two runner processes, is not one trace. A call for no job, the claim,
+//! starts a trace of its own.
+
+use std::sync::OnceLock;
 
 use rustix::rand::{GetRandomFlags, getrandom};
 use sha2::{Digest, Sha256};
@@ -28,14 +32,25 @@ fn job_of(path: &str) -> Option<&str> {
     (!id.is_empty() && id != "claim").then_some(id)
 }
 
+/// The value drawn once for this process, or `None` where the system has no random bytes.
+fn process_salt() -> Option<[u8; 16]> {
+    static SALT: OnceLock<Option<[u8; 16]>> = OnceLock::new();
+    *SALT.get_or_init(random::<16>)
+}
+
+/// The trace id of `job` under `salt`.
+fn trace_of(salt: &[u8; 16], job: &str) -> Option<String> {
+    let mut hash = Sha256::new();
+    hash.update(salt);
+    hash.update(job.as_bytes());
+    Some(hex(hash.finalize().get(..16)?))
+}
+
 /// The header value for a call to `path`, or `None` where the system has no random bytes to make
 /// one of; a call goes without it then.
 pub(crate) fn for_path(path: &str) -> Option<String> {
     let trace = match job_of(path) {
-        Some(job) => {
-            let digest = Sha256::digest(format!("codehub-job:{job}").as_bytes());
-            hex(digest.get(..16)?)
-        }
+        Some(job) => trace_of(&process_salt()?, job)?,
         None => hex(&random::<16>()?),
     };
     // The span id of the call: the server's span for it is a child of this id.
@@ -73,6 +88,14 @@ mod tests {
         assert_eq!(trace(&heartbeat), trace(&result));
         assert_ne!(trace(&heartbeat), trace(&other));
         assert_ne!(heartbeat, result);
+    }
+
+    #[test]
+    fn the_same_job_number_under_another_process_is_another_trace() {
+        let first = trace_of(&[1; 16], "7").unwrap();
+        let second = trace_of(&[2; 16], "7").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(first, trace_of(&[1; 16], "7").unwrap());
     }
 
     #[test]
