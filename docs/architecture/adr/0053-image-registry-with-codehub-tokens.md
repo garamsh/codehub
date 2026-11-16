@@ -16,7 +16,7 @@ Three outside references bear on this, read on 2026-11-16:
   2. The client sends `GET` to the realm with `service` and zero or more `scope` parameters of the form `repository:<name>:<actions>`, authenticating with HTTP Basic or a bearer token.
   3. The client receives a JSON body with `token` (or `access_token`), `expires_in` and `issued_at`.
   4. The registry checks the JWT's signature, `iss`, `aud` and expiry, and checks that its `access` claim lists the action asked. The token service grants the intersection of what was asked and what is allowed, and a denied action is left out rather than failing the request.
-- **CNCF Distribution v3.0** (configuration reference, `auth.token`) implements the registry side. It takes `realm`, `service` and `issuer`, trusts keys from `rootcertbundle` or a `jwks` file, and limits algorithms with `signingalgorithms`. It stores blobs and manifests through its S3 driver and keeps no other state, so replicas scale behind a load balancer.
+- **CNCF Distribution v3.0** (configuration reference, `auth.token`) implements the registry side. It takes `realm`, `service` and `issuer`, trusts keys from `rootcertbundle` and, per the reference, from a `jwks` file, and limits algorithms with `signingalgorithms`. It stores blobs and manifests through its S3 driver and keeps no other state, so replicas scale behind a load balancer.
 
 These alternatives were considered and not taken:
 - **Registry-native users (htpasswd), or a separate product with its own users (Harbor, Zot).** Either is a second access model.
@@ -32,16 +32,16 @@ These alternatives were considered and not taken:
    - Its replicas share one `http.secret`, so an upload begun on one replica can be finished on another.
    - Its `auth.token` points `realm` at codehub's token endpoint.
 2. **codehub issues the registry's tokens.** This narrows ADR 0006's "the core issues no tokens" in one respect, and only that one.
-   - The token is not an identity credential. It is the decision point's answer, signed, for a third component that cannot call the decision port.
+   - The token is not an identity credential. It is the authorisation decision's answer, signed, for a third component that cannot call the decision port.
    - The token never authenticates a caller to codehub. codehub stays a resource server for every token it accepts.
-3. **The token endpoint is `GET /v1/registry/token`.** It is served by the process that serves the user API: the `api` role once ADR 0052's roles exist, and the plain server until then.
+3. **The token endpoint is `GET /v1/registry/token`.** It is served by the process that serves the user API, which is the user API's role once the server is split into roles.
    - **Credentials.** The caller presents either `Authorization: Bearer <access token>` or HTTP Basic, whose password is the access token and whose user name is ignored. Basic is what `docker login` and other OCI clients send.
      - This sets aside ADR 0024's "callers present bearer tokens" for this route only.
      - The credential is verified through the identity-verification port (ADR 0029), as any API call's is.
      - A missing or invalid credential is answered `401`, with `WWW-Authenticate: Basic realm="codehub"`.
-   - **`service`** must equal the configured service name. Another value is `400`.
+   - **`service`** must be present and equal the configured service name. A missing or different value is `400`.
    - **`scope`.** It may be absent, and then the token grants nothing. Absent is what a client sends on `docker login` or on a registry ping. It may also repeat, at most 16 times; more is `400`.
-   - **Other parameters.** `offline_token`, `client_id` and `account` are ignored, and no refresh token is issued. `POST` to the endpoint, the OAuth2 flow, is answered `405`. Clients that try it fall back to `GET` with Basic.
+   - **Other parameters.** `offline_token`, `client_id` and `account` are ignored, and no refresh token is issued. `POST` to the endpoint, the OAuth2 flow, is answered `405` with `Allow: GET`. The Docker client falls back to `GET` with Basic when the `POST` fails. Other clients are verified by the implementation's tests.
    - **Response.** A success is `200` with `{"token": …, "access_token": …, "expires_in": …, "issued_at": …}`, both token fields holding the same JWT.
    - **Errors.** An error is an RFC 9457 problem detail, as ADR 0024 sets for every route. The token specification leaves the token endpoint's error body to the service.
    - The route is in the OpenAPI document.
@@ -52,17 +52,17 @@ These alternatives were considered and not taken:
      - `sub`: the caller's subject;
      - `aud`: the service;
      - `iat` and `nbf`: now;
-     - `exp`: the earlier of now plus 300 seconds and the presented access token's expiry, where the identity verification reports it;
+     - `exp`: now plus 300 seconds. It is not capped at the presented token's expiry: the identity verification port reports no expiry (ADR 0029), and the token outlives the presented one by at most 300 seconds;
      - `jti`: a random value;
      - `access`: one entry per scope, listing only the actions allowed.
    - `expires_in` is the seconds from `iat` to `exp`.
 5. **Image names are `<org>/<repo>/<name>`.**
-   - A scope's name must match the OCI Distribution v1.1 repository-name grammar and have at least three components. The first two must name an existing organisation and repository. Organisation and repository names (`[a-z0-9-]`, at most 63 bytes) already fit that grammar.
+   - A scope's name must match the OCI Distribution v1.1 repository-name grammar and have at least three components. The first two must name an existing organisation and repository. A codehub name may end in `-`, which the OCI grammar does not allow. A repository whose organisation or repository name does not fit the grammar therefore has no image names, and scopes for it are malformed.
    - Granted entries echo the requested name exactly.
    - A scope that is malformed, or that names an unknown organisation or repository, is granted no actions and answered the same as a denied one. So the response does not say which repositories exist. Its timing may still differ, because a known repository costs a decision call.
 6. **Scopes map to two actions on the repository.**
    - `pull` is `image_pull` and `push` is `image_push`. Each is asked of the authorisation decision port on the repository, with no path.
-   - The decision port answers one action over many resources, so a request asks at most two decisions: one for `image_pull` over every repository its scopes name, one for `image_push` over every repository its scopes name. Each is one batched call where batching is on (ADR 0038, ADR 0041), and one call per repository where it is off.
+   - The decision port answers one action over many resources, so a request makes at most two port calls: one for `image_pull` over every repository its scopes name, one for `image_push` over every repository its scopes name. Each port call is one call to the decision point where batching is on (ADR 0038, ADR 0041), and one call per repository where it is off, so at most 32 calls for the 16 scopes.
    - Any other resource type or action, such as `registry:catalog:*`, `delete` or `*`, is granted nothing.
 7. **Grants gain `image_pull` and `image_push`.**
    - Like `run`, each is granted for the whole repository only. Neither is included by `read`, `write` or `run`, and neither includes them. An admin holds both.
@@ -78,14 +78,14 @@ These alternatives were considered and not taken:
    - **Rotating a key:**
      1. Add the new public key to the JWKS beside the old one, and restart Distribution.
      2. Switch codehub to the new key and id.
-     3. After 300 seconds, remove the old key.
+     3. After 300 seconds, remove the old key from the JWKS, and restart Distribution again.
    - Development and the tests run Distribution in `compose.yaml` against MinIO.
 
 ## Consequences
 
 - An organisation's members, grants and decision point govern its images. No second user store exists.
 - codehub stores nothing for images. Distribution and its bucket hold all of it, so backing up and restoring images is the bucket's job.
-- The registry scales by replicas of a stateless process. The token endpoint scales with the process that serves the API, at no more than two decisions per token.
+- The registry scales by replicas of a stateless process. The token endpoint scales with the process that serves the API, at two port calls per token: two decision-point calls with batching on, and one per named repository and action without it.
 - **A holder of `image_push` can overwrite any tag of the repository's images,** including images that runs and checks pull. This is the same trust that `write` gives over the code those runs build.
 - **`docker login` stores the user's codehub access token as the registry password** in the client's credential store. That token is not limited to the registry, and it expires on the issuer's schedule, so a stored login stops working when the token does. A credential helper that fetches a fresh token is the client's choice.
 - **A token stays valid for up to 300 seconds after a grant is revoked.**

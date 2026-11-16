@@ -5,7 +5,7 @@ The container image registry: what holds the images, how a client is authorised,
 ## Current decisions
 
 - **CNCF Distribution v3 holds the images** on S3-compatible storage. It uses a bucket or prefix of its own, separate from the source objects, and runs beside codehub from the upstream image (ADR 0053).
-- **codehub is the registry's token service**, under the Distribution token authentication specification (ADR 0053). Its token is the decision point's answer, signed for the registry. It is never accepted by codehub itself, so codehub stays a resource server (`access.md`).
+- **codehub is the registry's token service**, under the Distribution token authentication specification (ADR 0053). Its token is the authorisation decision's answer, signed for the registry. It is never accepted by codehub itself, so codehub stays a resource server (`access.md`).
 - **The token endpoint** is `GET /v1/registry/token`, in the user API. `interfaces.md` records its contract.
 - **Image names are `<org>/<repo>/<name>`.** A push or pull is the action `image_push` or `image_pull` on that repository, decided as any action is (`access.md`). Whatever cannot be decided, such as an unknown name, the catalogue or deletion, is granted nothing, and is answered as a denial.
 - **The signing key** is ES256. Distribution trusts it through a JWKS file that the deployment derives from the key. A key is rotated by trusting both keys first, then switching the signer (ADR 0053).

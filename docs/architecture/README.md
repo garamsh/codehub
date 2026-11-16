@@ -40,7 +40,7 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0021-tenancy-and-access-model.md` — ADR 0021, organisations have admins and members, and members hold path-prefix grants; its agent and Token Exchange parts are superseded by ADR 0027, and the path as a resource attribute by ADR 0043 in the `grn` profile
 - `adr/0022-metadata-storage-details.md` — ADR 0022, metadata lives in one shared PostgreSQL schema, migrated forward-only at server start
 - `adr/0023-object-storage-details.md` — ADR 0023, objects are keyed per repository, verified by checksum, and uploaded in one part
-- `adr/0024-http-api-conventions.md` — ADR 0024, the HTTP API is versioned in the path, described by OpenAPI 3.1 and reports errors as problem details; bearer tokens only set aside for `/healthz` and `/readyz` by ADR 0045 and for the registry token endpoint by ADR 0053
+- `adr/0024-http-api-conventions.md` — ADR 0024, the HTTP API is versioned in the path, described by OpenAPI 3.1 and reports errors as problem details; bearer tokens set aside for `/healthz` and `/readyz` by ADR 0045, and for the registry token endpoint, which also takes Basic, by ADR 0053
 - `adr/0025-cli-m2-verbs-and-state.md` — ADR 0025, the M2 CLI has a fixed set of verbs, keeps three items of local state and speaks plain HTTP; the verb list as the whole surface and the three items as all local state are superseded by ADR 0048 for views
 - `interfaces.md` — the `ch` CLI and the API behind it: what each may do, and what stays server-side
 - `adr/0010-cli-and-mcp-interfaces.md` — ADR 0010, the CLI and the MCP server are first-class interfaces over server-side work; the MCP part is superseded by ADR 0026
