@@ -14,6 +14,7 @@ pub mod history;
 pub mod landing;
 pub mod object_store;
 pub mod outbox;
+pub mod registry_token;
 pub mod reverts;
 pub mod runner_deployment;
 pub mod runners;

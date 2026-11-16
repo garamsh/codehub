@@ -733,6 +733,7 @@ async fn documents_no_request_body_on_a_delete_operation() {
 async fn documents_every_route_and_routes_every_documented_operation() {
     let routed: BTreeSet<(String, String)> = adapter_http::ROUTES
         .iter()
+        .chain(adapter_http::REGISTRY_ROUTES)
         .chain(adapter_http::RUNNER_ROUTES)
         .chain(adapter_http::HEALTH_ROUTES)
         .flat_map(|(path, methods)| {

@@ -3,6 +3,7 @@
 //! Every helper panics when a reply is not the one expected, as a failed assertion does.
 
 use adapter_http::{ApiState, Pause, Readiness, RunnerSettings};
+use adapter_memory::MemoryRegistryTokenIssuance;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,6 +27,12 @@ use serde_json::{Value, json};
 use test_support::contract::Deployment;
 use test_support::{MemoryDeployment, Taught};
 use tower::ServiceExt;
+
+/// The registry the fixture issues tokens for.
+pub const REGISTRY_SERVICE: &str = "registry.test";
+
+/// The time the fixture's registry tokens are issued at, in seconds since the epoch.
+pub const NOW: i64 = 1_700_000_000;
 
 /// How long the fixture holds a claim that finds no job.
 pub const HOLD: Duration = Duration::from_millis(300);
@@ -67,6 +74,11 @@ pub fn state(stores: &MemoryDeployment<Taught>, administration: Administration) 
         jobs: Arc::new(assembly.jobs()),
         checks: Arc::new(assembly.checks()),
         runs: Arc::new(assembly.runs()),
+        registry_token: Some(Arc::new(assembly.registry_token(
+            Arc::new(MemoryRegistryTokenIssuance::default()),
+            REGISTRY_SERVICE.to_owned(),
+            || NOW,
+        ))),
         settings: settings(),
         readiness: Arc::new(()),
     }

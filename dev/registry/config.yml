@@ -1,0 +1,29 @@
+# The image registry of the check environment (compose.yaml, profile `registry`): Distribution v3
+# storing in the check object store under a bucket of its own, accepting only the ES256 tokens
+# codehub signs (ADR 0053). Written down here is what does not change between runs. compose.yaml
+# sets, as REGISTRY_* variables, what the check environment names: the bucket, the store's address
+# and credentials, and the token realm, service, issuer and JWKS file. The JWKS is not committed: the
+# e2e example garam_keys writes it with the signing key for each run.
+version: 0.1
+log:
+  level: info
+storage:
+  s3:
+    region: us-east-1
+    forcepathstyle: true
+    secure: false
+  delete:
+    enabled: false
+  # Blobs are served through the registry: a redirect to the store's own address, which the
+  # check store knows by its compose name, would not resolve for a client on the host.
+  redirect:
+    disable: true
+  cache:
+    blobdescriptor: inmemory
+http:
+  addr: :5000
+  debug:
+    addr: :5001
+auth:
+  token:
+    signingalgorithms: [ES256]

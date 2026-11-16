@@ -5,7 +5,7 @@ export
 # Extra arguments for cargo nextest run in `test` and `e2e`: a filter, for instance.
 TEST_ARGS ?=
 
-.PHONY: lint format test e2e e2e-garam e2e-gaon loadtest loadtest-smoke build images ci mutants services services-down
+.PHONY: lint format test e2e e2e-garam e2e-registry e2e-gaon loadtest loadtest-smoke build images ci mutants services services-down
 
 lint:
 	CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets --locked
@@ -24,7 +24,7 @@ test: services
 # produced: a build selecting fewer packages resolves other feature sets and compiles the shared
 # dependencies again.
 e2e: build services
-	cargo nextest run -p e2e --locked --no-tests=fail -E 'not test(garam_)' $(TEST_ARGS)
+	cargo nextest run -p e2e --locked --no-tests=fail -E 'not test(garam_) and not test(registry_)' $(TEST_ARGS)
 
 # The e2e tests whose names contain garam_ run against garam's published images, the garam profile
 # of compose.yaml, which the garam-e2e workflow alone may pull, so `e2e` skips them and this target
@@ -43,6 +43,19 @@ e2e-garam: services
 	rm -rf "$$CODEHUB_GARAM_E2E_DIR" && mkdir -p "$$CODEHUB_GARAM_E2E_DIR" && cargo run --locked -p e2e --example garam_keys -- "$$CODEHUB_GARAM_E2E_DIR" && \
 	docker compose --env-file dev/test.env -p $(CODEHUB_GARAM_E2E_PROJECT) --profile garam up --detach --wait --wait-timeout 180 gateway && \
 	cargo nextest run -p e2e --locked --no-tests=fail --test garam
+
+# The e2e tests whose names contain registry_ run against the registry of compose.yaml's profile
+# `registry` (Distribution v3, ADR 0053), so `e2e` skips them and this target runs them: it
+# generates the throwaway keys, adds the registry to the running check services without recreating
+# them, runs the tests, and removes the registry, its bucket service and the keys at every exit; the
+# registry's bucket stays in the store, which `services-down` removes. Not part of `ci`.
+e2e-registry: export CODEHUB_REGISTRY_E2E_DIR := $(CURDIR)/target/registry-e2e
+e2e-registry: services
+	cargo build --locked -p codehub -p ch
+	trap 'docker compose --env-file dev/test.env --profile registry rm --stop --force --volumes registry registry-bucket; rm -rf "$$CODEHUB_REGISTRY_E2E_DIR"' EXIT INT TERM; \
+	rm -rf "$$CODEHUB_REGISTRY_E2E_DIR" && mkdir -p "$$CODEHUB_REGISTRY_E2E_DIR" && cargo run --locked -p e2e --example garam_keys -- "$$CODEHUB_REGISTRY_E2E_DIR" && \
+	docker compose --env-file dev/test.env --profile registry up --detach --wait --wait-timeout 90 --no-recreate registry && \
+	cargo nextest run -p e2e --locked --no-tests=fail --test registry
 
 # The live tests of the gaon driver (crates/codehub-runner/tests/gaon_live.rs) against a gaon-apiserver
 # built from the commit pinned in dev/gaon/env.sh and run with etcd under RBAC: it builds the server

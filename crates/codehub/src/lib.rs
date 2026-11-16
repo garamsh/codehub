@@ -27,6 +27,7 @@ use app::port::driven::authorisation_decision::{AuthorisationDecision, Authorisa
 use app::port::driven::directory_changes::DirectoryChanges;
 use app::port::driven::identity_verification::{IdentityError, IdentityVerification};
 use app::port::driven::object_store::ObjectStoreError;
+use app::port::driving::registry_token::RegistryToken;
 use app::use_case::assembly::Assembly;
 use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::relay::{DirectoryRelay, RelayEnvironment};
@@ -35,9 +36,11 @@ use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 
 mod readiness;
+mod registry;
 mod settings;
 
 use readiness::Probe;
+pub use registry::{RegistryError, RegistryOptions};
 pub use settings::{
     AllOptions, ApiOptions, Authorisation, AuthorisationOptions, AuthzenClientAuthentication,
     AuthzenClientOptions, AuthzenProfile, Cli, DatabaseOptions, DeliveryOptions,
@@ -81,6 +84,8 @@ pub enum Error {
         /// `CODEHUB_RUNNER_HEARTBEAT_INTERVAL`.
         heartbeat: NonZeroU32,
     },
+    /// The registry token endpoint could not be configured.
+    Registry(RegistryError),
     /// The listening address could not be bound.
     Bind(SocketAddr, std::io::Error),
     /// Signal handlers could not be installed, the address read or the server run.
@@ -126,6 +131,7 @@ impl fmt::Display for Error {
                 "CODEHUB_RUNNER_LEASE ({lease} s) must be greater than \
                  CODEHUB_RUNNER_HEARTBEAT_INTERVAL ({heartbeat} s)"
             ),
+            Self::Registry(error) => error.fmt(f),
             Self::Bind(address, error) => write!(f, "binding {address} failed: {error}"),
             Self::Serve(error) => write!(f, "serving failed: {error}"),
         }
@@ -258,6 +264,8 @@ struct Http<'a> {
     /// How long answering a creation waits for its change, in seconds.
     delivery_wait: u64,
     serving: Serving<'a>,
+    /// The registry token endpoint, for a role that serves the user API.
+    registry: Option<&'a RegistryOptions>,
 }
 
 /// Connects, and migrates where this is the `all` role, binds and serves until SIGTERM or SIGINT,
@@ -279,6 +287,7 @@ pub async fn run(cli: Cli) -> Result<(), Error> {
                 landing: &options.landing,
                 delivery_wait: options.delivery.directory_delivery_wait,
                 serving: options.serving(),
+                registry: Some(&options.registry),
             })
             .await
         }
@@ -291,6 +300,7 @@ pub async fn run(cli: Cli) -> Result<(), Error> {
                 landing: &options.landing,
                 delivery_wait: UNUSED_DELIVERY_WAIT,
                 serving: options.serving(),
+                registry: None,
             })
             .await
         }
@@ -303,6 +313,7 @@ pub async fn run(cli: Cli) -> Result<(), Error> {
                 landing: &options.landing,
                 delivery_wait: options.delivery.directory_delivery_wait,
                 serving: options.serving(),
+                registry: Some(&options.registry),
             })
             .await
         }
@@ -378,7 +389,13 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
         landing,
         delivery_wait,
         serving,
+        registry,
     } = http;
+    let registry = registry
+        .map(RegistryOptions::configure)
+        .transpose()
+        .map_err(Error::Registry)?
+        .flatten();
     let selection = serving.select()?;
     let administration = selection.administration;
     let identity = verifier(
@@ -444,6 +461,13 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
         jobs: Arc::new(assembly.jobs()),
         checks: Arc::new(assembly.checks()),
         runs: Arc::new(assembly.runs()),
+        registry_token: registry.map(|registry| {
+            Arc::new(
+                assembly.registry_token(registry.issuance, registry.service, || {
+                    ServerEnvironment.now()
+                }),
+            ) as Arc<dyn RegistryToken>
+        }),
         settings: RunnerSettings {
             hold: Duration::from_secs(runner.runner_claim_hold),
             retry_interval: CLAIM_RETRY_INTERVAL,
