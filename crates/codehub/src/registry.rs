@@ -32,6 +32,8 @@ pub struct RegistryOptions {
 pub enum RegistryError {
     /// Some of the four settings are given and this one is not.
     Missing(&'static str),
+    /// This setting is given and empty.
+    Empty(&'static str),
     /// The key file could not be read.
     KeyFile(PathBuf, std::io::Error),
     /// The key file does not hold an ES256 private key.
@@ -47,6 +49,7 @@ impl fmt::Display for RegistryError {
                  CODEHUB_REGISTRY_SERVICE, CODEHUB_REGISTRY_KEY_FILE and CODEHUB_REGISTRY_KEY_ID \
                  or none, and {setting} is missing"
             ),
+            Self::Empty(setting) => write!(f, "{setting} is empty"),
             Self::KeyFile(path, error) => write!(
                 f,
                 "reading the key file {} named by CODEHUB_REGISTRY_KEY_FILE failed: {error}",
@@ -85,18 +88,17 @@ impl RegistryOptions {
         {
             return Ok(None);
         }
-        let issuer = registry_issuer
-            .clone()
-            .ok_or(RegistryError::Missing("CODEHUB_REGISTRY_ISSUER"))?;
-        let service = registry_service
-            .clone()
-            .ok_or(RegistryError::Missing("CODEHUB_REGISTRY_SERVICE"))?;
+        let text = |value: &Option<String>, setting: &'static str| match value.as_deref() {
+            None => Err(RegistryError::Missing(setting)),
+            Some("") => Err(RegistryError::Empty(setting)),
+            Some(value) => Ok(value.to_owned()),
+        };
+        let issuer = text(registry_issuer, "CODEHUB_REGISTRY_ISSUER")?;
+        let service = text(registry_service, "CODEHUB_REGISTRY_SERVICE")?;
+        let key_id = text(registry_key_id, "CODEHUB_REGISTRY_KEY_ID")?;
         let path = registry_key_file
             .clone()
             .ok_or(RegistryError::Missing("CODEHUB_REGISTRY_KEY_FILE"))?;
-        let key_id = registry_key_id
-            .clone()
-            .ok_or(RegistryError::Missing("CODEHUB_REGISTRY_KEY_ID"))?;
         let pem =
             std::fs::read(&path).map_err(|error| RegistryError::KeyFile(path.clone(), error))?;
         let issuance = Es256RegistryTokenIssuance::new(&pem, key_id, issuer)
@@ -144,6 +146,26 @@ mod tests {
                 Some(RegistryError::Missing(_))
             ));
         }
+    }
+
+    #[test]
+    fn refuses_an_empty_issuer_service_or_key_id_and_takes_it_filled() {
+        let file = Some("Cargo.toml");
+        for (empty, name) in [
+            (options(Some(""), Some("s"), file, Some("k")), "ISSUER"),
+            (options(Some("i"), Some(""), file, Some("k")), "SERVICE"),
+            (options(Some("i"), Some("s"), file, Some("")), "KEY_ID"),
+        ] {
+            assert!(
+                matches!(empty.configure().err(), Some(RegistryError::Empty(setting)) if setting.ends_with(name))
+            );
+        }
+        // Control: filled, the same settings get as far as reading the key.
+        let filled = options(Some("i"), Some("s"), file, Some("k"));
+        assert!(matches!(
+            filled.configure().err(),
+            Some(RegistryError::Key(..))
+        ));
     }
 
     #[test]
