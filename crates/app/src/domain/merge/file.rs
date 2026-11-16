@@ -3,8 +3,8 @@
 use std::fmt;
 use std::ops::Range;
 
-use imara_diff::sources::byte_lines;
-use imara_diff::{Algorithm, Diff, InternedInput};
+use gix_imara_diff::sources::byte_lines;
+use gix_imara_diff::{Algorithm, Diff, InternedInput};
 
 use crate::domain::file::FileKind;
 
