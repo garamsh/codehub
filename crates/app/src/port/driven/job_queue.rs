@@ -173,7 +173,7 @@ pub trait JobQueue: Send + Sync {
     /// # Errors
     ///
     /// [`JobQueueError::NotFound`] where there is no such run; [`JobQueueError::Finished`] where
-    /// it has ended.
+    /// it has ended or its runner has reported it and the server is writing it back.
     async fn cancel_run(&self, run: RunId) -> Result<Run, JobQueueError>;
 
     /// The ended run with the highest identifier of `principal`'s opening `instance` of the
@@ -221,23 +221,37 @@ pub trait JobQueue: Send + Sync {
         lease: i64,
     ) -> Result<Heartbeat, JobQueueError>;
 
-    /// The run `run`, where it runs under one of `runners`.
+    /// The run `run`, where one of `runners` holds it and may still upload files and report: it
+    /// runs, or it was cancelled or timed out and has taken no report yet.
+    ///
+    /// # Errors
+    ///
+    /// [`JobQueueError::NotFound`] where `run` is not held so by one of `runners`.
+    async fn held_run(&self, run: RunId, runners: &[RegistrationId]) -> Result<Run, JobQueueError>;
+
+    /// Moves `run` from running, where one of `runners` holds it, to reporting, with a deadline
+    /// `lease` seconds from `now`, and returns it. From then on its principal cannot cancel it and
+    /// expiry leaves it alone until that deadline.
     ///
     /// # Errors
     ///
     /// [`JobQueueError::NotFound`] where `run` is not running under one of `runners`.
-    async fn running_run(
+    async fn begin_report(
         &self,
         run: RunId,
         runners: &[RegistrationId],
+        now: i64,
+        lease: i64,
     ) -> Result<Run, JobQueueError>;
 
-    /// Ends `run` as finished with `result`, where it runs under one of `runners`, and returns it
-    /// as it now stands.
+    /// Ends `run` as `result` says, where one of `runners` holds it, and returns it as it now
+    /// stands. A reporting run becomes finished. A run that was cancelled or timed out keeps that
+    /// state and takes `result` as what the runner reported of it, once.
     ///
     /// # Errors
     ///
-    /// [`JobQueueError::NotFound`] where `run` is not running under one of `runners`.
+    /// [`JobQueueError::NotFound`] where `run` is neither reporting nor stopped without a report
+    /// under one of `runners`.
     async fn complete_run(
         &self,
         run: RunId,
@@ -246,8 +260,9 @@ pub trait JobQueue: Send + Sync {
     ) -> Result<Run, JobQueueError>;
 
     /// Acts on time having passed to `now`, as [`JobQueue::expire`] does for jobs: a running run
-    /// past its deadline times out, and one whose lease lapsed before its deadline returns to the
-    /// queue with no runner.
+    /// past its deadline times out, one whose lease lapsed before its deadline returns to the
+    /// queue with no runner, and a reporting one past its deadline finishes as failed in the
+    /// executor, with nothing written.
     ///
     /// # Errors
     ///

@@ -102,3 +102,36 @@ async fn a_run_whose_lease_lapses_is_offered_again_and_one_past_its_deadline_tim
     )
     .await;
 }
+
+#[tokio::test]
+async fn a_run_being_reported_cannot_be_cancelled() {
+    runs::a_run_being_reported_cannot_be_cancelled::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_run_left_reporting_fails_in_its_executor_once_its_deadline_passes() {
+    runs::a_run_left_reporting_fails_in_its_executor_once_its_deadline_passes::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_stopped_run_takes_the_uploads_and_one_report_of_its_runner_and_writes_nothing() {
+    runs::a_stopped_run_takes_the_uploads_and_one_report_of_its_runner_and_writes_nothing::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_report_changing_a_path_the_run_could_not_change_is_refused() {
+    runs::a_report_changing_a_path_the_run_could_not_change_is_refused::<Harness>().await;
+}
+
+#[tokio::test]
+async fn cache_refs_move_after_a_non_zero_exit_and_stay_after_a_timeout_or_an_executor_failure() {
+    runs::cache_refs_move_after_a_non_zero_exit_and_stay_after_a_timeout_or_an_executor_failure::<
+        Harness,
+    >()
+    .await;
+}
+
+#[tokio::test]
+async fn the_lowest_registration_takes_a_job() {
+    runs::the_lowest_registration_takes_a_job::<Harness>().await;
+}

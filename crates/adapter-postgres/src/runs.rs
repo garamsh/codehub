@@ -64,6 +64,7 @@ const fn state_column(state: &RunState) -> &'static str {
     match state {
         RunState::Queued => "queued",
         RunState::Running { .. } => "running",
+        RunState::Reporting { .. } => "reporting",
         RunState::Cancelled => "cancelled",
         RunState::TimedOut => "timed_out",
         RunState::Finished => "finished",
@@ -78,6 +79,7 @@ fn ended_columns() -> Vec<&'static str> {
             lease_expires_at: 0,
             deadline: 0,
         },
+        RunState::Reporting { deadline: 0 },
         RunState::Cancelled,
         RunState::TimedOut,
         RunState::Finished,
@@ -267,6 +269,7 @@ impl RunRow {
                 lease_expires_at,
                 deadline,
             },
+            ("reporting", _, Some(deadline)) => RunState::Reporting { deadline },
             ("cancelled", _, _) => RunState::Cancelled,
             ("timed_out", _, _) => RunState::TimedOut,
             ("finished", _, _) => RunState::Finished,
@@ -557,14 +560,15 @@ pub(crate) async fn heartbeat(
     transaction.commit().await.map_err(backend)?;
     match (extended, stopped.as_deref()) {
         (1, _) => Ok(Heartbeat::Continue),
+        (_, Some("reporting")) => Ok(Heartbeat::Continue),
         (_, Some("cancelled")) => Ok(Heartbeat::Stop(StopReason::Cancelled)),
         (_, Some("timed_out")) => Ok(Heartbeat::Stop(StopReason::TimedOut)),
         _ => Err(not_found(id)),
     }
 }
 
-/// The run `id`, where it runs under one of `held`.
-pub(crate) async fn running(
+/// The run `id`, where one of `held` holds it and may still upload and report.
+pub(crate) async fn held(
     pool: &PgPool,
     id: RunId,
     held: &[RegistrationId],
@@ -572,7 +576,8 @@ pub(crate) async fn running(
     let row = sqlx::query_as::<_, RunRow>(concat!(
         "select ",
         columns!(),
-        " from runs where id = $1 and state = 'running' and runner = any($2)"
+        " from runs where id = $1 and runner = any($2) and (state = 'running' \
+         or (state in ('cancelled', 'timed_out') and result_outcome is null))"
     ))
     .bind(number(id.value(), "run")?)
     .bind(runners(held)?)
@@ -583,7 +588,33 @@ pub(crate) async fn running(
     run(row)
 }
 
-/// Ends the run `id` as finished with `result`, where it runs under one of `held`.
+/// Moves the run `id` from running to reporting, with a deadline `lease` seconds from `now`.
+pub(crate) async fn begin_report(
+    pool: &PgPool,
+    id: RunId,
+    held: &[RegistrationId],
+    now: i64,
+    lease: i64,
+) -> Result<Run, JobQueueError> {
+    let row = sqlx::query_as::<_, RunRow>(concat!(
+        "update runs set state = 'reporting', lease_expires_at = null, deadline = $3 + $4, \
+         updated_at = now() \
+         where id = $1 and state = 'running' and runner = any($2) returning ",
+        columns!()
+    ))
+    .bind(number(id.value(), "run")?)
+    .bind(runners(held)?)
+    .bind(now)
+    .bind(lease)
+    .fetch_optional(pool)
+    .await
+    .map_err(backend)?
+    .ok_or_else(|| not_found(id))?;
+    run(row)
+}
+
+/// Ends the run `id` with `result`, where one of `held` holds it: a reporting run finishes, and a
+/// cancelled or timed-out one that has no result keeps its state and takes `result`.
 pub(crate) async fn complete(
     pool: &PgPool,
     id: RunId,
@@ -607,13 +638,14 @@ pub(crate) async fn complete(
         WriteBack::NotWritten { reason, paths } => (Some(reason_column(*reason)), paths),
     };
     let row = sqlx::query_as::<_, RunRow>(concat!(
-        "update runs set state = 'finished', lease_expires_at = null, deadline = null, \
-         result_outcome = $3, exit_code = $4, stdout_address = $5, stdout_cut = $6, \
+        "update runs set state = case when state = 'reporting' then 'finished' else state end, \
+         lease_expires_at = null, deadline = null, result_outcome = $3, exit_code = $4, stdout_address = $5, stdout_cut = $6, \
          stderr_address = $7, stderr_cut = $8, objects_downloaded = $9, \
          objects_from_cache = $10, output_tree = $11, change_paths = $12, change_kinds = $13, \
          change_contents = $14, refused = $15, write_reason = $16, write_paths = $17, \
          updated_at = now() \
-         where id = $1 and state = 'running' and runner = any($2) \
+         where id = $1 and runner = any($2) and (state = 'reporting' \
+         or (state in ('cancelled', 'timed_out') and result_outcome is null)) \
          returning ",
         columns!()
     ))
@@ -641,8 +673,9 @@ pub(crate) async fn complete(
     run(row)
 }
 
-/// Times out the running runs whose deadline is `now` or before, and queues again those whose
-/// lease lapsed before their deadline. Rows are locked in identifier order.
+/// Times out the running runs whose deadline is `now` or before, queues again those whose lease
+/// lapsed before their deadline, and ends the reporting runs whose deadline is `now` or
+/// before as failed in the executor, with nothing written. Rows are locked in identifier order.
 pub(crate) async fn expire(pool: &PgPool, now: i64) -> Result<(), JobQueueError> {
     let mut transaction = pool.begin().await.map_err(backend)?;
     sqlx::query(
@@ -661,6 +694,20 @@ pub(crate) async fn expire(pool: &PgPool, now: i64) -> Result<(), JobQueueError>
          deadline = null, updated_at = now() \
          where id in ( \
              select id from runs where state = 'running' and lease_expires_at <= $1 \
+             order by id for update)",
+    )
+    .bind(now)
+    .execute(&mut *transaction)
+    .await
+    .map_err(backend)?;
+    sqlx::query(
+        "update runs set state = 'finished', deadline = null, result_outcome = 'executor_failed', \
+         objects_downloaded = 0, objects_from_cache = 0, change_paths = array[]::bytea[], \
+         change_kinds = array[]::text[], change_contents = array[]::bytea[], \
+         refused = array[]::text[], write_reason = 'executor_failed', \
+         write_paths = array[]::bytea[], updated_at = now() \
+         where id in ( \
+             select id from runs where state = 'reporting' and deadline <= $1 \
              order by id for update)",
     )
     .bind(now)

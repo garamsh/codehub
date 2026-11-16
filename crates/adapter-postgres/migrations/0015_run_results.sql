@@ -1,6 +1,8 @@
 -- A run is held by a runner and ends with a result (ADR 0051). `runner` names a registration
 -- without a foreign key, as `jobs.runner` does. A run a runner reported is `finished` and holds
--- the result; a run that was cancelled or timed out holds none. The result is `result_outcome`,
+-- the result. A run is `reporting` while the server writes its changes back, with the deadline of
+-- that report; it can no longer be cancelled. A run that was cancelled or timed out holds a
+-- result only where its runner reported it afterwards, with no changes. The result is `result_outcome`,
 -- the exit code, the two streams (an address and whether it was cut, both null where the command
 -- never started), the object counts, the output tree, the changes as the parallel arrays
 -- `change_paths`, `change_kinds` and `change_contents` (the address's 32 bytes, empty for a
@@ -8,7 +10,7 @@
 -- written, and `write_paths`.
 alter table runs drop constraint runs_state_check;
 alter table runs add constraint runs_state_check
-    check (state in ('queued', 'running', 'cancelled', 'timed_out', 'finished'));
+    check (state in ('queued', 'running', 'reporting', 'cancelled', 'timed_out', 'finished'));
 
 alter table runs
     add column runner bigint,
@@ -29,7 +31,10 @@ alter table runs
     add column write_paths bytea[],
     add constraint runs_queued_has_no_runner check (state <> 'queued' or runner is null),
     add constraint runs_finished_has_result check (
-        (state = 'finished') = (result_outcome is not null)
+        state <> 'finished' or result_outcome is not null
+    ),
+    add constraint runs_result_only_after_report check (
+        result_outcome is null or state in ('finished', 'cancelled', 'timed_out')
     ),
     add constraint runs_change_arrays check (
         cardinality(change_paths) = cardinality(change_kinds)

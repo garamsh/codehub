@@ -15,20 +15,22 @@ use app::domain::draft::Draft;
 use app::domain::draft::DraftId;
 use app::domain::file::{File, FileKind};
 use app::domain::job::{
-    CacheRef, JobId, JobResult, Outcome, Produced, ProducedFile, empty_output_tree,
+    CacheRef, Heartbeat, JobId, JobResult, Outcome, Produced, ProducedFile, empty_output_tree,
 };
 use app::domain::path::{Path, Prefix};
 use app::domain::principal::Caller;
 use app::domain::run::{
     NotWritten, ObjectCounts, Run, RunId, RunOutcome, RunReport, RunResult, RunSettings, RunState,
-    WriteBack,
+    RunStream, WriteBack,
 };
 use app::port::driven::cache_refs::CacheRefs;
 use app::port::driven::check_definitions::CheckFileError;
 use app::port::driven::draft_store::DraftStore;
+use app::port::driven::job_queue::{JobQueue, JobQueueError};
 use app::port::driven::membership::{Access, Role};
 use app::port::driving::access::AccessError;
-use app::port::driving::jobs::{Jobs, JobsError};
+use app::port::driving::jobs::{Jobs, JobsError, Upload};
+use app::port::driving::runners::Runners;
 use app::port::driving::runs::{Runs, RunsError, StartRun};
 
 const RUN_FILE: &str = ".codehub/run.toml";
@@ -557,7 +559,7 @@ pub async fn an_exited_run_writes_its_changes_to_the_workspace<H: RunnerDeployme
         &[("src/c", "edited"), ("src/z", "z")],
     )
     .await;
-    let run = start(&repo, &ada, request(None, &[])).await.unwrap();
+    let run = start(&repo, &ada, request(None, &["src"])).await.unwrap();
     let before = workspace(&harness, &repo, &ada).await;
     let claimed = harness.jobs().claim_run(&bot, 0).await.unwrap().unwrap();
     assert_eq!(claimed.run.id, run.id);
@@ -990,4 +992,320 @@ pub async fn a_run_whose_lease_lapses_is_offered_again_and_one_past_its_deadline
         result_of(&ended).write_back,
         not_written(NotWritten::TimedOut, &[])
     );
+}
+
+/// While the server writes a run's changes back the run is reporting: its principal cannot cancel
+/// it, so no cancelled run carries a written change. A run that is only running is cancelled.
+pub async fn a_run_being_reported_cannot_be_cancelled<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let (repo, bot) = runnable(&harness, &ada, &[("src/a", "a")], &[("src/a", "x")]).await;
+    let runs = harness.assembly().runs();
+    let jobs = harness.jobs();
+    let reported = start(&repo, &ada, request(None, &[])).await.unwrap();
+    let running = start(&repo, &ada, request(None, &[])).await.unwrap();
+    let claimed = jobs.claim_run(&bot, 0).await.unwrap().unwrap();
+    jobs.claim_run(&bot, 0).await.unwrap().unwrap();
+    let holder = [claimed.run.runner.unwrap()];
+
+    let reporting = harness
+        .queue()
+        .begin_report(reported.id, &holder, 1, LEASE)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        reporting.state,
+        RunState::Reporting {
+            deadline: 1 + LEASE
+        }
+    );
+    assert_eq!(
+        runs.cancel(&ada, repo.id, reported.id).await,
+        Err(RunsError::Finished(reported.id))
+    );
+    let held = read(&harness, &repo, &ada, reported.id).await;
+    assert_eq!(held.state, reporting.state);
+    assert_eq!(
+        jobs.heartbeat(&bot, JobId::new(reported.id.value()), 2)
+            .await
+            .unwrap(),
+        Heartbeat::Continue
+    );
+    // Control: a run that is only running is cancelled.
+    let cancelled = runs.cancel(&ada, repo.id, running.id).await.unwrap();
+    assert_eq!(cancelled.state, RunState::Cancelled);
+}
+
+/// A run left reporting, as when the server stopped midway, is left alone until its deadline, and
+/// then ends as failed in the executor with nothing written.
+pub async fn a_run_left_reporting_fails_in_its_executor_once_its_deadline_passes<
+    H: RunnerDeployment,
+>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let (repo, bot) = runnable(&harness, &ada, &[("src/a", "a")], &[("src/a", "x")]).await;
+    let before = workspace(&harness, &repo, &ada).await;
+    let run = start(&repo, &ada, request(None, &[])).await.unwrap();
+    let jobs = harness.jobs();
+    let claimed = jobs.claim_run(&bot, 0).await.unwrap().unwrap();
+    let holder = [claimed.run.runner.unwrap()];
+    harness
+        .queue()
+        .begin_report(run.id, &holder, 1, LEASE)
+        .await
+        .unwrap();
+
+    jobs.claim_run(&bot, LEASE).await.unwrap();
+    assert_eq!(
+        read(&harness, &repo, &ada, run.id).await.state,
+        RunState::Reporting {
+            deadline: 1 + LEASE
+        }
+    );
+    jobs.claim_run(&bot, 1 + LEASE).await.unwrap();
+
+    let ended = read(&harness, &repo, &ada, run.id).await;
+    assert_eq!(ended.state, RunState::Finished);
+    assert_eq!(result_of(&ended).outcome, RunOutcome::ExecutorFailed);
+    assert_eq!(
+        result_of(&ended).write_back,
+        not_written(NotWritten::ExecutorFailed, &[])
+    );
+    assert_eq!(workspace(&harness, &repo, &ada).await, before);
+}
+
+/// A run that timed out or was cancelled while its runner held it takes that runner's upload grants
+/// and one report, which records its streams, counts and output tree; what it writes back stays
+/// the stop, and nothing is written.
+pub async fn a_stopped_run_takes_the_uploads_and_one_report_of_its_runner_and_writes_nothing<
+    H: RunnerDeployment,
+>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let (repo, bot) = runnable(&harness, &ada, &[("src/a", "a")], &[("src/a", "x")]).await;
+    let before = workspace(&harness, &repo, &ada).await;
+    let jobs = harness.jobs();
+    for cancelled in [false, true] {
+        let run = start(&repo, &ada, request(None, &[])).await.unwrap();
+        jobs.claim_run(&bot, 0).await.unwrap().unwrap();
+        let now = if cancelled {
+            harness
+                .assembly()
+                .runs()
+                .cancel(&ada, repo.id, run.id)
+                .await
+                .unwrap();
+            1
+        } else {
+            let late = i64::try_from(run.request.timeout.seconds()).unwrap() + 1;
+            jobs.claim_run(&bot, late).await.unwrap();
+            late
+        };
+        let (state, outcome, reason) = if cancelled {
+            (
+                RunState::Cancelled,
+                RunOutcome::Cancelled,
+                NotWritten::Cancelled,
+            )
+        } else {
+            (
+                RunState::TimedOut,
+                RunOutcome::TimedOut,
+                NotWritten::TimedOut,
+            )
+        };
+        assert_eq!(read(&harness, &repo, &ada, run.id).await.state, state);
+
+        let unseen = Upload {
+            address: Address::of(b"unseen"),
+            size: 6,
+        };
+        let grants = jobs
+            .upload_grants(&bot, JobId::new(run.id.value()), vec![unseen], now)
+            .await
+            .unwrap();
+        assert_eq!(grants.len(), 1);
+        let stdout = repo.upload("so").await;
+        let new = repo.upload("new").await;
+        let mut report = exited(vec![("src/a", Change::File(regular(new)))]);
+        report.outcome = outcome;
+        report.exit_code = None;
+        report.stdout = Some(RunStream {
+            address: stdout,
+            cut: true,
+        });
+        report.objects = ObjectCounts {
+            downloaded: 3,
+            from_cache: 1,
+        };
+
+        jobs.report_run(&bot, run.id, report.clone(), now)
+            .await
+            .unwrap();
+
+        let ended = read(&harness, &repo, &ada, run.id).await;
+        assert_eq!(ended.state, state);
+        let result = result_of(&ended);
+        assert_eq!(result.outcome, outcome);
+        assert_eq!(
+            result.stdout,
+            Some(RunStream {
+                address: stdout,
+                cut: true
+            })
+        );
+        assert_eq!(result.objects.downloaded, 3);
+        assert!(result.output_tree.is_some());
+        assert_eq!(result.changes, BTreeMap::new());
+        assert_eq!(result.write_back, not_written(reason, &[]));
+        assert_eq!(workspace(&harness, &repo, &ada).await, before);
+        // The one report is taken.
+        let again = jobs.report_run(&bot, run.id, report, now).await;
+        assert!(
+            matches!(again, Err(JobsError::Queue(JobQueueError::NotFound(_)))),
+            "{again:?}"
+        );
+    }
+}
+
+/// A report whose changes name a path the run was neither sent nor allowed to add, or one under a
+/// cache path, is refused and ends nothing; the run is still held.
+pub async fn a_report_changing_a_path_the_run_could_not_change_is_refused<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let (repo, bot) = runnable(
+        &harness,
+        &ada,
+        &[("src/a", "a")],
+        &[("src/a", "x"), (RUN_FILE, "caches = [\"src/cache\"]")],
+    )
+    .await;
+    harness.teach_run(
+        "caches = [\"src/cache\"]",
+        Ok(settings(&["src/cache"], 600)),
+    );
+    let before = workspace(&harness, &repo, &ada).await;
+    let run = start(&repo, &ada, request(None, &["src"])).await.unwrap();
+    harness.jobs().claim_run(&bot, 0).await.unwrap().unwrap();
+    let new = repo.upload("new").await;
+
+    for (changed, text) in [
+        (Change::File(regular(new)), "src/cache/x"),
+        (Change::Deletion, "elsewhere/gone"),
+    ] {
+        let refused = harness
+            .jobs()
+            .report_run(&bot, run.id, exited(vec![(text, changed)]), 1)
+            .await;
+        assert!(
+            matches!(&refused, Err(JobsError::UnboundChanges(found)) if *found == vec![path(text)]),
+            "{refused:?}"
+        );
+        let held = read(&harness, &repo, &ada, run.id).await;
+        assert!(matches!(held.state, RunState::Running { .. }), "{held:?}");
+    }
+    assert_eq!(workspace(&harness, &repo, &ada).await, before);
+
+    // Control: a path under `add` and one that was sent are taken.
+    harness
+        .jobs()
+        .report_run(
+            &bot,
+            run.id,
+            exited(vec![
+                ("src/a", Change::File(regular(new))),
+                ("src/fresh", Change::File(regular(new))),
+            ]),
+            1,
+        )
+        .await
+        .unwrap();
+    let ended = read(&harness, &repo, &ada, run.id).await;
+    assert_eq!(
+        result_of(&ended).write_back,
+        written(&["src/a", "src/fresh"])
+    );
+}
+
+/// The cache refs move after a command that exited, whatever its code, and stay where they were
+/// after a timeout or a failure in the executor.
+pub async fn cache_refs_move_after_a_non_zero_exit_and_stay_after_a_timeout_or_an_executor_failure<
+    H: RunnerDeployment,
+>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let (repo, bot) = runnable(
+        &harness,
+        &ada,
+        &[("src/a", "a")],
+        &[("src/a", "x"), (RUN_FILE, "caches = [\"target\"]")],
+    )
+    .await;
+    harness.teach_run("caches = [\"target\"]", Ok(settings(&["target"], 600)));
+    let cached = |outcome: RunOutcome, code: Option<i32>, content| {
+        let mut report = exited(vec![]);
+        report.outcome = outcome;
+        report.exit_code = code;
+        report.caches = vec![ProducedFile {
+            path: path("target/x"),
+            file: regular(content),
+        }];
+        report
+    };
+    for (outcome, code, text, moves) in [
+        (RunOutcome::TimedOut, None, "slow", false),
+        (RunOutcome::ExecutorFailed, None, "broken", false),
+        (RunOutcome::Exited, Some(3), "failed", true),
+    ] {
+        let run = start(&repo, &ada, request(None, &[])).await.unwrap();
+        harness.jobs().claim_run(&bot, 0).await.unwrap().unwrap();
+        let content = repo.upload(text).await;
+        let before = workspace_cache_ref(&harness, &repo, &ada).await;
+        assert!(before.is_some());
+
+        harness
+            .jobs()
+            .report_run(&bot, run.id, cached(outcome, code, content), 1)
+            .await
+            .unwrap();
+
+        let after = workspace_cache_ref(&harness, &repo, &ada).await;
+        if moves {
+            assert_ne!(after, before, "{outcome:?}");
+        } else {
+            assert_eq!(after, before, "{outcome:?}");
+        }
+    }
+}
+
+/// Of the registrations of one runner that may take a job, the one with the lowest identifier
+/// takes it, for a run and for a check's job.
+pub async fn the_lowest_registration_takes_a_job<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    repo.stage(&ada, &draft("work"), &[("src/a", "a")]).await;
+    let bot = H::principal("bot");
+    let lowest = harness
+        .runners()
+        .register(&ada, &organisation("acme"), None, &bot, BTreeSet::new())
+        .await
+        .unwrap();
+    let higher = harness
+        .runners()
+        .register(&ada, &organisation("acme"), None, &bot, BTreeSet::new())
+        .await
+        .unwrap();
+    assert!(lowest < higher);
+    let bot = harness.caller("bot").await;
+    let run = start(&repo, &ada, request(None, &[])).await.unwrap();
+    land_checks(&repo, &ada, "checks", &[check("unit")]).await;
+
+    let claimed = harness.jobs().claim_run(&bot, 0).await.unwrap().unwrap();
+    let job = harness.jobs().claim(&bot, 0).await.unwrap().unwrap();
+
+    assert_eq!(claimed.run.id, run.id);
+    assert_eq!(claimed.run.runner, Some(lowest));
+    assert_eq!(job.job.runner, Some(lowest));
 }

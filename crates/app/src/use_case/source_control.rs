@@ -589,6 +589,10 @@ impl<P: AfterLanding> SourceControl for SourceControlService<P> {
             .remove(repository, &draft)
             .await
             .map_err(LandError::from)?;
+        // Before `after_landing`, whose failure returns early: the instance is closed either way.
+        remove_workspace_cache_refs(&*self.cache_refs, repository, instance)
+            .await
+            .map_err(LandError::from)?;
         self.after_landing
             .after_landing(repository, landed, timestamp)
             .await
@@ -596,9 +600,6 @@ impl<P: AfterLanding> SourceControl for SourceControlService<P> {
                 landed,
                 cause: error.to_string(),
             })?;
-        remove_workspace_cache_refs(&*self.cache_refs, repository, instance)
-            .await
-            .map_err(LandError::from)?;
         Ok(landed)
     }
 

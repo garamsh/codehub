@@ -209,12 +209,18 @@ impl JobQueue for RecordRefusingQueue {
         self.0.heartbeat_run(run, runners, now, lease).await
     }
 
-    async fn running_run(
+    async fn held_run(&self, run: RunId, runners: &[RegistrationId]) -> Result<Run, JobQueueError> {
+        self.0.held_run(run, runners).await
+    }
+
+    async fn begin_report(
         &self,
         run: RunId,
         runners: &[RegistrationId],
+        now: i64,
+        lease: i64,
     ) -> Result<Run, JobQueueError> {
-        self.0.running_run(run, runners).await
+        self.0.begin_report(run, runners, now, lease).await
     }
 
     async fn complete_run(

@@ -10,13 +10,15 @@ use crate::domain::draft::{Draft, DraftId, Edit};
 use crate::domain::file::File;
 use crate::domain::path::{Path, Prefix};
 use crate::domain::repository::RepositoryId;
-use crate::domain::run::{NotWritten, Run, RunOutcome, RunReport, RunResult, WriteBack};
+use crate::domain::run::{
+    NewRun, NotWritten, Run, RunOutcome, RunReport, RunResult, RunState, WriteBack,
+};
 use crate::domain::runner::{Registration, RegistrationId};
 use crate::port::driven::authorisation_decision::AuthorisationDecision;
 use crate::port::driven::cache_refs::CacheRefs;
 use crate::port::driven::derived_data::DerivedData;
 use crate::port::driven::draft_store::{DraftStore, DraftStoreError};
-use crate::port::driven::job_queue::JobQueue;
+use crate::port::driven::job_queue::{JobQueue, JobQueueError};
 use crate::port::driven::membership::Access;
 use crate::port::driven::object_store::ObjectStore;
 use crate::port::driven::repository_directory::RepositoryDirectory;
@@ -89,8 +91,88 @@ impl RunJobs {
         Ok(Some(ClaimedRun { run, files, caches }))
     }
 
-    /// Ends `held`, which runs under one of `runners`, as `report` says.
+    /// Takes `report` of `held`, which one of `runners` holds. A running run moves to reporting,
+    /// where its principal can no longer cancel it, before anything is written. A run that
+    /// stopped takes the report's streams, counts and output tree, and nothing is written.
     pub(crate) async fn report(
+        &self,
+        runners: &[RegistrationId],
+        held: Run,
+        report: RunReport,
+        now: i64,
+        lease: i64,
+    ) -> Result<(), JobsError> {
+        let held = match held.state {
+            RunState::Running { .. } => {
+                bound_changes(&held.request, &report.changes)?;
+                match self.queue.begin_report(held.id, runners, now, lease).await {
+                    Ok(held) => held,
+                    // The principal cancelled it, or it timed out, since it was read.
+                    Err(JobQueueError::NotFound(_)) => {
+                        self.queue.held_run(held.id, runners).await?
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            RunState::Queued
+            | RunState::Reporting { .. }
+            | RunState::Cancelled
+            | RunState::TimedOut
+            | RunState::Finished => held,
+        };
+        if matches!(held.state, RunState::Reporting { .. }) {
+            self.finish(runners, held, report).await
+        } else {
+            self.record_stopped(runners, held, report).await
+        }
+    }
+
+    /// Records what the runner reported of `held`, which was cancelled or timed out, and writes
+    /// nothing.
+    async fn record_stopped(
+        &self,
+        runners: &[RegistrationId],
+        held: Run,
+        report: RunReport,
+    ) -> Result<(), JobsError> {
+        let report = RunReport {
+            changes: BTreeMap::new(),
+            ..report
+        };
+        let mut result = if held.state == RunState::Cancelled {
+            RunResult::unreported(RunOutcome::Cancelled, NotWritten::Cancelled)
+        } else {
+            RunResult::unreported(RunOutcome::TimedOut, NotWritten::TimedOut)
+        };
+        if self.stored(held.request.repository, &report).await? {
+            let (output_tree, _) = self.output_tree(&held.request, &report).await?;
+            result.stdout = report.stdout;
+            result.stderr = report.stderr;
+            result.objects = report.objects;
+            result.output_tree = Some(output_tree);
+        }
+        self.queue.complete_run(held.id, runners, result).await?;
+        Ok(())
+    }
+
+    /// The output tree of `report` and the files left under the run's cache paths.
+    async fn output_tree(
+        &self,
+        request: &NewRun,
+        report: &RunReport,
+    ) -> Result<(Address, BTreeMap<Path, File>), JobsError> {
+        let outputs: Vec<Prefix> = request.outputs.iter().cloned().map(Prefix::from).collect();
+        let caches: Vec<Prefix> = request.caches.keys().cloned().map(Prefix::from).collect();
+        let mut left = covered(&report.outputs, &outputs);
+        let cache_files = covered(&report.caches, &caches);
+        left.extend(cache_files.clone());
+        let tree = store_tree(&*self.objects, request.repository, left).await?;
+        Ok((tree, cache_files))
+    }
+
+    /// Writes `report`'s changes back, moves the cache refs and finishes `held`, which is
+    /// reporting.
+    async fn finish(
         &self,
         runners: &[RegistrationId],
         held: Run,
@@ -104,19 +186,9 @@ impl RunJobs {
             self.queue.complete_run(held.id, runners, result).await?;
             return Ok(());
         }
-        let outputs: Vec<Prefix> = request.outputs.iter().cloned().map(Prefix::from).collect();
-        let caches: Vec<Prefix> = request.caches.keys().cloned().map(Prefix::from).collect();
-        let mut left = covered(&report.outputs, &outputs);
-        let cache_files = covered(&report.caches, &caches);
-        left.extend(cache_files.clone());
-        let output_tree = store_tree(&*self.objects, repository, left).await?;
-
-        let draft = self.open_draft(&held).await?;
+        let (output_tree, cache_files) = self.output_tree(request, &report).await?;
         let write_back = match report.outcome {
-            RunOutcome::Exited => {
-                self.write_back(&held, draft.as_ref(), &report.changes)
-                    .await?
-            }
+            RunOutcome::Exited => self.write_back(&held, &report.changes).await?,
             RunOutcome::TimedOut => not_written(NotWritten::TimedOut),
             RunOutcome::Cancelled => not_written(NotWritten::Cancelled),
             RunOutcome::ExecutorFailed => not_written(NotWritten::ExecutorFailed),
@@ -200,19 +272,17 @@ impl RunJobs {
     async fn write_back(
         &self,
         held: &Run,
-        draft: Option<&Draft>,
         changes: &BTreeMap<Path, Change>,
     ) -> Result<WriteBack, JobsError> {
         if changes.is_empty() {
             return Ok(WriteBack::Written { paths: Vec::new() });
         }
         let request = &held.request;
-        let Some(draft) = draft else {
+        let Some(draft) = self.open_draft(held).await? else {
             return Ok(refused(NotWritten::InstanceClosed, Vec::new()));
         };
         if draft.version != request.version {
-            let paths = self.moved(held, draft).await?;
-            return Ok(refused(NotWritten::WorkspaceMoved, paths));
+            return self.moved(held).await;
         }
         let repository = request.repository;
         let Some((organisation, name)) = self
@@ -259,16 +329,13 @@ impl RunJobs {
         };
         match self
             .drafts
-            .record(repository, &id, request.version, edits)
+            .record(repository, &id, request.instance, request.version, edits)
             .await
         {
             Ok(()) => Ok(WriteBack::Written {
                 paths: changes.keys().cloned().collect(),
             }),
-            Err(DraftStoreError::Moved { .. }) => {
-                let paths = self.moved(held, draft).await?;
-                Ok(refused(NotWritten::WorkspaceMoved, paths))
-            }
+            Err(DraftStoreError::Moved { .. }) => self.moved(held).await,
             Err(DraftStoreError::NotFound(_)) => {
                 Ok(refused(NotWritten::InstanceClosed, Vec::new()))
             }
@@ -300,12 +367,16 @@ impl RunJobs {
             .map(|(_, file)| file))
     }
 
-    /// The paths under the run's prefix whose files the workspace holds otherwise than the run
-    /// was sent them.
-    async fn moved(&self, held: &Run, draft: &Draft) -> Result<Vec<Path>, JobsError> {
+    /// Why `held` was not written where the workspace moved: read again now, the instance may
+    /// have closed since, and otherwise the paths under the run's prefix whose files it holds
+    /// otherwise than the run was sent them.
+    async fn moved(&self, held: &Run) -> Result<WriteBack, JobsError> {
         let request = &held.request;
+        let Some(draft) = self.open_draft(held).await? else {
+            return Ok(refused(NotWritten::InstanceClosed, Vec::new()));
+        };
         let now =
-            workspace_files(&*self.derived, request.repository, draft, &request.prefix).await?;
+            workspace_files(&*self.derived, request.repository, &draft, &request.prefix).await?;
         let mut paths: Vec<Path> = now
             .iter()
             .filter(|(path, file)| request.files.get(*path) != Some(*file))
@@ -319,7 +390,28 @@ impl RunJobs {
                 .cloned(),
         );
         paths.sort();
-        Ok(paths)
+        Ok(refused(NotWritten::WorkspaceMoved, paths))
+    }
+}
+
+/// Refuses `changes` that name a path the run was neither sent nor allowed to add, or that lies
+/// under one of its cache paths: the server writes only what the run could have changed.
+fn bound_changes(request: &NewRun, changes: &BTreeMap<Path, Change>) -> Result<(), JobsError> {
+    let adds: Vec<Prefix> = request.add.iter().cloned().map(Prefix::from).collect();
+    let caches: Vec<Prefix> = request.caches.keys().cloned().map(Prefix::from).collect();
+    let unbound: Vec<Path> = changes
+        .keys()
+        .filter(|path| {
+            let allowed =
+                request.files.contains_key(*path) || adds.iter().any(|add| add.covers(path));
+            !allowed || caches.iter().any(|cache| cache.covers(path))
+        })
+        .cloned()
+        .collect();
+    if unbound.is_empty() {
+        Ok(())
+    } else {
+        Err(JobsError::UnboundChanges(unbound))
     }
 }
 

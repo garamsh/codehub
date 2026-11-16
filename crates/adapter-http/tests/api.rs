@@ -1576,6 +1576,7 @@ async fn hands_a_run_to_a_host_runner_which_reports_it_and_the_changes_are_writt
     let ada = api.token("ada");
     api.repository(&ada, "acme").await;
     api.stage(&ada, "acme", "work", "src/a.txt", "a\n").await;
+    api.stage(&ada, "acme", "work", "src/gone", "g\n").await;
     let runner = register_runner(&api, &ada, "bot", &[]).await;
     let started = api
         .post(
@@ -1678,4 +1679,84 @@ async fn takes_the_object_counts_in_a_checks_result_and_refuses_a_report_of_the_
         )
         .await;
     assert_eq!(result.status, StatusCode::NO_CONTENT, "{}", result.body);
+}
+
+/// Starts a run of a workspace of `acme` holding `src/a.txt`, and has `runner` claim it; returns its
+/// identifier.
+#[cfg(test)]
+async fn claimed_run(api: &Api, ada: &str, runner: &str) -> u64 {
+    api.stage(ada, "acme", "work", "src/a.txt", "a\n").await;
+    let started = api
+        .post(
+            &format!("{RUNS}/drafts/work/runs"),
+            ada,
+            json!({"command": "make"}),
+        )
+        .await;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let claimed = api
+        .post("/v1/runner/jobs/claim", runner, json!({"executor": "host"}))
+        .await;
+    assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
+    started.body["id"].as_u64().unwrap()
+}
+
+#[tokio::test]
+async fn refuses_a_run_report_that_changes_a_path_the_run_could_not_change_and_stores_nothing() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    api.repository(&ada, "acme").await;
+    let runner = register_runner(&api, &ada, "bot", &[]).await;
+    let id = claimed_run(&api, &ada, &runner).await;
+    let address = api.upload(&ada, "acme", "b\n").await;
+    let result = format!("/v1/runner/jobs/{id}/result");
+
+    // A path the run was not sent and may not add.
+    let unsent = run_report(json!([
+        {"path": "src/unsent", "kind": "regular", "address": address},
+    ]));
+    let refused = api.post(&result, &runner, unsent).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert!(
+        refused.body["detail"]
+            .as_str()
+            .unwrap()
+            .contains("src/unsent"),
+        "{}",
+        refused.body
+    );
+    let held = api.get(&format!("{RUNS}/runs/{id}"), &ada).await;
+    assert_eq!(held.body["state"], "running", "{}", held.body);
+
+    // Control: a path the run was sent is taken.
+    let sent = run_report(json!([
+        {"path": "src/a.txt", "kind": "regular", "address": address},
+    ]));
+    let taken = api.post(&result, &runner, sent).await;
+    assert_eq!(taken.status, StatusCode::NO_CONTENT, "{}", taken.body);
+}
+
+#[tokio::test]
+async fn refuses_an_exit_code_that_does_not_fit_the_outcome() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    api.repository(&ada, "acme").await;
+    let runner = register_runner(&api, &ada, "bot", &[]).await;
+    let id = claimed_run(&api, &ada, &runner).await;
+    let result = format!("/v1/runner/jobs/{id}/result");
+
+    let mut exited = run_report(json!([]));
+    exited["exit_code"] = Value::Null;
+    let without = api.post(&result, &runner, exited).await;
+    assert_eq!(without.status, StatusCode::BAD_REQUEST, "{}", without.body);
+    let mut timed_out = run_report(json!([]));
+    timed_out["outcome"] = json!("timed_out");
+    let with = api.post(&result, &runner, timed_out).await;
+    assert_eq!(with.status, StatusCode::BAD_REQUEST, "{}", with.body);
+    let held = api.get(&format!("{RUNS}/runs/{id}"), &ada).await;
+    assert_eq!(held.body["state"], "running", "{}", held.body);
+
+    // Control: an exit code with an exit is taken.
+    let taken = api.post(&result, &runner, run_report(json!([]))).await;
+    assert_eq!(taken.status, StatusCode::NO_CONTENT, "{}", taken.body);
 }

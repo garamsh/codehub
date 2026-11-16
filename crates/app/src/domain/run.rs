@@ -110,6 +110,13 @@ pub enum RunState {
         /// When the run times out, in seconds since 1970-01-01T00:00:00Z.
         deadline: i64,
     },
+    /// The runner has reported it and the server is writing its changes back. It can no longer be
+    /// cancelled, and one left here past `deadline` ends as failed in the executor, with nothing
+    /// written.
+    Reporting {
+        /// When the report is given up, in seconds since 1970-01-01T00:00:00Z.
+        deadline: i64,
+    },
     /// Its principal cancelled it before it ended.
     Cancelled,
     /// Its deadline passed while a runner held it, and the queue ended it.
@@ -282,15 +289,13 @@ impl Run {
     #[must_use]
     pub fn ended(&self) -> Option<RunResult> {
         match self.state {
-            RunState::Queued | RunState::Running { .. } => None,
-            RunState::Cancelled => Some(RunResult::unreported(
-                RunOutcome::Cancelled,
-                NotWritten::Cancelled,
-            )),
-            RunState::TimedOut => Some(RunResult::unreported(
-                RunOutcome::TimedOut,
-                NotWritten::TimedOut,
-            )),
+            RunState::Queued | RunState::Running { .. } | RunState::Reporting { .. } => None,
+            RunState::Cancelled => Some(self.result.clone().unwrap_or_else(|| {
+                RunResult::unreported(RunOutcome::Cancelled, NotWritten::Cancelled)
+            })),
+            RunState::TimedOut => Some(self.result.clone().unwrap_or_else(|| {
+                RunResult::unreported(RunOutcome::TimedOut, NotWritten::TimedOut)
+            })),
             RunState::Finished => self.result.clone(),
         }
     }

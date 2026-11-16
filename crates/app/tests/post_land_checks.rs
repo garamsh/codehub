@@ -9,18 +9,21 @@ use std::sync::Arc;
 use adapter_memory::MemoryJobQueue;
 use app::domain::address::Address;
 use app::domain::check::CheckKey;
-use app::domain::draft::Instance;
+use app::domain::draft::{DraftId, Instance};
 use app::domain::job::{
     Heartbeat, Job, JobId, JobResult, NewJob, Outcome, Resolution, empty_output_tree,
 };
 use app::domain::name::{DraftName, OrganisationName};
+use app::domain::path::Path;
 use app::domain::principal::Principal;
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
 use app::domain::run::{NewRun, Run, RunId, RunResult};
 use app::domain::runner::{Registration, RegistrationId};
+use app::port::driven::cache_refs::CacheRefs;
 use app::port::driven::changeset_log::{ChangesetLog, Ref};
 use app::port::driven::check_definitions::CheckDefinitions;
+use app::port::driven::draft_store::DraftStore;
 use app::port::driven::job_queue::{JobQueue, JobQueueError};
 use app::port::driven::runner_registry::RunnerRegistry;
 use app::port::driving::jobs::Jobs;
@@ -162,12 +165,18 @@ impl JobQueue for RefusingQueue {
         self.0.heartbeat_run(run, runners, now, lease).await
     }
 
-    async fn running_run(
+    async fn held_run(&self, run: RunId, runners: &[RegistrationId]) -> Result<Run, JobQueueError> {
+        self.0.held_run(run, runners).await
+    }
+
+    async fn begin_report(
         &self,
         run: RunId,
         runners: &[RegistrationId],
+        now: i64,
+        lease: i64,
     ) -> Result<Run, JobQueueError> {
-        self.0.running_run(run, runners).await
+        self.0.begin_report(run, runners, now, lease).await
     }
 
     async fn complete_run(
@@ -460,4 +469,57 @@ async fn a_revert_whose_checks_cannot_be_queued_has_landed_and_names_the_queue()
         )))
     );
     assert_ne!(held.repo.main().await, Some(held.bad));
+}
+
+#[tokio::test]
+async fn a_landing_whose_checks_cannot_be_queued_still_removes_the_workspaces_cache_refs() {
+    let harness = Harness::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let specs = [check("unit")];
+    let body = text(&specs);
+    harness.teach(&body, Ok(definitions(&specs)));
+    let file = harness.definitions().file().to_string();
+    let name = draft("checks");
+    repo.stage(&ada, &name, &[(&file, &body)]).await;
+    let id = DraftId {
+        principal: ada.principal().clone(),
+        name: name.clone(),
+    };
+    let instance = harness.drafts().get(repo.id, &id).await.unwrap().instance;
+    let cache: Path = "target".parse().unwrap();
+    assert!(
+        harness
+            .cache_refs()
+            .create_workspace_cache_ref(repo.id, instance, &cache, empty_output_tree())
+            .await
+            .unwrap()
+    );
+    let refusing = Arc::new(RefusingQueue(harness.queue.clone()));
+    let checked = harness
+        .source_control()
+        .with_after_landing(PostLandChecks::new(
+            adapters(&harness, refusing),
+            LandingAttempts::default(),
+        ));
+
+    let landing = Landing {
+        message: "checks".to_owned(),
+        timestamp: 0,
+    };
+    let error = checked
+        .land(&ada, repo.id, &name, landing)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        SourceControlError::Land(LandError::ChecksNotQueued { .. })
+    ));
+    let left = harness
+        .cache_refs()
+        .workspace_cache_ref(repo.id, instance, &cache)
+        .await
+        .unwrap();
+    assert_eq!(left, None);
 }

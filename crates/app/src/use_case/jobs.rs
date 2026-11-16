@@ -359,11 +359,7 @@ impl Jobs for JobsService {
         let registrations = self.registrations(caller.principal()).await?;
         self.expire(now).await?;
         let runners = ids(&registrations);
-        let repository = match self
-            .queue
-            .running_run(RunId::new(job.value()), &runners)
-            .await
-        {
+        let repository = match self.queue.held_run(RunId::new(job.value()), &runners).await {
             Ok(run) => run.request.repository,
             Err(JobQueueError::NotFound(_)) => self.queue.running(job, &runners).await?.repository,
             Err(error) => return Err(error.into()),
@@ -398,7 +394,7 @@ impl Jobs for JobsService {
             Err(JobQueueError::NotFound(_))
                 if self
                     .queue
-                    .running_run(RunId::new(job.value()), &runners)
+                    .held_run(RunId::new(job.value()), &runners)
                     .await
                     .is_ok() =>
             {
@@ -446,12 +442,14 @@ impl Jobs for JobsService {
         self.expire(now).await?;
         let runners = ids(&registrations);
         let job = JobId::new(run.value());
-        let held = match self.queue.running_run(run, &runners).await {
+        let held = match self.queue.held_run(run, &runners).await {
             Err(JobQueueError::NotFound(_)) if self.queue.running(job, &runners).await.is_ok() => {
                 return Err(JobsError::WrongKind(job));
             }
             held => held?,
         };
-        self.runs.report(&runners, held, report).await
+        self.runs
+            .report(&runners, held, report, now, self.lease)
+            .await
     }
 }

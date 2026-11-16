@@ -421,6 +421,14 @@ impl From<JobsError> for Problem {
             JobsError::WrongKind(_) => Self::bad_request(
                 "the report is for the other kind of job than the one the caller holds",
             ),
+            JobsError::UnboundChanges(paths) => Self::bad_request(format!(
+                "the report changes paths the run was not sent or allowed to add: {}",
+                paths
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
             JobsError::CacheRefs(_)
             | JobsError::Objects(_)
             | JobsError::Derived(_)

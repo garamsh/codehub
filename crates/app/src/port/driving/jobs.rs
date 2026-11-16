@@ -89,12 +89,15 @@ pub trait Jobs: Send + Sync {
     /// uploaded. Records the output tree of the files under the run's outputs and cache paths and
     /// writes the run's changes back to its workspace as ADR 0051 says; after a command that
     /// exited, moves the workspace's cache refs. A report that names a file the object store lacks
-    /// ends the run as an executor failure.
+    /// ends the run as an executor failure. A run that was cancelled or timed out takes one
+    /// report, which records its streams, object counts and output tree and writes nothing.
     ///
     /// # Errors
     ///
     /// [`JobsError::Queue`] with [`JobQueueError::NotFound`] where the caller does not hold `run`;
-    /// [`JobsError::WrongKind`] where the caller holds a check's job of that number.
+    /// [`JobsError::WrongKind`] where the caller holds a check's job of that number;
+    /// [`JobsError::UnboundChanges`] where the report changes a path the run was neither sent nor
+    /// allowed to add, or one under its cache paths; the run is then not ended.
     async fn report_run(
         &self,
         caller: &Caller,
@@ -196,6 +199,9 @@ pub enum JobsError {
     Drafts(DraftStoreError),
     /// The caller reported a run's result for a check's job, or a check's result for a run.
     WrongKind(JobId),
+    /// A run's report names changes to paths the run was neither sent nor allowed to add, or under
+    /// one of its cache paths.
+    UnboundChanges(Vec<Path>),
 }
 
 impl fmt::Display for JobsError {
@@ -213,6 +219,15 @@ impl fmt::Display for JobsError {
             Self::Access(error) => write!(f, "{error}"),
             Self::Drafts(error) => write!(f, "{error}"),
             Self::WrongKind(job) => write!(f, "the report does not fit the kind of job {job}"),
+            Self::UnboundChanges(paths) => write!(
+                f,
+                "the report changes paths the run was not sent or allowed to add: {}",
+                paths
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         }
     }
 }
@@ -220,7 +235,7 @@ impl fmt::Display for JobsError {
 impl std::error::Error for JobsError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::NotRegistered | Self::WrongKind(_) => None,
+            Self::NotRegistered | Self::WrongKind(_) | Self::UnboundChanges(_) => None,
             Self::Queue(error) => Some(error),
             Self::CacheRefs(error) => Some(error),
             Self::Registry(error) => Some(error),

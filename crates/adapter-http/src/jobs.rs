@@ -1,9 +1,8 @@
 //! The runner's conversation: claiming a job, keeping it alive and reporting its result.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
-
-use std::collections::BTreeMap;
 
 use app::domain::changeset::Change;
 use app::domain::file::{File, FileKind};
@@ -325,13 +324,20 @@ impl ChangeIn {
 
 impl RunReportBody {
     fn report(self) -> Result<RunReport, Problem> {
+        let outcome = match self.outcome {
+            RunOutcomeIn::Exited => RunOutcome::Exited,
+            RunOutcomeIn::TimedOut => RunOutcome::TimedOut,
+            RunOutcomeIn::Cancelled => RunOutcome::Cancelled,
+            RunOutcomeIn::ExecutorFailed => RunOutcome::ExecutorFailed,
+        };
+        // Only a command that exited has an exit code.
+        if (outcome == RunOutcome::Exited) != self.exit_code.is_some() {
+            return Err(Problem::bad_request(
+                "exit_code is given where the outcome is exited, and only there",
+            ));
+        }
         Ok(RunReport {
-            outcome: match self.outcome {
-                RunOutcomeIn::Exited => RunOutcome::Exited,
-                RunOutcomeIn::TimedOut => RunOutcome::TimedOut,
-                RunOutcomeIn::Cancelled => RunOutcome::Cancelled,
-                RunOutcomeIn::ExecutorFailed => RunOutcome::ExecutorFailed,
-            },
+            outcome,
             exit_code: self.exit_code,
             stdout: self.stdout.map(StreamIn::stream).transpose()?,
             stderr: self.stderr.map(StreamIn::stream).transpose()?,

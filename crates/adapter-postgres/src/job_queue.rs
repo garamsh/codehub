@@ -560,12 +560,18 @@ impl JobQueue for PostgresJobQueue {
         runs::heartbeat(&self.pool, run, runners, now, lease).await
     }
 
-    async fn running_run(
+    async fn held_run(&self, run: RunId, runners: &[RegistrationId]) -> Result<Run, JobQueueError> {
+        runs::held(&self.pool, run, runners).await
+    }
+
+    async fn begin_report(
         &self,
         run: RunId,
         runners: &[RegistrationId],
+        now: i64,
+        lease: i64,
     ) -> Result<Run, JobQueueError> {
-        runs::running(&self.pool, run, runners).await
+        runs::begin_report(&self.pool, run, runners, now, lease).await
     }
 
     async fn complete_run(

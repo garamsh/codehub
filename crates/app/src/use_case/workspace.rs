@@ -146,7 +146,13 @@ pub(crate) async fn record_now(
     loop {
         let held = drafts.get(repository, draft).await?;
         match drafts
-            .record(repository, draft, held.version, edits.clone())
+            .record(
+                repository,
+                draft,
+                held.instance,
+                held.version,
+                edits.clone(),
+            )
             .await
         {
             Err(DraftStoreError::Moved { .. }) => {}

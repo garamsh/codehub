@@ -53,12 +53,14 @@ impl DraftStore for MemoryDraftStore {
         &self,
         repository: RepositoryId,
         draft: &DraftId,
+        instance: Instance,
         expected: u64,
         edits: BTreeMap<Path, Edit>,
     ) -> Result<(), DraftStoreError> {
         let mut drafts = lock(&self.drafts);
         let held = drafts
             .get_mut(&(repository, draft.clone()))
+            .filter(|held| held.instance == instance)
             .ok_or_else(|| DraftStoreError::NotFound(draft.clone()))?;
         if held.version != expected {
             return Err(DraftStoreError::Moved {

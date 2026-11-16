@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::domain::address::Address;
-use crate::domain::draft::{Draft, DraftId, Edit};
+use crate::domain::draft::{Draft, DraftId, Edit, Instance};
 use crate::domain::path::Path;
 use crate::domain::repository::RepositoryId;
 
@@ -37,17 +37,19 @@ pub trait DraftStore: Send + Sync {
         description: String,
     ) -> Result<(), DraftStoreError>;
 
-    /// Applies every edit to the draft held under `draft`, or none of them, only where its version
-    /// is `expected`, and then raises the version by one.
+    /// Applies every edit to the draft held under `draft`, or none of them, only where it is the
+    /// instance `instance` and its version is `expected`, and then raises the version by one.
     ///
     /// # Errors
     ///
-    /// [`DraftStoreError::NotFound`] where no draft is held under `draft`, and
-    /// [`DraftStoreError::Moved`] where its version is not `expected`; nothing is applied.
+    /// [`DraftStoreError::NotFound`] where no draft is held under `draft` or the one held is
+    /// another instance, and [`DraftStoreError::Moved`] where its version is not `expected`;
+    /// nothing is applied.
     async fn record(
         &self,
         repository: RepositoryId,
         draft: &DraftId,
+        instance: Instance,
         expected: u64,
         edits: BTreeMap<Path, Edit>,
     ) -> Result<(), DraftStoreError>;

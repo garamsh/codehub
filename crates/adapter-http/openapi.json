@@ -2803,7 +2803,7 @@
         "summary": "Claim the oldest queued job a registration of the caller matches; a run's job is offered before a check's. A run's job goes only to a runner whose executor is `host` or absent; a runner that states `gaon` is never handed one.",
         "responses": {
           "200": {
-            "description": "A job, now held by the caller: a check's job, or a run's job where the runner's executor is `host`.",
+            "description": "A job, now held by the caller: a check's job, or a run's job where the runner's executor is `host` or absent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4962,7 +4962,7 @@
               "integer",
               "null"
             ],
-            "description": "While running: when the runner's lease lapses, in seconds since 1970-01-01T00:00:00Z."
+            "description": "While running: when the runner's lease lapses, in seconds since 1970-01-01T00:00:00Z. Absent while the server writes the run's changes back, when the run still shows as `running`."
           },
           "deadline": {
             "type": [
@@ -5212,7 +5212,7 @@
           "files",
           "caches"
         ],
-        "description": "The job of a run, as a runner whose executor is `host` claims it. A runner whose executor is `host` or absent claims it.",
+        "description": "The job of a run, as a runner whose executor is `host` or absent claims it.",
         "properties": {
           "id": {
             "type": "integer",

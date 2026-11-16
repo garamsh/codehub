@@ -207,6 +207,7 @@ impl From<Run> for RunBody {
                 lease_expires_at,
                 deadline,
             } => (StateBody::Running, Some(lease_expires_at), Some(deadline)),
+            RunState::Reporting { deadline } => (StateBody::Running, None, Some(deadline)),
             RunState::Cancelled | RunState::TimedOut | RunState::Finished => {
                 (StateBody::Ended, None, None)
             }

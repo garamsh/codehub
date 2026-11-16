@@ -837,7 +837,7 @@ pub async fn a_record_at_a_stale_version_is_refused_and_records_nothing<H: Deplo
         name: draft("w"),
     };
     let drafts = harness.drafts();
-    open(&repo, &ada, "w").await;
+    let instance = open(&repo, &ada, "w").await.instance;
     let edits = |content: Address| {
         BTreeMap::from([(
             path("a"),
@@ -851,9 +851,14 @@ pub async fn a_record_at_a_stale_version_is_refused_and_records_nothing<H: Deplo
     let second = repo.upload("second\n").await;
 
     // The workspace moves from version 0 to 1, so a record expecting 0 is stale.
-    drafts.record(repo.id, &id, 0, edits(first)).await.unwrap();
+    drafts
+        .record(repo.id, &id, instance, 0, edits(first))
+        .await
+        .unwrap();
     assert_eq!(
-        drafts.record(repo.id, &id, 0, edits(second)).await,
+        drafts
+            .record(repo.id, &id, instance, 0, edits(second))
+            .await,
         Err(DraftStoreError::Moved { current: 1 })
     );
     let held = drafts.get(repo.id, &id).await.unwrap();
@@ -867,7 +872,10 @@ pub async fn a_record_at_a_stale_version_is_refused_and_records_nothing<H: Deplo
     );
 
     // Control: a record at the version held applies and raises it.
-    drafts.record(repo.id, &id, 1, edits(second)).await.unwrap();
+    drafts
+        .record(repo.id, &id, instance, 1, edits(second))
+        .await
+        .unwrap();
     let held = drafts.get(repo.id, &id).await.unwrap();
     assert_eq!(held.version, 2);
     assert_eq!(
@@ -877,6 +885,49 @@ pub async fn a_record_at_a_stale_version_is_refused_and_records_nothing<H: Deplo
             content: second
         })]
     );
+}
+
+/// The draft store records only into the instance expected: after a landing and a reopening that
+/// reach the same version, a record of the closed instance is refused and records nothing.
+pub async fn a_record_into_a_closed_instance_is_refused_though_the_version_matches<
+    H: Deployment,
+>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let id = DraftId {
+        principal: ada.principal().clone(),
+        name: draft("w"),
+    };
+    let drafts = harness.drafts();
+    let first = open(&repo, &ada, "w").await.instance;
+    snapshot(&repo, &ada, "w", vec![("a", regular(&repo, "a\n").await)])
+        .await
+        .unwrap();
+    repo.land(&ada, &draft("w"), "a").await.unwrap();
+    let second = open(&repo, &ada, "w").await;
+    assert_eq!((second.version, second.instance == first), (0, false));
+
+    let content = repo.upload("late\n").await;
+    let edits = BTreeMap::from([(
+        path("a"),
+        Edit::Record(Change::File(File {
+            kind: FileKind::Regular,
+            content,
+        })),
+    )]);
+    assert_eq!(
+        drafts.record(repo.id, &id, first, 0, edits.clone()).await,
+        Err(DraftStoreError::NotFound(id.clone()))
+    );
+    let held = drafts.get(repo.id, &id).await.unwrap();
+    assert_eq!((held.version, held.changes.len()), (0, 0));
+    // Control: the open instance takes the same record.
+    drafts
+        .record(repo.id, &id, second.instance, 0, edits)
+        .await
+        .unwrap();
+    assert_eq!(drafts.get(repo.id, &id).await.unwrap().version, 1);
 }
 
 /// Landing closes a workspace's instance, and opening the name again starts a new one at version
