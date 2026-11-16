@@ -1,6 +1,14 @@
 //! Tokens and `codehub` settings for the test identity provider, Keycloak.
 
-use crate::env;
+use std::time::{Duration, Instant};
+
+use crate::{BOUND, env};
+
+/// How long one probe of the token endpoint may take before the next is sent.
+const PROBE: Duration = Duration::from_secs(5);
+
+/// The pause between two probes.
+const PAUSE: Duration = Duration::from_millis(250);
 
 /// Keycloak's token endpoint, which the password grant, the RFC 8693 exchange and a decision
 /// point's client credentials use.
@@ -89,4 +97,45 @@ pub async fn keycloak_token(client: &str, user: &str) -> String {
         .and_then(serde_json::Value::as_str)
         .expect("the answer has an access token")
         .to_owned()
+}
+
+/// Waits until Keycloak answers a client-credentials token request of the AuthZEN client with a
+/// token, so that what a test asserts about a request is not decided by a server that is still
+/// stalled. A transport failure, a timeout or a server error is retried; any other answer, a
+/// refusal of the client included, fails at once.
+///
+/// # Panics
+///
+/// Panics if a variable is not set, if Keycloak refuses the client, or if it has not answered
+/// within the bound.
+pub async fn wait_for_token_endpoint() {
+    let client = reqwest::Client::builder().timeout(PROBE).build().unwrap();
+    let deadline = Instant::now() + BOUND;
+    loop {
+        let answer = client
+            .post(token_endpoint())
+            .basic_auth(
+                env("CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_ID"),
+                Some(env("CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_SECRET")),
+            )
+            .form(&[("grant_type", "client_credentials")])
+            .send()
+            .await;
+        let seen = match answer {
+            Ok(response) if response.status().is_success() => return,
+            Ok(response) if response.status().is_server_error() => {
+                format!("status {}", response.status())
+            }
+            Ok(response) => panic!(
+                "Keycloak refused the AuthZEN client's token request: status {}",
+                response.status()
+            ),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            Instant::now() < deadline,
+            "Keycloak's token endpoint did not answer within {BOUND:?}: {seen}"
+        );
+        tokio::time::sleep(PAUSE).await;
+    }
 }

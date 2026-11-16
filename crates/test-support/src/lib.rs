@@ -27,7 +27,9 @@ use std::time::Duration;
 pub use ch::{ChUser, Run};
 pub use database::TestDatabase;
 pub use deployment::assert_contract;
-pub use keycloak::{introspection_settings, keycloak_token, token_endpoint};
+pub use keycloak::{
+    introspection_settings, keycloak_token, token_endpoint, wait_for_token_endpoint,
+};
 pub use memory_deployment::{Definitions, MemoryDeployment, Taught};
 pub use server::{Server, pairs};
 
