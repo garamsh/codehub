@@ -1,7 +1,7 @@
 //! The workspace of ADR 0048, through the source-control port: opening, describing, snapshotting,
 //! restoring and diffing a draft, listing a changeset's files, and landing with the description.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::contract::access::Admin;
 use crate::contract::{Deployment, Repo, draft};
@@ -15,7 +15,7 @@ use app::domain::principal::Caller;
 use app::port::driven::authorisation_decision::Action;
 use app::port::driven::changeset_log::ChangesetLog;
 use app::port::driven::derived_data::DerivedDataError;
-use app::port::driven::draft_store::DraftStoreError;
+use app::port::driven::draft_store::{DraftStore, DraftStoreError};
 use app::port::driven::membership::{Access, Role};
 use app::port::driven::object_store::{GrantMethod, ObjectStore};
 use app::port::driving::access::AccessError;
@@ -779,4 +779,129 @@ pub async fn a_kind_change_is_marked_whatever_the_content_does<H: Deployment>() 
         ContentDiff::Lines("--- a/gone\n+++ /dev/null\n".to_owned())
     );
     assert_eq!(find("empty").kind_change, None);
+}
+
+/// The version grows by one on a snapshot, a put and a restore, and neither on describing nor on
+/// a snapshot that is refused.
+pub async fn the_version_grows_on_snapshot_put_and_restore_and_not_on_describe<H: Deployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let source_control = harness.source_control();
+
+    assert_eq!(open(&repo, &ada, "w").await.version, 0);
+    snapshot(&repo, &ada, "w", vec![("a", regular(&repo, "a\n").await)])
+        .await
+        .unwrap();
+    assert_eq!(workspace(&repo, &ada, "w").await.version, 1);
+
+    repo.stage(&ada, &draft("w"), &[("b", "b\n")]).await;
+    assert_eq!(workspace(&repo, &ada, "w").await.version, 2);
+
+    source_control
+        .restore(&ada, repo.id, &draft("w"), &path("a"))
+        .await
+        .unwrap();
+    assert_eq!(workspace(&repo, &ada, "w").await.version, 3);
+
+    // Control: describing records no change, and a refused snapshot records nothing.
+    source_control
+        .describe(&ada, repo.id, &draft("w"), "d".to_owned())
+        .await
+        .unwrap();
+    let absent = File {
+        kind: FileKind::Regular,
+        content: Address::of(b"never uploaded"),
+    };
+    snapshot(
+        &repo,
+        &ada,
+        "w",
+        vec![("c", Edit::Record(Change::File(absent)))],
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(workspace(&repo, &ada, "w").await.version, 3);
+    // Opening it again answers the version it holds.
+    assert_eq!(open(&repo, &ada, "w").await.version, 3);
+}
+
+/// The draft store records only at the version expected: a record at a stale version is refused and
+/// records nothing.
+pub async fn a_record_at_a_stale_version_is_refused_and_records_nothing<H: Deployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let id = DraftId {
+        principal: ada.principal().clone(),
+        name: draft("w"),
+    };
+    let drafts = harness.drafts();
+    open(&repo, &ada, "w").await;
+    let edits = |content: Address| {
+        BTreeMap::from([(
+            path("a"),
+            Edit::Record(Change::File(File {
+                kind: FileKind::Regular,
+                content,
+            })),
+        )])
+    };
+    let first = repo.upload("first\n").await;
+    let second = repo.upload("second\n").await;
+
+    // The workspace moves from version 0 to 1, so a record expecting 0 is stale.
+    drafts.record(repo.id, &id, 0, edits(first)).await.unwrap();
+    assert_eq!(
+        drafts.record(repo.id, &id, 0, edits(second)).await,
+        Err(DraftStoreError::Moved { current: 1 })
+    );
+    let held = drafts.get(repo.id, &id).await.unwrap();
+    assert_eq!(held.version, 1);
+    assert_eq!(
+        held.changes.values().copied().collect::<Vec<_>>(),
+        [Change::File(File {
+            kind: FileKind::Regular,
+            content: first
+        })]
+    );
+
+    // Control: a record at the version held applies and raises it.
+    drafts.record(repo.id, &id, 1, edits(second)).await.unwrap();
+    let held = drafts.get(repo.id, &id).await.unwrap();
+    assert_eq!(held.version, 2);
+    assert_eq!(
+        held.changes.values().copied().collect::<Vec<_>>(),
+        [Change::File(File {
+            kind: FileKind::Regular,
+            content: second
+        })]
+    );
+}
+
+/// Landing closes a workspace's instance, and opening the name again starts a new one at version
+/// 0; another workspace's instance is its own.
+pub async fn landing_closes_the_instance_and_reopening_starts_a_new_one_at_version_zero<
+    H: Deployment,
+>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+
+    let first = open(&repo, &ada, "w").await;
+    let other = open(&repo, &ada, "other").await;
+    snapshot(&repo, &ada, "w", vec![("a", regular(&repo, "a\n").await)])
+        .await
+        .unwrap();
+    let held = workspace(&repo, &ada, "w").await;
+    assert_eq!((held.instance, held.version), (first.instance, 1));
+    assert_ne!(first.instance, other.instance);
+
+    repo.land(&ada, &draft("w"), "a").await.unwrap();
+    let reopened = open(&repo, &ada, "w").await;
+    assert_eq!(reopened.version, 0);
+    assert_ne!(reopened.instance, first.instance);
+    assert_ne!(reopened.instance, other.instance);
+    // Control: the other workspace kept its instance.
+    assert_eq!(open(&repo, &ada, "other").await.instance, other.instance);
 }

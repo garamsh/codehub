@@ -37,15 +37,18 @@ pub trait DraftStore: Send + Sync {
         description: String,
     ) -> Result<(), DraftStoreError>;
 
-    /// Applies every edit to the draft held under `draft`, or none of them.
+    /// Applies every edit to the draft held under `draft`, or none of them, only where its version
+    /// is `expected`, and then raises the version by one.
     ///
     /// # Errors
     ///
-    /// [`DraftStoreError::NotFound`] where no draft is held under `draft`.
+    /// [`DraftStoreError::NotFound`] where no draft is held under `draft`, and
+    /// [`DraftStoreError::Moved`] where its version is not `expected`; nothing is applied.
     async fn record(
         &self,
         repository: RepositoryId,
         draft: &DraftId,
+        expected: u64,
         edits: BTreeMap<Path, Edit>,
     ) -> Result<(), DraftStoreError>;
 
@@ -77,6 +80,11 @@ pub trait DraftStore: Send + Sync {
 pub enum DraftStoreError {
     /// No draft is held under the identity.
     NotFound(DraftId),
+    /// The draft's version is not the one expected.
+    Moved {
+        /// The version the draft holds.
+        current: u64,
+    },
     /// The store's backend failed; carries a description.
     Backend(String),
 }
@@ -85,6 +93,7 @@ impl fmt::Display for DraftStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotFound(draft) => write!(f, "no draft {draft}"),
+            Self::Moved { current } => write!(f, "the draft is at version {current}"),
             Self::Backend(description) => write!(f, "draft store failed: {description}"),
         }
     }

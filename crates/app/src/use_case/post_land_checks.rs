@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::domain::address::Address;
 use crate::domain::changeset::{Change, Changeset};
 use crate::domain::check::CheckDefinition;
-use crate::domain::draft::Draft;
+use crate::domain::draft::{Draft, Instance};
 use crate::domain::job::{Job, JobState, Needs, NewJob, Resolution};
 use crate::domain::repository::RepositoryId;
 use crate::domain::revert::{self, AUTHOR, Revert};
@@ -498,7 +498,10 @@ impl PostLandChecks {
         }
         let undo: BTreeMap<_, Change> = revert::inverse(&before, &after);
 
+        // No store holds this draft, so it has no instance of its own.
         let staged = Draft {
+            instance: Instance::new(0),
+            version: 0,
             base: Some(job.changeset),
             description: String::new(),
             changes: undo,

@@ -35,7 +35,7 @@ use crate::use_case::landing_gates::LandingGates;
 use crate::use_case::list_files::files_under;
 use crate::use_case::read_file::read_file;
 use crate::use_case::upload::request_upload;
-use crate::use_case::workspace::{changed, diffs, require_uploaded, workspace};
+use crate::use_case::workspace::{changed, diffs, record_now, require_uploaded, workspace};
 
 /// The driven ports source control is built over.
 pub struct SourceControlAdapters {
@@ -331,8 +331,7 @@ impl<P: AfterLanding> SourceControl for SourceControlService<P> {
             .open(repository, &draft, base)
             .await
             .map_err(WorkspaceError::from)?;
-        self.drafts
-            .record(repository, &draft, edits)
+        record_now(&*self.drafts, repository, &draft, edits)
             .await
             .map_err(WorkspaceError::from)?;
         Ok(())
@@ -431,8 +430,7 @@ impl<P: AfterLanding> SourceControl for SourceControlService<P> {
         )
         .await?;
         require_uploaded(&*self.objects, repository, &edits).await?;
-        self.drafts
-            .record(repository, &draft_id(caller, draft), edits)
+        record_now(&*self.drafts, repository, &draft_id(caller, draft), edits)
             .await
             .map_err(WorkspaceError::from)?;
         Ok(())
@@ -447,14 +445,14 @@ impl<P: AfterLanding> SourceControl for SourceControlService<P> {
     ) -> Result<(), SourceControlError> {
         self.require_path(caller, repository, Access::Write, path)
             .await?;
-        self.drafts
-            .record(
-                repository,
-                &draft_id(caller, draft),
-                BTreeMap::from([(path.clone(), Edit::Restore)]),
-            )
-            .await
-            .map_err(WorkspaceError::from)?;
+        record_now(
+            &*self.drafts,
+            repository,
+            &draft_id(caller, draft),
+            BTreeMap::from([(path.clone(), Edit::Restore)]),
+        )
+        .await
+        .map_err(WorkspaceError::from)?;
         Ok(())
     }
 
