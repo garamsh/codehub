@@ -1,6 +1,6 @@
 # ADR 0024: The HTTP API is versioned in the path, described by OpenAPI 3.1 and reports errors as problem details
 
-> Status: accepted; the prefix `/v1` and bearer tokens set aside for `/healthz` and `/readyz` by ADR-0045
+> Status: accepted; the prefix `/v1` and bearer tokens set aside for `/healthz` and `/readyz` by ADR-0045; bearer tokens only set aside for `/v1/registry/token` by ADR-0053
 > Date: 2026-11-11
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
