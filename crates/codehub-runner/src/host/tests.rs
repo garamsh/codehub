@@ -955,3 +955,80 @@ async fn overlapping_add_paths_report_each_file_once() {
     assert_eq!(outcome(&execution).changes.len(), 1);
     std::fs::remove_dir_all(&work).unwrap();
 }
+
+#[tokio::test]
+async fn a_restored_cache_file_is_older_than_every_job_file() {
+    let work = scratch();
+    let (source, cached) = (serve(b"src").await, serve(b"warm").await);
+    let mut job = run_of(
+        "stat -c '%Y %a' src.txt target/deps/lib",
+        vec![file("src.txt", b"src", &source, true)],
+        &[],
+    );
+    job.caches = vec!["target".parse().unwrap()];
+    if let Some(run) = &mut job.run {
+        run.caches = vec![RunCache {
+            path: "target".parse().unwrap(),
+            files: vec![file("deps/lib", b"warm", &cached, false)],
+        }];
+    }
+    let execution = run(&executor(&work), &job).await.unwrap();
+    let stdout = String::from_utf8(outcome(&execution).stdout.clone().unwrap().bytes).unwrap();
+    let lines: Vec<(u64, &str)> = stdout
+        .lines()
+        .map(|line| {
+            let (time, mode) = line.split_once(' ').unwrap();
+            (time.parse().unwrap(), mode)
+        })
+        .collect();
+    // The job file is a source, written now and executable; the cache file keeps its mode.
+    assert_eq!(lines.get(1).copied(), Some((1, "644")), "{stdout}");
+    let (source_time, source_mode) = lines.first().copied().unwrap();
+    assert_eq!(source_mode, "755");
+    assert!(source_time > 1, "the job file has the time it was written");
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn a_second_job_takes_the_objects_the_first_one_produced_from_the_cache() {
+    let work = scratch();
+    let mut first = run_of(
+        "printf edited > src.txt; mkdir -p dist target; printf out > dist/x; printf warm > target/lib",
+        Vec::new(),
+        &["src.txt"],
+    );
+    first.outputs = vec!["dist".parse().unwrap()];
+    first.caches = vec!["target".parse().unwrap()];
+    let executor = executor(&work);
+    let (_, counts) = run_counted(&executor, &first).await;
+    assert_eq!(counts, ObjectCounts::default());
+    // The second job is sent those bytes by the server; its download would be counted.
+    let (edited, requests) = serve_counted(b"edited").await;
+    let (out, out_requests) = serve_counted(b"out").await;
+    let (warm, warm_requests) = serve_counted(b"warm").await;
+    let second = run_of(
+        "cat src.txt dist/x target/lib",
+        vec![
+            file("src.txt", b"edited", &edited, false),
+            file("dist/x", b"out", &out, false),
+            file("target/lib", b"warm", &warm, false),
+        ],
+        &[],
+    );
+    let (execution, counts) = run_counted(&executor, &second).await;
+    assert_eq!(
+        counts,
+        ObjectCounts {
+            downloaded: 0,
+            cached: 3
+        }
+    );
+    for seen in [&requests, &out_requests, &warm_requests] {
+        assert_eq!(seen.load(Ordering::SeqCst), 0, "the second job downloaded");
+    }
+    assert_eq!(
+        outcome(&execution).stdout.clone().unwrap().bytes,
+        b"editedoutwarm"
+    );
+    std::fs::remove_dir_all(&work).unwrap();
+}

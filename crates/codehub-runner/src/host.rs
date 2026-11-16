@@ -7,7 +7,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use rustix::process::{Pid, Signal};
@@ -32,6 +32,10 @@ pub const STREAM_LIMIT: usize = 64 * 1024 * 1024;
 
 /// How long a stopped command has to end after it is asked to, before it is killed.
 pub const STOP_GRACE: Duration = Duration::from_secs(5);
+
+/// The modification time of a file restored from a cache, in seconds after the epoch (1970-01-01T00:00:01Z): earlier than any
+/// source, so that a build tool comparing times always sees a source as newer.
+const CACHE_FILE_SECONDS: u64 = 1;
 
 /// How long the runner waits for the command's output to end once its shell has exited.
 const DRAIN_WAIT: Duration = Duration::from_secs(5);
@@ -172,7 +176,39 @@ impl HostExecutor {
             }
             _ => {}
         }
+        self.remember(job, &execution).await;
         Ok(execution)
+    }
+
+    /// Puts the objects the runner is about to upload, which the next job may be sent, into the
+    /// object cache. The streams are not put there: no job is sent one.
+    async fn remember(&self, job: &Job, execution: &Execution) {
+        let produced = execution
+            .produced
+            .outputs
+            .iter()
+            .chain(&execution.produced.caches);
+        let changed = execution
+            .run
+            .iter()
+            .flat_map(|outcome| &outcome.changes)
+            .filter_map(|change| match change {
+                Change::Written(file) => Some(file),
+                Change::Deleted(_) => None,
+            });
+        for file in produced.chain(changed) {
+            match self.cache.keep_bytes(file.address, &file.bytes).await {
+                Ok(true) => {}
+                Ok(false) => eprintln!(
+                    "job {}: {} does not match its address, not kept in the object cache",
+                    job.id, file.path
+                ),
+                Err(error) => eprintln!(
+                    "job {}: keeping {} in the object cache failed: {error}",
+                    job.id, file.path
+                ),
+            }
+        }
     }
 
     async fn fetch_all(
@@ -194,6 +230,13 @@ impl HostExecutor {
                 })?;
             for file in &cache.files {
                 self.fetch(file, &base, counts).await?;
+                let path = base.join(file.path.as_path());
+                set_modified(&path, UNIX_EPOCH + Duration::from_secs(CACHE_FILE_SECONDS))
+                    .await
+                    .map_err(|error| ExecutorError::Download {
+                        path: file.path.to_string(),
+                        reason: error.to_string(),
+                    })?;
             }
         }
         Ok(())
@@ -399,6 +442,16 @@ impl HostExecutor {
             run,
         })
     }
+}
+
+async fn set_modified(path: &Path, time: SystemTime) -> std::io::Result<()> {
+    tokio::fs::File::options()
+        .write(true)
+        .open(path)
+        .await?
+        .into_std()
+        .await
+        .set_modified(time)
 }
 
 /// The regular files under each of `declared`, in the job's directory `dir`. A path the command

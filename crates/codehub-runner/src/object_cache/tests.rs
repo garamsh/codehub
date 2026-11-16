@@ -105,3 +105,21 @@ async fn evicting_a_cache_that_was_never_written_is_not_an_error() {
         .unwrap();
     std::fs::remove_dir_all(&work).unwrap();
 }
+
+#[tokio::test]
+async fn bytes_are_kept_only_when_they_hash_to_their_address() {
+    let work = scratch();
+    let cache = ObjectCache::new(work.join("objects"), u64::MAX);
+    let address = address_of(b"genuine");
+    let target = work.join("target");
+    // Control: bytes of the address are kept and served.
+    assert!(cache.keep_bytes(address, b"genuine").await.unwrap());
+    assert!(cache.take(address, &target).await.unwrap());
+    assert_eq!(std::fs::read(&target).unwrap(), b"genuine");
+    // Other bytes under that address are refused and change nothing.
+    let other = address_of(b"other");
+    assert!(!cache.keep_bytes(other, b"tampered").await.unwrap());
+    assert!(!cache.path_of(other).exists());
+    assert_eq!(std::fs::read_dir(work.join("objects")).unwrap().count(), 1);
+    std::fs::remove_dir_all(&work).unwrap();
+}

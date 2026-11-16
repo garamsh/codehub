@@ -39,6 +39,7 @@ The runner stops its job when a heartbeat answers stop.
 ### What a run's job receives and reports (ADR 0051)
 
 - **It receives** the run's files with a download grant each, the trees of the workspace's cache refs, the command, the run's `add` and `outputs` paths and the timeout.
+- **It finds** the files of each cache tree with the modification time 1970-01-01T00:00:01Z, set after their bytes and permissions are written, and the run's own files with the time they were written. A build tool that compares times therefore sees every source as newer than what a cache holds.
 - **It reads** every sent, `add` and `outputs` path without following a symbolic link; anything but a regular file is not reported as a change, and is recorded as refused.
 - **It reports** how the run ended: exited with a code (128 plus the signal's number for a command ended by a signal), timed out, cancelled, or failed in the executor. Where the command started, whatever its end, it reports:
   - its standard output and standard error, kept apart, each uploaded as one object, whole up to 64 MiB and otherwise its last 64 MiB with the cut recorded;
@@ -52,6 +53,7 @@ The runner stops its job when a heartbeat answers stop.
 
 - Every job takes its files through the runner's object cache, a directory of files named by address under `--work-dir` (`objects/`).
 - An object enters it only once its bytes match its address, and is copied into the job's directory, never linked.
+- An object enters it when the runner downloads it, and for each object it reports, whether it uploads it or finds the object store already holding it: the files a job leaves under its outputs and cache paths, and the changes a run reports. A later job is sent those objects and downloads none of them. Output streams are not kept, since no job is sent one.
 - It is bounded by `--object-cache-size`, 10 GiB by default; after each job the least recently used objects are removed until it is within the bound.
 - For each job the runner counts the objects it downloaded and those it took from the cache, logs both and reports them with the result.
 
