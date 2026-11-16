@@ -13,6 +13,7 @@ use base64::Engine;
 use adapter_http::{ApiState, Pause, RunnerSettings};
 use adapter_oidc::OidcIdentityVerification;
 use adapter_s3::S3ObjectStore;
+use app::domain::address::Address;
 use app::domain::check::{CheckDefinition, Command, Timeout};
 use app::domain::name::{OrganisationName, RepositoryName};
 use app::domain::principal::Principal;
@@ -346,5 +347,252 @@ impl Server {
             .await
             .unwrap();
         assert_eq!(reported.status(), 204);
+    }
+}
+
+/// A change a runner reports a run made.
+pub enum Change {
+    /// A file the run left with `content`.
+    File {
+        /// The path in the repository.
+        path: String,
+        /// The file's bytes.
+        content: Vec<u8>,
+        /// Whether it is executable.
+        executable: bool,
+    },
+    /// A file the run removed.
+    Deleted(String),
+}
+
+/// A file a runner reports in a run's output tree.
+pub struct Output {
+    /// The path in the repository.
+    pub path: String,
+    /// The file's bytes.
+    pub content: Vec<u8>,
+    /// Whether it is executable.
+    pub executable: bool,
+}
+
+/// What a runner reports of a run it held.
+pub struct Report {
+    /// How the command ended: `exited`, `timed_out`, `cancelled` or `executor_failed`.
+    pub outcome: &'static str,
+    /// The command's exit code, where it exited.
+    pub exit_code: Option<i32>,
+    /// What the command wrote to stdout.
+    pub stdout: Option<String>,
+    /// What the command wrote to stderr.
+    pub stderr: Option<String>,
+    /// What the command changed.
+    pub changes: Vec<Change>,
+    /// The files the command left under the run's outputs.
+    pub outputs: Vec<Output>,
+}
+
+impl Report {
+    /// A command that exited with `code` and changed nothing.
+    #[must_use]
+    pub fn exited(code: i32) -> Self {
+        Self {
+            outcome: "exited",
+            exit_code: Some(code),
+            stdout: None,
+            stderr: None,
+            changes: Vec::new(),
+            outputs: Vec::new(),
+        }
+    }
+
+    /// A run that ended with `outcome` and no exit code.
+    #[must_use]
+    pub fn stopped(outcome: &'static str) -> Self {
+        Self {
+            outcome,
+            exit_code: None,
+            ..Self::exited(0)
+        }
+    }
+}
+
+/// A run's job as a runner holds it.
+pub struct Claimed {
+    /// The job's, and the run's, identifier.
+    pub id: u64,
+    runner: String,
+}
+
+impl Server {
+    /// Registers `name` as a runner of `admin`'s organisation and returns its credential.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the registration fails.
+    pub async fn register_runner(&self, admin: &User, name: &str) -> String {
+        admin
+            .ok(&["runner", "register", name, "--issuer", Self::ISSUER])
+            .await;
+        self.token(name)
+    }
+
+    /// Claims the next job as the host runner holding `runner`, waiting for one to be queued.
+    ///
+    /// # Panics
+    ///
+    /// Panics when no job is offered within a few seconds.
+    pub async fn claim_run(&self, runner: &str) -> Claimed {
+        let http = reqwest::Client::new();
+        for _ in 0..100 {
+            let claimed = http
+                .post(format!("{}/v1/runner/jobs/claim", self.url))
+                .bearer_auth(runner)
+                .json(&json!({"executor": "host"}))
+                .send()
+                .await
+                .unwrap();
+            if claimed.status() == 200 {
+                let job: serde_json::Value = claimed.json().await.unwrap();
+                return Claimed {
+                    id: job["id"].as_u64().unwrap(),
+                    runner: runner.to_owned(),
+                };
+            }
+        }
+        panic!("no run was queued");
+    }
+
+    /// Stores `bytes` in `org/app` as `owner` and returns their address.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the server refuses the upload or the object store the bytes.
+    pub async fn store(&self, owner: &str, org: &str, bytes: &[u8]) -> String {
+        let address = Address::of(bytes).to_string();
+        let http = reqwest::Client::new();
+        let grant: serde_json::Value = http
+            .post(format!("{}/v1/orgs/{org}/repos/app/uploads", self.url))
+            .bearer_auth(owner)
+            .json(&json!({"address": address, "size": bytes.len()}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let mut put = http.put(grant["url"].as_str().unwrap());
+        for header in grant["headers"].as_array().unwrap() {
+            put = put.header(
+                header["name"].as_str().unwrap(),
+                header["value"].as_str().unwrap(),
+            );
+        }
+        let stored = put.body(bytes.to_vec()).send().await.unwrap();
+        assert!(stored.status().is_success(), "{}", stored.status());
+        address
+    }
+
+    /// Reports `report` of the run `claimed` to the server, with its objects stored by `owner` in
+    /// `org/app`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the server refuses the report.
+    pub async fn report_run(&self, claimed: &Claimed, owner: &str, org: &str, report: &Report) {
+        let stream = |address: Option<String>| address.map(|a| json!({"address": a, "cut": false}));
+        let stdout = match &report.stdout {
+            Some(text) => Some(self.store(owner, org, text.as_bytes()).await),
+            None => None,
+        };
+        let stderr = match &report.stderr {
+            Some(text) => Some(self.store(owner, org, text.as_bytes()).await),
+            None => None,
+        };
+        let mut changes = Vec::new();
+        for change in &report.changes {
+            changes.push(match change {
+                Change::File {
+                    path,
+                    content,
+                    executable,
+                } => json!({
+                    "path": path,
+                    "kind": if *executable { "executable" } else { "regular" },
+                    "address": self.store(owner, org, content).await,
+                }),
+                Change::Deleted(path) => {
+                    json!({"path": path, "kind": "deleted", "address": null})
+                }
+            });
+        }
+        let mut outputs = Vec::new();
+        for output in &report.outputs {
+            outputs.push(json!({
+                "path": output.path,
+                "address": self.store(owner, org, &output.content).await,
+                "executable": output.executable,
+            }));
+        }
+        let body = json!({
+            "outcome": report.outcome,
+            "exit_code": report.exit_code,
+            "stdout": stream(stdout),
+            "stderr": stream(stderr),
+            "objects": {"downloaded": 0, "from_cache": 0},
+            "outputs": outputs,
+            "caches": [],
+            "changes": changes,
+            "refused": [],
+        });
+        let reported = reqwest::Client::new()
+            .post(format!("{}/v1/runner/jobs/{}/result", self.url, claimed.id))
+            .bearer_auth(&claimed.runner)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reported.status(), 204, "{}", reported.text().await.unwrap());
+    }
+
+    /// The version of `token`'s workspace `draft` of `org/app`, which grows each time its changes
+    /// are recorded.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the workspace cannot be read.
+    pub async fn workspace_version(&self, token: &str, org: &str, draft: &str) -> u64 {
+        let workspace: serde_json::Value = reqwest::Client::new()
+            .get(format!(
+                "{}/v1/orgs/{org}/repos/app/drafts/{draft}",
+                self.url
+            ))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        workspace["version"].as_u64().unwrap()
+    }
+
+    /// The workspace `draft` of `org/app` as the server answers it, as JSON text.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the workspace cannot be read.
+    pub async fn workspace_json(&self, token: &str, org: &str, draft: &str) -> String {
+        reqwest::Client::new()
+            .get(format!(
+                "{}/v1/orgs/{org}/repos/app/drafts/{draft}",
+                self.url
+            ))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap()
     }
 }

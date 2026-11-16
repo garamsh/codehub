@@ -18,6 +18,17 @@ pub const EXIT_CHECKS_NOT_PASSED: u8 = 4;
 /// The exit code for an operation other than landing that was denied or found nothing.
 pub const EXIT_DENIED: u8 = 5;
 
+/// The exit code of `run` where the command ended but a write was denied.
+pub const EXIT_RUN_WRITE_DENIED: u8 = 122;
+/// The exit code of `run` where the command ended but the workspace moved or its instance closed.
+pub const EXIT_RUN_CONFLICT: u8 = 123;
+/// The exit code of `run` where the run timed out or was cancelled.
+pub const EXIT_RUN_STOPPED: u8 = 124;
+/// The exit code of `run` where a failure came before the command could run.
+pub const EXIT_RUN_NOT_STARTED: u8 = 125;
+/// The exit code of `run` where something failed after the command started.
+pub const EXIT_RUN_LOST: u8 = 126;
+
 /// What a failed command reports; each variant carries the text to print.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Failure {
@@ -33,6 +44,14 @@ pub enum Failure {
     Denied(String),
     /// Anything else.
     Other(String),
+    /// A `run` that ends with `code`: the command's own, or one of 122 to 126. Where `message` is
+    /// absent `ch` has reported it already.
+    Run {
+        /// The exit code.
+        code: u8,
+        /// What to print, where `ch` has not.
+        message: Option<String>,
+    },
 }
 
 /// The operation a request belongs to, which decides how 403 is read.
@@ -71,7 +90,14 @@ impl Failure {
             Self::ChecksNotPassed(_) => EXIT_CHECKS_NOT_PASSED,
             Self::Denied(_) => EXIT_DENIED,
             Self::Other(_) => EXIT_OTHER,
+            Self::Run { code, .. } => *code,
         }
+    }
+
+    /// Whether `ch` has reported the failure already, so that nothing is left to print.
+    #[must_use]
+    pub const fn reported(&self) -> bool {
+        matches!(self, Self::Run { message: None, .. })
     }
 }
 
@@ -83,7 +109,12 @@ impl fmt::Display for Failure {
             | Self::LandingRejected(message)
             | Self::ChecksNotPassed(message)
             | Self::Denied(message)
-            | Self::Other(message) => f.write_str(message),
+            | Self::Other(message)
+            | Self::Run {
+                message: Some(message),
+                ..
+            } => f.write_str(message),
+            Self::Run { message: None, .. } => Ok(()),
         }
     }
 }

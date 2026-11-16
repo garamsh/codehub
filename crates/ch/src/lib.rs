@@ -38,7 +38,9 @@ pub fn run<I: IntoIterator<Item = OsString>>(args: I) -> ExitCode {
     match run_verb(cli, &mut stderr) {
         Ok(()) => ExitCode::SUCCESS,
         Err(failure) => {
-            let _ = writeln!(stderr, "ch: {failure}");
+            if !failure.reported() {
+                let _ = writeln!(stderr, "ch: {failure}");
+            }
             ExitCode::from(failure.exit_code())
         }
     }

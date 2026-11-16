@@ -249,6 +249,29 @@ impl View {
             .is_some_and(|(held, _)| held.starts_with(&start))
     }
 
+    /// What the view holds at `path` now: `None` where there is no such file.
+    ///
+    /// # Errors
+    ///
+    /// Fails where the path is not one a view holds, or the file cannot be read, or the path is
+    /// something other than a file.
+    pub fn held(&self, path: &str) -> Result<Option<Entry>, Failure> {
+        let target = file_path(&self.root, path)?;
+        let metadata = match fs::symlink_metadata(&target) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(failure(&target, &error)),
+        };
+        if !metadata.is_file() {
+            return Err(Failure::Other(format!("{path} is not a file")));
+        }
+        let bytes = fs::read(&target).map_err(|error| failure(&target, &error))?;
+        Ok(Some(Entry {
+            kind: kind_of(&metadata),
+            content: address(&bytes),
+        }))
+    }
+
     /// The files of the view that a snapshot tracks, by path.
     ///
     /// # Errors

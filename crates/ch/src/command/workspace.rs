@@ -17,7 +17,7 @@ use crate::wire::{
 };
 
 /// The bytes `grant` lets `ch` download.
-async fn download(context: &Context, grant: &TransferGrant) -> Result<Vec<u8>, Failure> {
+pub(super) async fn download(context: &Context, grant: &TransferGrant) -> Result<Vec<u8>, Failure> {
     transfer(&context.http, grant, Vec::new()).await
 }
 
@@ -99,7 +99,11 @@ pub(super) async fn open(context: &Context, arguments: &Open) -> Result<(), Fail
 }
 
 /// Records what the view holds that its last snapshot did not.
-async fn snapshot(context: &Context, api: &Api<'_>, view: &mut View) -> Result<(), Failure> {
+pub(super) async fn snapshot(
+    context: &Context,
+    api: &Api<'_>,
+    view: &mut View,
+) -> Result<(), Failure> {
     let rules = Rules::read(&view.root)?;
     let current = view.scan(&rules)?;
     let plan = view.plan(current);

@@ -440,3 +440,106 @@ fn has_the_fields_of_the_workspace_schemas() {
         .collect();
     assert_eq!(keys_written, branches);
 }
+
+#[test]
+fn has_the_fields_and_values_of_the_run_schemas() {
+    use ch::wire::{
+        NotWrittenReason, ObjectCounts, Run, RunChange, RunChangeKind, RunFile, RunFiles,
+        RunOutcome, RunResult, RunState, RunStreamRead, RunWriteBack, StartRun, WriteBackOutcome,
+    };
+    let schemas = schemas();
+    let start = StartRun {
+        command: "make".to_owned(),
+        prefix: Some("src".to_owned()),
+        add: Vec::new(),
+        outputs: Vec::new(),
+    };
+    assert_fields(&start, &schemas["StartRun"], "StartRun");
+    let stream = RunStreamRead {
+        address: address(),
+        cut: false,
+        download: grant(),
+    };
+    assert_fields(&stream, &schemas["RunStreamRead"], "RunStreamRead");
+    let counts = ObjectCounts {
+        downloaded: 1,
+        from_cache: 2,
+    };
+    assert_fields(&counts, &schemas["ObjectCounts"], "ObjectCounts");
+    let change = RunChange {
+        path: "a".to_owned(),
+        kind: RunChangeKind::Regular,
+        address: None,
+    };
+    assert_fields(&change, &schemas["RunChange"], "RunChange");
+    let write_back = RunWriteBack {
+        outcome: WriteBackOutcome::Written,
+        reason: None,
+        paths: Vec::new(),
+    };
+    assert_fields(&write_back, &schemas["RunWriteBack"], "RunWriteBack");
+    let result = RunResult {
+        outcome: RunOutcome::Exited,
+        exit_code: Some(0),
+        stdout: None,
+        stderr: None,
+        objects: counts,
+        output_tree: None,
+        changes: Vec::new(),
+        refused: Vec::new(),
+        write_back,
+    };
+    assert_fields(&result, &schemas["RunResult"], "RunResult");
+    let run = Run {
+        id: 1,
+        draft: "default".to_owned(),
+        instance: 1,
+        version: 0,
+        command: "make".to_owned(),
+        prefix: String::new(),
+        state: RunState::Ended,
+        lease_expires_at: None,
+        deadline: None,
+        result: Some(result),
+    };
+    assert_fields(&run, &schemas["Run"], "Run");
+    let file = RunFile {
+        path: "a".to_owned(),
+        address: address(),
+        executable: false,
+        download: grant(),
+    };
+    assert_fields(&file, &schemas["RunFile"], "RunFile");
+    assert_fields(
+        &RunFiles { files: Vec::new() },
+        &schemas["RunFiles"],
+        "RunFiles",
+    );
+
+    let kinds = [
+        RunChangeKind::Regular,
+        RunChangeKind::Executable,
+        RunChangeKind::Deleted,
+    ];
+    assert_eq!(
+        allowed(&schemas["RunChange"]["properties"]["kind"]),
+        written(&kinds)
+    );
+    let reasons = [
+        NotWrittenReason::InstanceClosed,
+        NotWrittenReason::WorkspaceMoved,
+        NotWrittenReason::WriteDenied,
+        NotWrittenReason::TimedOut,
+        NotWrittenReason::Cancelled,
+        NotWrittenReason::ExecutorFailed,
+    ];
+    let texts: BTreeSet<String> = reasons.iter().map(|r| r.text().to_owned()).collect();
+    assert_eq!(texts, written(&reasons));
+    let schema_reasons: BTreeSet<String> = schemas["RunWriteBack"]["properties"]["reason"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|reason| reason.as_str().map(str::to_owned))
+        .collect();
+    assert_eq!(schema_reasons, texts);
+}
