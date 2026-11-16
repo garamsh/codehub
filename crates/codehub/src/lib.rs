@@ -20,13 +20,15 @@ use adapter_garam_directory::GaramDirectoryChanges;
 use adapter_introspection::IntrospectionIdentityVerification;
 use adapter_oidc::OidcIdentityVerification;
 use adapter_postgres::{
-    Database, DatabaseError, PostgresAuthorisationDecision, PostgresCacheRefs,
+    Database, DatabaseError, PostgresAuthorisationDecision, PostgresBacklog, PostgresCacheRefs,
     PostgresChangesetLog, PostgresDerivedData, PostgresDirectoryOutbox, PostgresDraftStore,
     PostgresJobQueue, PostgresMembership, PostgresRepositoryDirectory, PostgresRunnerRegistry,
 };
 use adapter_s3::S3ObjectStore;
 use app::domain::path::PathError;
+use app::observability::Observed;
 use app::port::driven::authorisation_decision::{AuthorisationDecision, AuthorisationError};
+use app::port::driven::backlog::Backlog;
 use app::port::driven::directory_changes::DirectoryChanges;
 use app::port::driven::identity_verification::{IdentityError, IdentityVerification};
 use app::port::driven::object_store::ObjectStoreError;
@@ -42,6 +44,7 @@ mod overload;
 mod readiness;
 mod registry;
 mod settings;
+mod telemetry;
 
 pub use overload::{OverloadOptions, TimingOptions};
 use readiness::Probe;
@@ -57,6 +60,8 @@ use settings::{
     AuthorisationMode, AuthzenMode, IdentityMode, Serving, UNUSED_DELIVERY_WAIT, UNUSED_RUNNER,
     select_delivery,
 };
+use telemetry::Telemetry;
+pub use telemetry::{BacklogOptions, LogFormat, TelemetryOptions};
 
 /// Why the server did not start or stopped serving.
 #[derive(Debug)]
@@ -89,6 +94,8 @@ pub enum Error {
         /// `CODEHUB_RUNNER_HEARTBEAT_INTERVAL`.
         heartbeat: NonZeroU32,
     },
+    /// The log, the trace export or the metrics could not be set up; carries a description.
+    Telemetry(String),
     /// The registry token endpoint could not be configured.
     Registry(RegistryError),
     /// The listening address could not be bound.
@@ -136,6 +143,9 @@ impl fmt::Display for Error {
                 "CODEHUB_RUNNER_LEASE ({lease} s) must be greater than \
                  CODEHUB_RUNNER_HEARTBEAT_INTERVAL ({heartbeat} s)"
             ),
+            Self::Telemetry(description) => {
+                write!(f, "configuring telemetry failed: {description}")
+            }
             Self::Registry(error) => error.fmt(f),
             Self::Bind(address, error) => write!(f, "binding {address} failed: {error}"),
             Self::Serve(error) => write!(f, "serving failed: {error}"),
@@ -184,8 +194,11 @@ fn verifier(
 ) -> Result<Arc<dyn IdentityVerification>, Error> {
     match selection {
         IdentityMode::Oidc { issuer, audience } => {
-            OidcIdentityVerification::new(issuer, audience, jwks_min_refetch, timeout)
-                .map(|verifier| Arc::new(verifier) as Arc<dyn IdentityVerification>)
+            OidcIdentityVerification::new(issuer, audience, jwks_min_refetch, timeout).map(
+                |verifier| {
+                    Arc::new(Observed::new("identity", verifier)) as Arc<dyn IdentityVerification>
+                },
+            )
         }
         IdentityMode::Introspection {
             endpoint,
@@ -201,7 +214,9 @@ fn verifier(
             audience,
             timeout,
         )
-        .map(|verifier| Arc::new(verifier) as Arc<dyn IdentityVerification>),
+        .map(|verifier| {
+            Arc::new(Observed::new("identity", verifier)) as Arc<dyn IdentityVerification>
+        }),
     }
     .map_err(Error::Identity)
 }
@@ -230,7 +245,7 @@ fn garam_changes(
     timeout: Duration,
 ) -> Result<Arc<dyn DirectoryChanges>, Error> {
     GaramDirectoryChanges::new(url, tokens, timeout)
-        .map(|changes| Arc::new(changes) as Arc<dyn DirectoryChanges>)
+        .map(|changes| Arc::new(Observed::new("directory", changes)) as Arc<dyn DirectoryChanges>)
         .map_err(Error::DirectoryChanges)
 }
 
@@ -254,7 +269,7 @@ fn authzen(
         None => Arc::new(()),
         Some(url) => garam_changes(url, tokens, timeout)?,
     };
-    Ok((Arc::new(decider), changes))
+    Ok((Arc::new(Observed::new("decision_point", decider)), changes))
 }
 
 /// Which routes a serving process answers.
@@ -280,6 +295,9 @@ struct Http<'a> {
     /// How long answering a creation waits for its change, in seconds.
     delivery_wait: u64,
     serving: Serving<'a>,
+    telemetry: &'a Telemetry,
+    /// How often the backlog is read, in seconds, where this role runs the background work.
+    backlog: Option<NonZeroU32>,
     /// The registry token endpoint, for a role that serves the user API.
     registry: Option<&'a RegistryOptions>,
 }
@@ -291,9 +309,17 @@ struct Http<'a> {
 ///
 /// An [`Error`] naming the step that failed.
 pub async fn run(cli: Cli) -> Result<(), Error> {
-    match cli.role {
+    let telemetry = Telemetry::install(cli.role.telemetry(), cli.role.name())?;
+    let served = run_role(cli.role, &telemetry).await;
+    telemetry.shutdown().await;
+    served
+}
+
+/// Runs `role` until it stops.
+async fn run_role(role: Role, telemetry: &Telemetry) -> Result<(), Error> {
+    match role {
         Role::Migrate(options) => migrate(&options.database).await,
-        Role::Worker(options) => work(&options).await,
+        Role::Worker(options) => work(&options, telemetry).await,
         Role::Api(options) => {
             serve(Http {
                 routes: Routes::Api,
@@ -305,6 +331,8 @@ pub async fn run(cli: Cli) -> Result<(), Error> {
                 timing: &options.timing,
                 delivery_wait: options.delivery.directory_delivery_wait,
                 serving: options.serving(),
+                telemetry,
+                backlog: None,
                 registry: Some(&options.registry),
             })
             .await
@@ -320,6 +348,8 @@ pub async fn run(cli: Cli) -> Result<(), Error> {
                 timing: &options.timing,
                 delivery_wait: UNUSED_DELIVERY_WAIT,
                 serving: options.serving(),
+                telemetry,
+                backlog: None,
                 registry: None,
             })
             .await
@@ -335,6 +365,8 @@ pub async fn run(cli: Cli) -> Result<(), Error> {
                 timing: &options.timing,
                 delivery_wait: options.delivery.directory_delivery_wait,
                 serving: options.serving(),
+                telemetry,
+                backlog: Some(options.backlog.backlog_interval),
                 registry: Some(&options.registry),
             })
             .await
@@ -373,7 +405,7 @@ fn relay(
 }
 
 /// Delivers the directory outbox, and answers the probes on the listening address.
-async fn work(options: &WorkerOptions) -> Result<(), Error> {
+async fn work(options: &WorkerOptions, telemetry: &Telemetry) -> Result<(), Error> {
     let delivery = select_delivery(&options.authzen, &options.directory)?;
     let database = connect(&options.database).await?;
     let changes: Arc<dyn DirectoryChanges> = match delivery {
@@ -389,14 +421,23 @@ async fn work(options: &WorkerOptions) -> Result<(), Error> {
         }
     };
     let relay = relay(&database, changes, UNUSED_DELIVERY_WAIT);
+    let _watching = Telemetry::watch(
+        database.clone(),
+        Some((
+            Arc::new(PostgresBacklog::new(&database)) as Arc<dyn Backlog>,
+            Duration::from_secs(u64::from(options.backlog.backlog_interval.get())),
+        )),
+    );
     let readiness = Probe {
         directory: Arc::new(PostgresRepositoryDirectory::new(&database)),
         schema: Arc::new(database),
         objects: None,
     };
+    let router = adapter_http::health_router(Arc::new(readiness))
+        .merge(adapter_http::metrics_router(telemetry.scrape()));
     listen_and_serve(
         options.listen.listen,
-        adapter_http::health_router(Arc::new(readiness)),
+        router,
         Some(relay),
         options.timing.shutdown_deadline(),
     )
@@ -415,6 +456,8 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
         timing,
         delivery_wait,
         serving,
+        telemetry,
+        backlog,
         registry,
     } = http;
     let registry = registry
@@ -433,9 +476,21 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
     if routes == Routes::All {
         database.migrate().await.map_err(Error::Database)?;
     }
+    let _watching = Telemetry::watch(
+        database.clone(),
+        backlog.map(|interval| {
+            (
+                Arc::new(PostgresBacklog::new(&database)) as Arc<dyn Backlog>,
+                Duration::from_secs(u64::from(interval.get())),
+            )
+        }),
+    );
     let (authorisation, changes): Selected = match selection.authorisation {
         AuthorisationMode::Postgres => (
-            Arc::new(PostgresAuthorisationDecision::new(&database)),
+            Arc::new(Observed::new(
+                "decision_point",
+                PostgresAuthorisationDecision::new(&database),
+            )),
             Arc::new(()),
         ),
         AuthorisationMode::Authzen(mode) => authzen(
@@ -446,7 +501,7 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
         )?,
     };
     let relay = relay(&database, Arc::clone(&changes), delivery_wait);
-    let objects = Arc::new(
+    let store = || {
         S3ObjectStore::new(
             &object_options.s3_endpoint,
             &object_options.s3_region,
@@ -456,9 +511,13 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
             object_options.max_object_size,
             overload.object_timeouts(),
         )
-        .map_err(Error::ObjectStore)?
-        .with_expiry(Duration::from_secs(object_options.grant_expiry_seconds)),
-    );
+        .map(|store| store.with_expiry(Duration::from_secs(object_options.grant_expiry_seconds)))
+        .map_err(Error::ObjectStore)
+    };
+    // The readiness probe asks the store itself, not the observed one: a probe every few seconds
+    // would be a trace of its own and skew the store's latency.
+    let probed = Arc::new(store()?);
+    let objects = Arc::new(Observed::new("object_store", store()?));
     let runner = serving.runner.unwrap_or(&UNUSED_RUNNER);
     let assembly = Assembly {
         objects: objects.clone(),
@@ -508,7 +567,7 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
         readiness: Arc::new(Probe {
             directory: Arc::new(PostgresRepositoryDirectory::new(&database)),
             schema: Arc::new(database),
-            objects: Some(objects),
+            objects: Some(probed),
         }),
         limits: overload.limits(),
     };
@@ -517,6 +576,7 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
         Routes::RunnerApi => (adapter_http::runner_router(state), None),
         Routes::All => (adapter_http::router(state), Some(relay)),
     };
+    let router = router.merge(adapter_http::metrics_router(telemetry.scrape()));
     listen_and_serve(listen, router, delivering, timing.shutdown_deadline()).await
 }
 

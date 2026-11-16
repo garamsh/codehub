@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{Receiver, channel};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::{BOUND, TestDatabase, env};
@@ -14,6 +15,7 @@ pub struct Server {
     /// The URL the server answers on.
     pub base: String,
     _stderr: Receiver<String>,
+    stdout: Arc<Mutex<Vec<String>>>,
 }
 
 impl Server {
@@ -89,7 +91,7 @@ impl Server {
             .env("CODEHUB_OIDC_ISSUER", env("CODEHUB_TEST_OIDC_ISSUER"))
             .envs(variables.iter().copied())
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
@@ -103,10 +105,20 @@ impl Server {
                 }
             }
         });
+        let stdout = Arc::new(Mutex::new(Vec::new()));
+        let kept = Arc::clone(&stdout);
+        let pipe = child.stdout.take().unwrap();
+        // Read to its end too, and kept: the log is written there.
+        std::thread::spawn(move || {
+            for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                kept.lock().unwrap().push(line);
+            }
+        });
         let mut server = Self {
             child,
             base: String::new(),
             _stderr: stderr,
+            stdout,
         };
         let line = server
             ._stderr
@@ -117,6 +129,16 @@ impl Server {
         };
         server.base = format!("http://{address}");
         Ok(server)
+    }
+
+    /// The lines the process has written to standard output so far.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a reader of the output panicked.
+    #[must_use]
+    pub fn stdout_lines(&self) -> Vec<String> {
+        self.stdout.lock().unwrap().clone()
     }
 
     /// Sends the signal `name` (`TERM`, `INT`) to the process and returns how it exited.

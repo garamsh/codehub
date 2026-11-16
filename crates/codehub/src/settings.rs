@@ -16,6 +16,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use oauth_client::Authentication;
 
 use crate::overload::{OverloadOptions, TimingOptions};
+use crate::telemetry::{BacklogOptions, TelemetryOptions};
 use crate::{Error, RegistryOptions};
 
 /// The default of `--runner-claim-hold`, in seconds.
@@ -153,6 +154,8 @@ pub enum Role {
 #[derive(Args, Debug)]
 pub struct ApiOptions {
     #[command(flatten)]
+    pub(crate) telemetry: TelemetryOptions,
+    #[command(flatten)]
     pub(crate) listen: ListenOptions,
     #[command(flatten)]
     pub(crate) database: DatabaseOptions,
@@ -182,6 +185,8 @@ pub struct ApiOptions {
 #[derive(Args, Debug)]
 pub struct RunnerApiOptions {
     #[command(flatten)]
+    pub(crate) telemetry: TelemetryOptions,
+    #[command(flatten)]
     pub(crate) listen: ListenOptions,
     #[command(flatten)]
     pub(crate) database: DatabaseOptions,
@@ -207,6 +212,10 @@ pub struct RunnerApiOptions {
 #[derive(Args, Debug)]
 pub struct WorkerOptions {
     #[command(flatten)]
+    pub(crate) telemetry: TelemetryOptions,
+    #[command(flatten)]
+    pub(crate) backlog: BacklogOptions,
+    #[command(flatten)]
     pub(crate) listen: ListenOptions,
     #[command(flatten)]
     pub(crate) database: DatabaseOptions,
@@ -222,12 +231,18 @@ pub struct WorkerOptions {
 #[derive(Args, Debug)]
 pub struct MigrateOptions {
     #[command(flatten)]
+    pub(crate) telemetry: TelemetryOptions,
+    #[command(flatten)]
     pub(crate) database: DatabaseOptions,
 }
 
 /// The options of `all`, which is every option there is.
 #[derive(Args, Debug)]
 pub struct AllOptions {
+    #[command(flatten)]
+    pub(crate) telemetry: TelemetryOptions,
+    #[command(flatten)]
+    pub(crate) backlog: BacklogOptions,
     #[command(flatten)]
     pub(crate) listen: ListenOptions,
     #[command(flatten)]
@@ -930,6 +945,13 @@ mod tests {
 
     fn config(postgres_url: &str) -> AllOptions {
         AllOptions {
+            telemetry: TelemetryOptions {
+                log_format: crate::telemetry::LogFormat::Json,
+                log_filter: "info".to_owned(),
+            },
+            backlog: BacklogOptions {
+                backlog_interval: NonZeroU32::MIN,
+            },
             listen: ListenOptions {
                 listen: SocketAddr::from(([127, 0, 0, 1], 8080)),
             },
@@ -1089,7 +1111,7 @@ mod tests {
     #[test]
     fn each_role_takes_the_options_it_uses_and_no_others() {
         let all = options_of("all");
-        assert_eq!(all.len(), 52, "{all:?}");
+        assert_eq!(all.len(), 55, "{all:?}");
         let without = |role: &str, left_out: &[&str]| {
             let taken = options_of(role);
             let expected: Vec<String> = all
@@ -1134,6 +1156,7 @@ mod tests {
             "registry-key-id",
         ];
         let landing = ["landing-attempts"];
+        let backlog = ["backlog-interval"];
         let overload_settings = [
             "rate-limit-per-second",
             "rate-limit-burst",
@@ -1147,10 +1170,15 @@ mod tests {
         let concat = |parts: &[&[&'static str]]| -> Vec<&'static str> {
             parts.iter().flat_map(|part| part.iter().copied()).collect()
         };
-        without("api", &concat(&[&runner_settings]));
+        without("api", &concat(&[&runner_settings, &backlog]));
         without(
             "runner-api",
-            &concat(&[&directory_settings, &creation_wait, &registry_settings]),
+            &concat(&[
+                &directory_settings,
+                &creation_wait,
+                &registry_settings,
+                &backlog,
+            ]),
         );
         without(
             "worker",
@@ -1167,7 +1195,12 @@ mod tests {
         );
         assert_eq!(
             options_of("migrate"),
-            ["postgres-pool-size", "postgres-url"]
+            [
+                "log-filter",
+                "log-format",
+                "postgres-pool-size",
+                "postgres-url"
+            ]
         );
     }
 

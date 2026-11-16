@@ -4,6 +4,7 @@
 //! each adapter over it.
 
 mod authorisation_decision;
+mod backlog;
 mod cache_refs;
 mod changeset_log;
 mod conversion;
@@ -18,9 +19,10 @@ mod runner_registry;
 mod runs;
 
 pub use authorisation_decision::PostgresAuthorisationDecision;
+pub use backlog::PostgresBacklog;
 pub use cache_refs::PostgresCacheRefs;
 pub use changeset_log::PostgresChangesetLog;
-pub use database::{Database, DatabaseError};
+pub use database::{Database, DatabaseError, PoolState};
 pub use derived_data::PostgresDerivedData;
 pub use directory_outbox::PostgresDirectoryOutbox;
 pub use draft_store::PostgresDraftStore;

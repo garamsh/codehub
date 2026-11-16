@@ -305,3 +305,44 @@ async fn answers_service_unavailable_with_retry_after_when_the_requests_in_fligh
     assert_eq!(probe.status, StatusCode::OK);
     held.abort();
 }
+
+/// A scrape that renders one fixed line.
+struct Fixed;
+
+impl adapter_http::Scrape for Fixed {
+    fn render(&self) -> String {
+        "codehub_up 1\n".to_owned()
+    }
+}
+
+#[tokio::test]
+async fn answers_a_scrape_while_the_requests_in_flight_are_at_the_limit() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    api.repository(&ada, "acme").await;
+    let (router, entered) = stalling(
+        &api,
+        limits((100, 100), 1 << 20, Duration::from_secs(60), 1),
+    );
+    // The process serves the scrape beside the API, as the probes are: outside its limits.
+    let router = router.merge(adapter_http::metrics_router(Arc::new(Fixed)));
+    let held = tokio::spawn({
+        let router = router.clone();
+        async move { read(&router, STALLED).await.status }
+    });
+    entered.notified().await;
+
+    // The control: the limit is full, and an API request is turned away.
+    let refused = read(&router, &ada).await;
+    assert_eq!(refused.status, StatusCode::SERVICE_UNAVAILABLE);
+    let request = axum::http::Request::builder()
+        .uri("/metrics")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let scraped = tower::ServiceExt::oneshot(router.clone(), request)
+        .await
+        .unwrap();
+
+    assert_eq!(scraped.status(), StatusCode::OK);
+    held.abort();
+}

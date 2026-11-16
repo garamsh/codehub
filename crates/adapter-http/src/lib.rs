@@ -7,6 +7,7 @@ mod extract;
 mod health;
 mod jobs;
 mod members;
+mod observe;
 mod overload;
 mod problem;
 mod registry;
@@ -57,6 +58,12 @@ pub trait Readiness: Send + Sync {
 /// Why the server is not ready: the short reason `/readyz` answers 503 with.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct NotReady(pub &'static str);
+
+/// The metrics the process has recorded, rendered for a scrape.
+pub trait Scrape: Send + Sync {
+    /// The metrics in the Prometheus text exposition format.
+    fn render(&self) -> String;
+}
 
 /// A wait for a [`Duration`], which the composition site supplies from its runtime: this crate
 /// names no timer of its own.
@@ -190,6 +197,11 @@ routes! {
     "/readyz" => get(health::ready);
 }
 
+routes! {
+    METRICS_ROUTES, metrics_routed, Arc<dyn Scrape>;
+    "/metrics" => get(observe::scrape);
+}
+
 async fn openapi() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "application/json")], OPENAPI)
 }
@@ -219,6 +231,8 @@ fn serve(routes: Router<Arc<ApiState>>, state: ApiState) -> Router {
             Arc::clone(&state),
             overload::bound,
         ))
+        // Outermost, so a request the overload layer turns away is measured too.
+        .layer(axum::middleware::from_fn(observe::observe))
         .with_state(state)
         .merge(health_routed().with_state(readiness))
 }
@@ -259,4 +273,10 @@ pub fn runner_router(state: ApiState) -> Router {
 /// with a fallback for a request no route matches.
 pub fn health_router(readiness: Arc<dyn Readiness>) -> Router {
     health_routed().fallback(no_route).with_state(readiness)
+}
+
+/// The router of `/metrics` over `scrape`, to merge into the router a process serves: it is
+/// outside `/v1`, needs no token and is not itself observed (ADR 0056).
+pub fn metrics_router(scrape: Arc<dyn Scrape>) -> Router {
+    metrics_routed().with_state(scrape)
 }
