@@ -40,7 +40,7 @@ pub struct Options {
     #[arg(long, default_value = "openid")]
     scope: String,
     /// The user to land as; the password is in `LOADTEST_PASSWORD`.
-    #[arg(long, default_value = "alice")]
+    #[arg(long, default_value = "alice@example.test")]
     user: String,
     /// The organisation and repository to land into; created where they do not exist.
     #[arg(long, default_value = "acme")]
@@ -91,6 +91,24 @@ pub struct Ack {
 pub struct Event {
     at: f64,
     ok: bool,
+    /// The first status that was not a success; 0 where the request got no answer.
+    status: u16,
+}
+
+/// The failed attempts counted by status, in the order of the status, as `503 x 12, 500 x 3`.
+pub fn failures_by_status(events: &[Event]) -> String {
+    let mut counts = std::collections::BTreeMap::new();
+    for event in events.iter().filter(|event| !event.ok) {
+        *counts.entry(event.status).or_insert(0_usize) += 1;
+    }
+    if counts.is_empty() {
+        return "none".to_owned();
+    }
+    counts
+        .iter()
+        .map(|(status, count)| format!("{status} x {count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Seconds from the fault until landings succeed for good: from `fault_at` to the first success
@@ -214,16 +232,20 @@ async fn agent(
         let content = format!("{label} agent {index} landing {number}\n");
         let session = context.session();
         let mut changeset = None;
-        if succeeded(session.stage(&draft, &path, content.as_bytes()).await) {
+        let staged = session.stage(&draft, &path, content.as_bytes()).await;
+        let mut status = staged;
+        if succeeded(staged) {
             let landing = session
                 .land(&draft, &format!("{label} {index} {number}"))
                 .await;
+            status = landing.status;
             changeset = landing.changeset;
         }
         let ok = changeset.is_some();
         events.push(Event {
             at: started.elapsed().as_secs_f64(),
             ok,
+            status,
         });
         if let Some(changeset) = changeset {
             acks.push(Ack {
@@ -397,6 +419,7 @@ pub async fn run(options: &Options, agents: u32, seconds: u64) -> Result<bool, F
         options.label,
         acks.len(),
     );
+    println!("failed attempts by status: {}", failures_by_status(&events));
     if let Some(path) = &options.record {
         append_record(path, &acks)?;
     }
@@ -435,7 +458,7 @@ mod tests {
     use super::*;
 
     fn event(at: f64, ok: bool) -> Event {
-        Event { at, ok }
+        Event { at, ok, status: 0 }
     }
 
     fn ack() -> Ack {
@@ -464,6 +487,18 @@ mod tests {
             event(16.0, true),
         ];
         assert_eq!(recovery(&events, 10.0), Some(5.0));
+    }
+
+    #[test]
+    fn failures_are_counted_by_status() {
+        let failed = |status| Event {
+            at: 1.0,
+            ok: false,
+            status,
+        };
+        let events = [failed(503), failed(500), failed(503), event(2.0, true)];
+        assert_eq!(failures_by_status(&events), "500 x 1, 503 x 2");
+        assert_eq!(failures_by_status(&[event(2.0, true)]), "none");
     }
 
     #[test]

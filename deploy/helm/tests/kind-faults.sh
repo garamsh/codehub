@@ -66,7 +66,9 @@ k create secret generic registry-key --from-file=signing.pem="$work/signing.pem"
 say "operators and services"
 kubectl --context "kind-$cluster" apply --server-side -f "https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v$cnpg_version/cnpg-$cnpg_version.yaml"
 kubectl --context "kind-$cluster" -n cnpg-system wait --for=condition=Available deployment/cnpg-controller-manager --timeout=180s
-h upgrade --install minio minio --repo https://charts.min.io/ --version 5.4.0 -f "$here/minio-values.yaml" --wait --timeout 10m
+k apply -f "$here/minio.yaml"
+k rollout status statefulset/minio --timeout=300s
+k wait --for=condition=Complete job/minio-buckets --timeout=300s
 sed "s|^issuer:.*|issuer: $issuer|" "$root/dev/dex/config.yaml" >"$work/dex-config.yaml"
 k create configmap dex-config --from-file=config.yaml="$work/dex-config.yaml"
 k apply -f "$here/dex.yaml"
@@ -108,7 +110,7 @@ fi
 if has failover; then
 	say "scenario 2: the PostgreSQL primary killed under load, direct"
 	before=$(primary pg)
-	load failover 90 --fault-after 20 --recover-within 60 \
+	load failover 100 --fault-after 20 --recover-within 60 \
 		--fault "kubectl --context kind-$cluster -n $ns delete pod $before --grace-period=0 --force"
 	k wait --for=condition=Ready cluster/pg --timeout=5m
 	after=$(primary pg)
@@ -123,7 +125,7 @@ if has pooler; then
 	test "$mode" = transaction
 	install --set "postgres.urlSecret.name=pg-url-pooler" --set "postgres.statementCache=0"
 	before=$(primary pg)
-	load pooler 90 --fault-after 20 --recover-within 60 \
+	load pooler 120 --fault-after 20 --recover-within 75 \
 		--fault "kubectl --context kind-$cluster -n $ns delete pod $before --grace-period=0 --force"
 	k wait --for=condition=Ready cluster/pg --timeout=5m
 	after=$(primary pg)
