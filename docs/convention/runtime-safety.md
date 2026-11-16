@@ -1,6 +1,6 @@
 # Runtime Safety
 
-How types, trust boundaries, and error handling keep runtime errors out of production code.
+How types, trust boundaries, error handling and schema compatibility across versions keep runtime errors out of production code.
 
 ## Contents
 - Core principle
@@ -65,6 +65,7 @@ This section states what a change to a shared store's schema must keep working, 
 
 During a rolling deployment the previous version and the new one run against one database, and the migration runs before either stops. So every migration is checked against the previous version's code as well as the new one.
 
-- **Expand, then contract.** A migration only adds: a table, a column the previous version can ignore (nullable, or with a default), an index, a constraint that the previous version's writes already meet. Dropping, renaming or retyping anything the previous version reads or writes waits for a later release, after no running version uses it. A rename is three releases: add the new and write both, read the new, drop the old.
+- **Expand, then contract.** A migration only adds: a table, a column the previous version can ignore (nullable, or with a default), an index, a constraint that the previous version's writes already meet. Replacing a constraint with one every row the previous version writes still meets, in one transaction, is an addition. Dropping, renaming or retyping anything the previous version reads or writes waits for a later release, after no version that uses it can run again, a rollback included. A rename is three releases: add the new and write both, read the new, drop the old.
+- **What the previous version writes after the migration is still handled.** A row it writes during the rollout lacks whatever the new version adds beside it — a new column's value, an entry in a new table written in the same transaction. The new version reads such rows correctly, or a later release repairs them; a backfill in the migration alone misses them.
 - **A new value is read before it is written.** A variant the previous version cannot parse fails the previous version's requests that meet it. A release that only reads the variant ships first, and the release that writes it follows, where a request failing during the rollout is not acceptable.
-- **A migration does not hold a long lock.** A step that rewrites or scans a large table while it holds a lock stops the previous version as surely as a drop does. Such a step is split into a form that does not hold that lock, or is recorded in the pull request with the table's expected size.
+- **A migration does not hold a lock while it scans a table.** A step that rewrites or scans a table while it blocks writes stops the previous version for as long as the scan takes, as surely as a drop does, and the table's size decides how long. Such a step takes a form that does not block writes while it scans — a constraint added unvalidated and validated afterwards, an index built concurrently — or the pull request states why the table is small enough at every deployment it runs on.
