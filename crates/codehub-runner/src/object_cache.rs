@@ -78,11 +78,40 @@ impl ObjectCache {
     ///
     /// An I/O error while copying.
     pub async fn keep(&self, address: Address, from: &Path) -> std::io::Result<()> {
+        self.store(address, async |partial| {
+            tokio::fs::copy(from, partial).await.map(drop)
+        })
+        .await
+    }
+
+    /// Adds `bytes` if they hash to `address`. Returns whether they did: bytes that do not are
+    /// not stored.
+    ///
+    /// # Errors
+    ///
+    /// An I/O error while writing.
+    pub async fn keep_bytes(&self, address: Address, bytes: &[u8]) -> std::io::Result<bool> {
+        if Address::new(Sha256::digest(bytes).into()) != address {
+            return Ok(false);
+        }
+        self.store(address, async |partial| {
+            tokio::fs::write(partial, bytes).await
+        })
+        .await?;
+        Ok(true)
+    }
+
+    /// Fills a partial file with `fill`, then renames it to the object's name, as last used now.
+    async fn store(
+        &self,
+        address: Address,
+        fill: impl AsyncFnOnce(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
         tokio::fs::create_dir_all(&self.dir).await?;
         let name = name_of(address);
         let partial = self.dir.join(format!("tmp-{}-{name}", std::process::id()));
         let stored = async {
-            tokio::fs::copy(from, &partial).await?;
+            fill(&partial).await?;
             let file = std::fs::File::options().write(true).open(&partial)?;
             file.set_modified(SystemTime::now())?;
             tokio::fs::rename(&partial, self.dir.join(&name)).await
