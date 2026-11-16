@@ -27,6 +27,10 @@ pub struct Proxy {
 impl Proxy {
     /// Listens on a port of the loopback interface and forwards each connection to `upstream`,
     /// a `host:port`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no loopback port can be bound.
     pub async fn start(upstream: String) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -47,6 +51,10 @@ impl Proxy {
 
     /// `url`, a PostgreSQL URL naming `upstream`, as it names this proxy, without TLS: the proxy
     /// reads the protocol.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `url` does not hold `upstream`.
     pub fn url(&self, url: &str, upstream: &str) -> String {
         let proxied = url.replacen(upstream, &self.address.to_string(), 1);
         assert_ne!(proxied, url, "the URL names {upstream}");
