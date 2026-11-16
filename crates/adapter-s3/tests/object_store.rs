@@ -203,9 +203,14 @@ async fn reports_a_missing_object_as_not_found() {
 
 #[tokio::test]
 async fn stops_a_grant_working_when_its_expiry_passes() {
-    let store = store(MAX_UPLOAD_SIZE).with_expiry(Duration::from_secs(1));
     let repository = fresh_repository();
-    let address = store.put(repository, b"expiring".to_vec()).await.unwrap();
+    // `put` signs its own request with the store's expiry, whose window of a second or less a
+    // request can miss, so the object goes in through a store of the default expiry.
+    let address = store(MAX_UPLOAD_SIZE)
+        .put(repository, b"expiring".to_vec())
+        .await
+        .unwrap();
+    let store = store(MAX_UPLOAD_SIZE).with_expiry(Duration::from_secs(1));
     let grant = store.download_grant(repository, address).await.unwrap();
 
     let now = SystemTime::now()

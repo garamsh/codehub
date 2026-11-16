@@ -24,6 +24,7 @@ use base64::engine::general_purpose::STANDARD;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use oauth_client::{Authentication, TokenClient};
 use serde_json::{Value, json};
+use test_support::wait_for_token_endpoint;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -102,9 +103,10 @@ fn keycloak_token_endpoint() -> String {
 }
 
 /// An adapter for the test decision point, with a token from the test identity provider as the
-/// client with `secret`.
+/// client with `secret`, made once the identity provider answers a token request.
 #[cfg(test)]
-fn real_adapter_with_secret(secret: &str) -> AuthzenAuthorisationDecision {
+async fn real_adapter_with_secret(secret: &str) -> AuthzenAuthorisationDecision {
+    wait_for_token_endpoint().await;
     AuthzenAuthorisationDecision::new(
         &env("CODEHUB_TEST_AUTHZEN_URL"),
         secret_tokens(
@@ -118,8 +120,8 @@ fn real_adapter_with_secret(secret: &str) -> AuthzenAuthorisationDecision {
 }
 
 #[cfg(test)]
-fn real_adapter() -> AuthzenAuthorisationDecision {
-    real_adapter_with_secret(&env("CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_SECRET"))
+async fn real_adapter() -> AuthzenAuthorisationDecision {
+    real_adapter_with_secret(&env("CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_SECRET")).await
 }
 
 #[cfg(test)]
@@ -134,7 +136,7 @@ async fn decide(
 
 #[tokio::test]
 async fn decides_actions_on_organisations() {
-    let adapter = real_adapter();
+    let adapter = real_adapter().await;
 
     assert_eq!(
         decide(&adapter, &alice(), Action::CreateOrganisation, &org("acme")).await,
@@ -171,7 +173,7 @@ async fn decides_actions_on_organisations() {
 
 #[tokio::test]
 async fn decides_actions_on_repositories() {
-    let adapter = real_adapter();
+    let adapter = real_adapter().await;
     let app = repository("acme", "app");
 
     assert_eq!(
@@ -201,7 +203,7 @@ async fn decides_actions_on_repositories() {
 
 #[tokio::test]
 async fn decides_a_path_by_whole_components_of_the_granted_prefix() {
-    let adapter = real_adapter();
+    let adapter = real_adapter().await;
     let write = |p: &str| path("acme", "app", p);
 
     for granted in ["docs", "docs/x", "docs/x/y.md"] {
@@ -232,7 +234,7 @@ async fn decides_a_path_by_whole_components_of_the_granted_prefix() {
 
 #[tokio::test]
 async fn decides_for_the_principal_of_its_issuer_and_subject_together() {
-    let adapter = real_adapter();
+    let adapter = real_adapter().await;
     let elsewhere = Principal::new("https://elsewhere.example", alice().subject()).unwrap();
 
     assert_eq!(
@@ -254,6 +256,7 @@ async fn decides_for_the_principal_of_its_issuer_and_subject_together() {
 #[tokio::test]
 async fn fails_where_the_token_endpoint_refuses_the_client() {
     let refused = real_adapter_with_secret("wrong-secret")
+        .await
         .decide(&alice(), Action::Read, &repository("acme", "app"))
         .await;
 
@@ -263,6 +266,7 @@ async fn fails_where_the_token_endpoint_refuses_the_client() {
     );
     assert_eq!(
         real_adapter()
+            .await
             .decide(&alice(), Action::Read, &repository("acme", "app"))
             .await,
         Ok(Decision::Allow)
@@ -274,6 +278,7 @@ async fn fails_where_the_decision_point_is_unreachable() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     drop(listener);
+    wait_for_token_endpoint().await;
     let adapter = AuthzenAuthorisationDecision::new(
         &url,
         secret_tokens(
@@ -1065,7 +1070,7 @@ async fn reads_the_metadata_again_after_a_failed_read() {
 
 #[tokio::test]
 async fn denies_the_path_the_policy_denies_among_many_against_the_test_decision_point() {
-    let adapter = real_adapter();
+    let adapter = real_adapter().await;
     let docs = path("acme", "app", "docs/x");
     let src = path("acme", "app", "src/main.rs");
 

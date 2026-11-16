@@ -22,7 +22,7 @@ What makes anything generated is that regenerating it changes nothing. What nobo
 | File | Governs |
 |---|---|
 | `code-comments.md` | When and how to comment code |
-| `runtime-safety.md` | Types, trust boundaries, error handling |
+| `runtime-safety.md` | Types, trust boundaries, error handling, schema compatibility across versions |
 | `testing.md` | Test layers, mocking, placement |
 | `ci.md` | Local/CI parity, pipeline authoring, security |
 | `git.md` | Branches, commits, PR titles, merging |

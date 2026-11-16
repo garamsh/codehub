@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+
+use app::domain::name::OrganisationName;
 use app::domain::path::Prefix;
 use app::domain::principal::Principal;
 use app::port::driven::authorisation_decision::{
@@ -77,35 +81,57 @@ fn permits(role: Role, grants: &Grants, action: Action, resource: &Resource) -> 
     }
 }
 
-#[async_trait::async_trait]
-impl AuthorisationDecision for PostgresAuthorisationDecision {
-    async fn decide(
+/// What a member holds in one repository, or in none: its role and grants, or nothing for a
+/// principal that is no member.
+type Held = Option<(Role, Grants)>;
+
+/// The organisation a resource is in and, for one in a repository, the repository's stored
+/// identifier. An identifier outside the stored range was never assigned, so no grant is on it.
+fn scope(resource: &Resource) -> (&OrganisationName, Option<i64>) {
+    match resource {
+        Resource::Organisation(organisation) => (organisation, None),
+        Resource::Repository {
+            organisation,
+            repository,
+            ..
+        }
+        | Resource::Path {
+            organisation,
+            repository,
+            ..
+        } => (
+            organisation,
+            conversion::repository_column(*repository).ok(),
+        ),
+    }
+}
+
+/// The decision on `action` for a resource that is not asked of a member's holdings, if it is one.
+const fn unconditional(action: Action, resource: &Resource) -> Option<Decision> {
+    if !matches!(action, Action::CreateOrganisation) {
+        return None;
+    }
+    Some(match resource {
+        Resource::Organisation(_) => Decision::Allow,
+        Resource::Repository { .. } | Resource::Path { .. } => Decision::Deny,
+    })
+}
+
+fn verdict(held: &Held, action: Action, resource: &Resource) -> Decision {
+    match held {
+        Some((role, grants)) if permits(*role, grants, action, resource) => Decision::Allow,
+        Some(_) | None => Decision::Deny,
+    }
+}
+
+impl PostgresAuthorisationDecision {
+    /// The role `subject` holds in `organisation` and its grants in `repository`.
+    async fn held(
         &self,
         subject: &Principal,
-        action: Action,
-        resource: &Resource,
-    ) -> Result<Decision, AuthorisationError> {
-        if action == Action::CreateOrganisation {
-            return Ok(match resource {
-                Resource::Organisation(_) => Decision::Allow,
-                Resource::Repository { .. } | Resource::Path { .. } => Decision::Deny,
-            });
-        }
-        let (organisation, repository) = match resource {
-            Resource::Organisation(organisation) => (organisation, None),
-            Resource::Repository {
-                organisation,
-                repository,
-                ..
-            }
-            | Resource::Path {
-                organisation,
-                repository,
-                ..
-            } => (organisation, Some(*repository)),
-        };
-        // An identifier outside the stored range was never assigned, so no grant is on it.
-        let repository = repository.and_then(|id| conversion::repository_column(id).ok());
+        organisation: &OrganisationName,
+        repository: Option<i64>,
+    ) -> Result<Held, AuthorisationError> {
         // One statement reads the role and the grants from one snapshot; a member with no grants
         // there yields its role alone, with null grant columns.
         let rows = sqlx::query_as::<_, (String, Option<Vec<u8>>, Option<String>)>(
@@ -123,7 +149,7 @@ impl AuthorisationDecision for PostgresAuthorisationDecision {
         .await
         .map_err(backend)?;
         let Some((role, ..)) = rows.first() else {
-            return Ok(Decision::Deny);
+            return Ok(None);
         };
         let role = conversion::role(role).map_err(AuthorisationError::Backend)?;
         let mut grants = Grants::new();
@@ -135,10 +161,51 @@ impl AuthorisationDecision for PostgresAuthorisationDecision {
                 ));
             }
         }
-        Ok(if permits(role, &grants, action, resource) {
-            Decision::Allow
-        } else {
-            Decision::Deny
-        })
+        Ok(Some((role, grants)))
+    }
+}
+
+#[async_trait::async_trait]
+impl AuthorisationDecision for PostgresAuthorisationDecision {
+    async fn decide(
+        &self,
+        subject: &Principal,
+        action: Action,
+        resource: &Resource,
+    ) -> Result<Decision, AuthorisationError> {
+        if let Some(decision) = unconditional(action, resource) {
+            return Ok(decision);
+        }
+        let (organisation, repository) = scope(resource);
+        let held = self.held(subject, organisation, repository).await?;
+        Ok(verdict(&held, action, resource))
+    }
+
+    /// Reads what the member holds once for each repository the resources are in, so a batch in
+    /// one repository costs one query however many paths it carries.
+    async fn decide_all(
+        &self,
+        subject: &Principal,
+        action: Action,
+        resources: &[Resource],
+    ) -> Result<Vec<Decision>, AuthorisationError> {
+        let mut read: HashMap<(&str, Option<i64>), Held> = HashMap::new();
+        let mut decisions = Vec::with_capacity(resources.len());
+        for resource in resources {
+            if let Some(decision) = unconditional(action, resource) {
+                decisions.push(decision);
+                continue;
+            }
+            let (organisation, repository) = scope(resource);
+            let key = (organisation.as_str(), repository);
+            let held = match read.entry(key) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    entry.insert(self.held(subject, organisation, repository).await?)
+                }
+            };
+            decisions.push(verdict(held, action, resource));
+        }
+        Ok(decisions)
     }
 }

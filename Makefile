@@ -20,10 +20,10 @@ test: services
 	cargo nextest run --workspace --exclude e2e --locked --no-tests=fail $(TEST_ARGS)
 	cargo test --doc --workspace --locked
 
-# Builds the binaries the e2e tests run, then runs the e2e package against the same services
-# and variables as `test`.
-e2e: services
-	cargo build --locked -p codehub -p ch -p codehub-runner
+# Runs the e2e package, against the same services and variables as `test`, on the binaries `build`
+# produced: a build selecting fewer packages resolves other feature sets and compiles the shared
+# dependencies again.
+e2e: build services
 	cargo nextest run -p e2e --locked --no-tests=fail -E 'not test(garam_)' $(TEST_ARGS)
 
 # The e2e tests whose names contain garam_ run against garam's published images, the garam profile
@@ -53,9 +53,9 @@ e2e-gaon:
 	sh dev/gaon/run.sh
 
 # The load harness against two codehub replicas and the check services: a smoke run of every
-# scenario in the debug build, which fails on an unexpected status or a replica that dies.
-loadtest-smoke: services
-	cargo build --locked -p codehub -p loadtest
+# scenario in the debug build, which fails on an unexpected status or a replica that dies. The
+# codehub binary it starts is the one `build` produced.
+loadtest-smoke: build services
 	cargo run --locked -p loadtest -- --scenario all --agents 4 --duration 5
 
 # The full run for the scale baseline: release binaries, 200 agents, LOADTEST_DURATION seconds per
@@ -89,7 +89,41 @@ images:
 		test "$$uid" != 0; \
 	done
 
-ci: lint format test e2e loadtest-smoke build
+# The check services start while lint, format and build run: pulling their images and waiting for
+# them to be healthy takes as long as those three together and needs no compile, and the tests after
+# them need the services up. The three run one after another, in that order, in their own recipe.
+ci:
+	$(MAKE) -j2 services ci-compile
+	$(MAKE) test e2e loadtest-smoke
+
+.PHONY: ci-compile
+ci-compile:
+	$(MAKE) lint
+	$(MAKE) format
+	$(MAKE) build
+
+# A fast local check, not the gate: `ci` stays the whole set. It lints the workspace, which only
+# re-lints the packages changed since the last run and their dependents, and runs the tests of the
+# packages that differ from origin/main (committed, staged, unstaged and untracked files) and of
+# every package that depends on them. A change to a workspace-wide file runs every test. The e2e
+# package and the doc tests are left to `ci`.
+CHANGED_FILES := $(shell { git diff --name-only origin/main; git ls-files --others --exclude-standard; } | sort -u)
+CHANGED_PACKAGES := $(shell printf '%s\n' $(CHANGED_FILES) | sed -n 's|^crates/\([^/]*\)/.*|\1|p' | sort -u)
+CHANGED_WIDE := $(filter Cargo.toml Cargo.lock clippy.toml rust-toolchain.toml Makefile .config/% dev/test.env,$(CHANGED_FILES))
+EMPTY :=
+SPACE := $(EMPTY) $(EMPTY)
+
+.PHONY: check-changed
+check-changed: lint services
+ifneq ($(CHANGED_WIDE),)
+	@echo "check-changed: workspace-wide change ($(CHANGED_WIDE)); running every test"
+	cargo nextest run --workspace --exclude e2e --locked --no-tests=fail $(TEST_ARGS)
+else ifneq ($(CHANGED_PACKAGES),)
+	@echo "check-changed: packages changed against origin/main: $(CHANGED_PACKAGES); testing them and their dependents"
+	cargo nextest run --workspace --exclude e2e --locked --no-tests=fail -E '$(subst $(SPACE), | ,$(foreach p,$(CHANGED_PACKAGES),rdeps($(p))))' $(TEST_ARGS)
+else
+	@echo "check-changed: no package changed against origin/main; no test selected"
+endif
 
 # Running containers are kept; pick up a changed image or configuration with
 # `make services-down` and then `make services`.

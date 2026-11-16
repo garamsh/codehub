@@ -23,5 +23,15 @@ jobs:
       - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-nextest
+      # Mover: Dependabot's github-actions updates (.github/dependabot.yml), merged by the PM. The
+      # action's own key holds runner OS, the job, rustc's version (from rust-toolchain.toml) and a
+      # hash of the dependency sections of every Cargo.toml, Cargo.lock and rust-toolchain file, so a
+      # changed lockfile or toolchain starts a cache of its own and a stale build cannot mask a
+      # failure. It does not hash the profiles, so the root manifest is added whole: a changed
+      # profile otherwise restores a cache whose artifacts no build reuses and, as the key then
+      # hits, is never saved again.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ hashFiles('Cargo.toml') }}
       - name: Run checks
         run: make ci

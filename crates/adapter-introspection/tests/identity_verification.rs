@@ -3,13 +3,13 @@
 
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use adapter_introspection::IntrospectionIdentityVerification;
 use app::domain::credential::Credential;
 use app::port::driven::identity_verification::{IdentityError, IdentityVerification};
 use serde_json::{Value, json};
-use test_support::{env, keycloak_token, token_endpoint};
+use test_support::{env, keycloak_token, token_endpoint, wait_for_token_endpoint};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -32,6 +32,7 @@ struct Provider {
 #[cfg(test)]
 impl Provider {
     async fn discover() -> Self {
+        wait_for_token_endpoint().await;
         let issuer = env("CODEHUB_TEST_KEYCLOAK_ISSUER");
         let document: Value = reqwest::get(format!("{issuer}/.well-known/openid-configuration"))
             .await
@@ -122,12 +123,37 @@ async fn rejects_a_token_for_another_audience() {
     );
 }
 
+/// How long a token of the `SHORT` client lives, which `dev/keycloak/codehub-realm.json` fixes.
+#[cfg(test)]
+const SHORT_LIFETIME: Duration = Duration::from_secs(2);
+
+/// A token of the `SHORT` client that `verifier` accepted. A token the verifier refuses is a
+/// failure when it was refused inside its lifetime; when the request and the check took longer
+/// than the lifetime, the token may have expired before it was checked, which says nothing about
+/// the verifier, so a fresh one is asked for.
+#[cfg(test)]
+async fn short_lived_token_the_verifier_accepts(
+    verifier: &IntrospectionIdentityVerification,
+) -> String {
+    for _ in 0..5 {
+        let started = Instant::now();
+        let token = keycloak_token("SHORT", "alice").await;
+        if verifier.verify(&credential(&token)).await.is_ok() {
+            return token;
+        }
+        assert!(
+            started.elapsed() >= SHORT_LIFETIME,
+            "the verifier refused a token inside its lifetime"
+        );
+    }
+    panic!("no token of the SHORT client was checked inside its lifetime");
+}
+
 #[tokio::test]
 async fn rejects_an_expired_token() {
     let provider = Provider::discover().await;
     let verifier = provider.verifier();
-    let token = keycloak_token("SHORT", "alice").await;
-    assert!(verifier.verify(&credential(&token)).await.is_ok());
+    let token = short_lived_token_the_verifier_accepts(&verifier).await;
 
     tokio::time::sleep(Duration::from_secs(3)).await;
 
