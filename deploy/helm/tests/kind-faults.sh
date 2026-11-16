@@ -203,7 +203,8 @@ if has restore; then
 	aws --endpoint-url "$s3_endpoint" s3 sync s3://codehub s3://codehub-backup --only-show-errors
 	load after-backup 30
 	k apply -f "$here/postgres-restore.yaml"
-	k wait --for=condition=Ready cluster/pg-restored --timeout=10m
+	# The full recovery replays the WAL of every earlier scenario from the bucket; it took 9 minutes in a run, and two replicas follow it.
+	k wait --for=condition=Ready cluster/pg-restored --timeout=25m
 	aws --endpoint-url "$s3_endpoint" s3 sync s3://codehub-backup s3://codehub-restored --only-show-errors
 	install --set "postgres.urlSecret.name=pg-url-restored" --set "postgres.migrateUrlSecret.name=pg-url-restored" \
 		--set "s3.bucket=codehub-restored"
