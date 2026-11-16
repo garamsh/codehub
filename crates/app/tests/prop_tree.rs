@@ -1,7 +1,6 @@
 //! Deriving a tree from a delta: the delta between two trees takes the first to the second, and a
 //! delta and its inverse cancel.
 
-#[cfg(test)]
 pub mod generators;
 
 use std::collections::BTreeMap;
@@ -29,7 +28,6 @@ fn build(files: &Files) -> Derived {
 }
 
 /// What turns the files `before` into the files `after`.
-#[cfg(test)]
 fn delta(before: &Files, after: &Files) -> BTreeMap<Path, Change> {
     before
         .keys()
@@ -65,7 +63,6 @@ fn files_of(root: Address, trees: &BTreeMap<Address, Tree>) -> Files {
 }
 
 /// The files `files` hold at the paths `delta` changes.
-#[cfg(test)]
 fn at_changed(files: &Files, delta: &BTreeMap<Path, Change>) -> Files {
     files
         .iter()

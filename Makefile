@@ -128,7 +128,7 @@ endif
 # Mutation testing of the domain ring and the use cases of landing, write-back, merge and
 # compare-and-swap (.cargo/mutants.toml names the files). A mutant the tests of `app` do not
 # kill, or that times out, fails the run; the report is in target/mutants. It is not part of
-# `ci`: the nightly workflow runs it, a shard at a time (MUTANTS_SHARD=1/4 runs the first of four).
+# `ci`: the nightly workflow runs it, a shard at a time (MUTANTS_SHARD=0/4 runs the first of four).
 MUTANTS_JOBS ?= 2
 MUTANTS_SHARD ?=
 

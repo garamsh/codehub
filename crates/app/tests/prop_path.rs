@@ -1,7 +1,6 @@
 //! Paths, names and addresses: parsing and display round-trip, and a prefix covers whole
 //! components only.
 
-#[cfg(test)]
 pub mod generators;
 
 use app::domain::address::Address;
@@ -12,20 +11,17 @@ use proptest::prelude::*;
 use generators::{address, narrow_path, wide_component};
 
 /// A component of printable text, so that it survives being written and read back as text.
-#[cfg(test)]
 fn text_component() -> impl Strategy<Value = String> {
     "[a-zA-Z0-9._ é-]{1,6}".prop_filter("not . or ..", |part| part != "." && part != "..")
 }
 
 /// A name the rules accept.
-#[cfg(test)]
 fn name_text() -> impl Strategy<Value = String> {
     "[a-z0-9][a-z0-9-]{0,62}"
 }
 
 /// Whether `text` is a name by the rules written out: 1 to 63 bytes of lowercase ASCII letters,
 /// digits and hyphens, not starting with a hyphen.
-#[cfg(test)]
 fn is_name(text: &str) -> bool {
     (1..=63).contains(&text.len())
         && !text.starts_with('-')

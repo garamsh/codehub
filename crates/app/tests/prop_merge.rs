@@ -8,13 +8,11 @@ use app::domain::merge::{Change, FileConflict, FileVersion, Rebase, merge_file, 
 use proptest::collection::{btree_map, vec};
 use proptest::prelude::*;
 
-#[cfg(test)]
 fn kind() -> impl Strategy<Value = FileKind> {
     prop_oneof![Just(FileKind::Regular), Just(FileKind::Executable)]
 }
 
 /// Text of up to six lines out of three, the last with or without its newline.
-#[cfg(test)]
 fn lines() -> impl Strategy<Value = Vec<u8>> {
     (
         vec(prop::sample::select(vec!["a\n", "b\n", "c\n"]), 0..6),
@@ -30,60 +28,81 @@ fn lines() -> impl Strategy<Value = Vec<u8>> {
 }
 
 /// Content that is text, with now and then bytes that are not.
-#[cfg(test)]
 fn content() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![9 => lines(), 1 => vec(any::<u8>(), 0..6)]
 }
 
-#[cfg(test)]
 fn version() -> impl Strategy<Value = FileVersion> {
     (kind(), content()).prop_map(|(kind, content)| FileVersion { kind, content })
 }
 
-#[cfg(test)]
 fn maybe_version() -> impl Strategy<Value = Option<FileVersion>> {
     prop::option::of(version())
 }
 
-#[cfg(test)]
 fn change() -> impl Strategy<Value = Change> {
     prop_oneof![Just(Change::Delete), version().prop_map(Change::Write)]
 }
 
-/// What a side does to one base line.
-#[derive(Clone, Copy, Debug)]
+/// What a side does to one base line; `Insert` keeps the line and adds one before it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Edit {
     Keep,
+    Insert,
     Replace,
     Delete,
 }
 
-#[cfg(test)]
 fn edit() -> impl Strategy<Value = Edit> {
-    prop_oneof![Just(Edit::Keep), Just(Edit::Replace), Just(Edit::Delete)]
+    prop_oneof![
+        Just(Edit::Keep),
+        Just(Edit::Insert),
+        Just(Edit::Replace),
+        Just(Edit::Delete),
+    ]
 }
 
-/// What each side does to each of up to seven base lines: no line is edited by both.
-#[cfg(test)]
+/// Whether `edit` changes the line it is on, as a replacement or a deletion does.
+fn changes(edit: Edit) -> bool {
+    matches!(edit, Edit::Replace | Edit::Delete)
+}
+
+/// What each side does to each of up to seven base lines: no line is changed by both and no
+/// point has an insertion from both. An insertion may sit beside the other side's change, at its
+/// start or its end, but not inside it, where the lines either side of the point are both changed.
 fn disjoint_edits() -> impl Strategy<Value = Vec<(Edit, Edit)>> {
     vec((edit(), edit()), 1..8).prop_map(|edits| {
-        edits
+        let mut edits: Vec<(Edit, Edit)> = edits
             .into_iter()
             .map(|(ours, theirs)| match (ours, theirs) {
                 (Edit::Keep, _) | (_, Edit::Keep) => (ours, theirs),
+                (Edit::Insert, Edit::Insert) => (ours, Edit::Keep),
+                (Edit::Insert, _) | (_, Edit::Insert) => (ours, theirs),
                 _ => (ours, Edit::Keep),
             })
-            .collect()
+            .collect();
+        let mut before = (Edit::Keep, Edit::Keep);
+        for entry in &mut edits {
+            let (ours_before, theirs_before) = before;
+            before = *entry;
+            if entry.0 == Edit::Insert && changes(theirs_before) && changes(entry.1) {
+                entry.0 = Edit::Keep;
+            }
+            if entry.1 == Edit::Insert && changes(ours_before) && changes(entry.0) {
+                entry.1 = Edit::Keep;
+            }
+        }
+        edits
     })
 }
 
 /// The text of one unique line per edit, each edited as `edits` says by the side `name`.
-#[cfg(test)]
 fn text(edits: &[Edit], name: &str) -> Vec<u8> {
     let mut text = String::new();
     for (index, edit) in edits.iter().enumerate() {
         match edit {
             Edit::Keep => text.push_str(&format!("line {index}\n")),
+            Edit::Insert => text.push_str(&format!("{name} inserted {index}\nline {index}\n")),
             Edit::Replace => text.push_str(&format!("{name} {index}\n")),
             Edit::Delete => {}
         }
@@ -91,7 +110,6 @@ fn text(edits: &[Edit], name: &str) -> Vec<u8> {
     text.into_bytes()
 }
 
-#[cfg(test)]
 fn plain(content: Vec<u8>) -> FileVersion {
     FileVersion {
         kind: FileKind::Regular,
@@ -136,11 +154,17 @@ proptest! {
         // Each line is replaced by the side that edits it, so the expected text takes both.
         let mut expected = String::new();
         for (index, (ours, theirs)) in edits.iter().enumerate() {
+            if *ours == Edit::Insert {
+                expected.push_str(&format!("ours inserted {index}\n"));
+            }
+            if *theirs == Edit::Insert {
+                expected.push_str(&format!("theirs inserted {index}\n"));
+            }
             match (ours, theirs) {
                 (Edit::Replace, _) => expected.push_str(&format!("ours {index}\n")),
                 (_, Edit::Replace) => expected.push_str(&format!("theirs {index}\n")),
                 (Edit::Delete, _) | (_, Edit::Delete) => {}
-                (Edit::Keep, Edit::Keep) => expected.push_str(&format!("line {index}\n")),
+                (Edit::Keep | Edit::Insert, Edit::Keep | Edit::Insert) => expected.push_str(&format!("line {index}\n")),
             }
         }
         let result = merge_file(
@@ -253,7 +277,6 @@ proptest! {
 
 /// What every path holds once `second` is rebased onto `first`, both against `base`, and the
 /// result applied over `first`; `Err` where the rebase conflicts, with the conflicting paths.
-#[cfg(test)]
 fn settle(
     base: &BTreeMap<u8, FileVersion>,
     first: &BTreeMap<u8, Change>,

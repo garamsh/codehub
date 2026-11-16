@@ -1,7 +1,6 @@
 //! The encodings of the object kinds: decoding gives back the value, the address is the SHA-256 of
 //! the encoding, and bytes that are not an encoding are refused without a panic.
 
-#[cfg(test)]
 pub mod generators;
 
 use app::domain::address::Address;
@@ -14,7 +13,6 @@ use sha2::{Digest, Sha256};
 
 use generators::{address, changeset, narrow_file, wide_component, wide_file, wide_path};
 
-#[cfg(test)]
 fn tree() -> impl Strategy<Value = Tree> {
     let entry = prop_oneof![
         wide_file().prop_map(Entry::File),
@@ -23,7 +21,6 @@ fn tree() -> impl Strategy<Value = Tree> {
     btree_map(wide_component(), entry, 0..5).prop_map(|entries| Tree { entries })
 }
 
-#[cfg(test)]
 fn file_version_node() -> impl Strategy<Value = FileVersionNode> {
     (address(), wide_path(), narrow_file(), vec(address(), 0..3)).prop_map(
         |(changeset, path, file, previous)| FileVersionNode {
@@ -36,7 +33,6 @@ fn file_version_node() -> impl Strategy<Value = FileVersionNode> {
 }
 
 /// The input with one byte changed, or cut short, or with bytes added.
-#[cfg(test)]
 fn damaged(bytes: Vec<u8>) -> impl Strategy<Value = Vec<u8>> {
     let length = bytes.len();
     let flipped = bytes.clone();

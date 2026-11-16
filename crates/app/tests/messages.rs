@@ -27,10 +27,9 @@ use app::use_case::source_control::AfterLandingError;
 
 #[cfg(test)]
 fn path(text: &str) -> Path {
-    text.parse().unwrap()
+    text.parse().expect("a valid path")
 }
 
-#[cfg(test)]
 fn version(text: &str) -> FileVersion {
     FileVersion {
         kind: FileKind::Regular,

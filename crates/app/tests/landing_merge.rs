@@ -1,6 +1,5 @@
 //! A landing that merges with what `main` gained keeps what only the landing changed.
 
-#[cfg(test)]
 pub mod common;
 
 use common::Harness;
