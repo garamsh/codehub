@@ -88,6 +88,7 @@ The runner is configured by options, and by the variables where the table gives 
 | `--client-id` | `CODEHUB_RUNNER_CLIENT_ID` | no | The OAuth client id. |
 | `--client-secret-env` | `CODEHUB_RUNNER_CLIENT_SECRET_ENV` | no | The name of the variable holding the OAuth client secret. |
 | `--work-dir` | `CODEHUB_RUNNER_WORK_DIR` | no | Where each job's directory is made; the system's temporary directory where absent. |
+| `--object-cache-size` | `CODEHUB_RUNNER_OBJECT_CACHE_SIZE` | no | The most bytes of files the host executor keeps in `objects/` under the work directory between jobs, default 10737418240 (10 GiB); after each job the least recently used are removed until it fits. |
 | `--once` | - | no | Claim once, run the job, and exit. |
 | `--executor` | `CODEHUB_RUNNER_EXECUTOR` | no | Where a job's command runs: `host` (default), a process of the runner's machine, or `gaon`, a run-once MicroVM on gaon (ADR 0046). `gaon` needs the seven gaon options below, and the runner refuses to start without any one. |
 | `--gaon-url` | `CODEHUB_RUNNER_GAON_URL` | no | The gaon API server's root URL, `https://` and ending in `/apis/compute.gaon.garam.sh/v1alpha1`; the runner sends its token only over https. |

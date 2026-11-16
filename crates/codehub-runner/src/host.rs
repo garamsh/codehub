@@ -18,6 +18,7 @@ use tokio::process::Command;
 
 use crate::executor::{End, Execution, Executor, ExecutorError, Stop};
 use crate::job_source::{Address, Job, JobFile, Produced, ProducedFile, RelativePath};
+use crate::object_cache::{ObjectCache, ObjectCounts};
 
 /// How much of a command's output a report carries.
 pub const OUTPUT_LIMIT: usize = 64 * 1024;
@@ -62,17 +63,25 @@ impl Tail {
 /// Runs jobs as processes of this machine.
 pub struct HostExecutor {
     work_dir: PathBuf,
+    cache: ObjectCache,
     http: reqwest::Client,
     hidden: Option<String>,
     grace: Duration,
 }
 
 impl HostExecutor {
-    /// An executor that makes each job's directory under `work_dir`. The environment variable
-    /// named `hidden` is not passed on to commands.
+    /// An executor that makes each job's directory under `work_dir`, and keeps the objects its
+    /// jobs take in `work_dir/objects`, at most `cache_limit` bytes of them between jobs. The
+    /// environment variable named `hidden` is not passed on to commands.
     #[must_use]
-    pub fn new(work_dir: PathBuf, http: reqwest::Client, hidden: Option<String>) -> Self {
+    pub fn new(
+        work_dir: PathBuf,
+        cache_limit: u64,
+        http: reqwest::Client,
+        hidden: Option<String>,
+    ) -> Self {
         Self {
+            cache: ObjectCache::new(work_dir.join("objects"), cache_limit),
             work_dir,
             http,
             hidden,
@@ -92,6 +101,7 @@ impl HostExecutor {
         job: &Job,
         dir: &Path,
         stop: &mut Stop,
+        counts: &mut ObjectCounts,
     ) -> Result<Execution, ExecutorError> {
         let fetched = tokio::select! {
             reason = stop.requested() => {
@@ -101,7 +111,7 @@ impl HostExecutor {
                     produced: Produced::default(),
                 });
             }
-            fetched = self.fetch_all(job, dir) => fetched,
+            fetched = self.fetch_all(job, dir, counts) => fetched,
         };
         fetched?;
         let mut execution = self.command(job, dir, stop).await?;
@@ -114,14 +124,26 @@ impl HostExecutor {
         Ok(execution)
     }
 
-    async fn fetch_all(&self, job: &Job, dir: &Path) -> Result<(), ExecutorError> {
+    async fn fetch_all(
+        &self,
+        job: &Job,
+        dir: &Path,
+        counts: &mut ObjectCounts,
+    ) -> Result<(), ExecutorError> {
         for file in &job.files {
-            self.fetch(file, dir).await?;
+            self.fetch(file, dir, counts).await?;
         }
         Ok(())
     }
 
-    async fn fetch(&self, file: &JobFile, dir: &Path) -> Result<(), ExecutorError> {
+    /// Writes the file into the job's directory from the object cache, or else from the server
+    /// and then into the cache.
+    async fn fetch(
+        &self,
+        file: &JobFile,
+        dir: &Path,
+        counts: &mut ObjectCounts,
+    ) -> Result<(), ExecutorError> {
         let target = dir.join(file.path.as_path());
         let download = |reason: String| ExecutorError::Download {
             path: file.path.to_string(),
@@ -131,6 +153,19 @@ impl HostExecutor {
             tokio::fs::create_dir_all(parent)
                 .await
                 .map_err(|error| download(error.to_string()))?;
+        }
+        let mode = if file.executable { 0o755 } else { 0o644 };
+        let permissions = std::fs::Permissions::from_mode(mode);
+        if self
+            .cache
+            .take(file.address, &target)
+            .await
+            .map_err(|error| download(format!("the object cache failed: {error}")))?
+        {
+            counts.cached += 1;
+            return tokio::fs::set_permissions(&target, permissions)
+                .await
+                .map_err(|error| download(error.to_string()));
         }
         let mut request = self.http.get(&file.download.url);
         for (name, value) in &file.download.headers {
@@ -169,8 +204,12 @@ impl HostExecutor {
                 path: file.path.to_string(),
             });
         }
-        let mode = if file.executable { 0o755 } else { 0o644 };
-        tokio::fs::set_permissions(&target, std::fs::Permissions::from_mode(mode))
+        self.cache
+            .keep(file.address, &target)
+            .await
+            .map_err(|error| download(format!("the object cache failed: {error}")))?;
+        counts.downloaded += 1;
+        tokio::fs::set_permissions(&target, permissions)
             .await
             .map_err(|error| download(error.to_string()))
     }
@@ -308,9 +347,30 @@ fn signal(group: Option<Pid>, signal: Signal) {
     }
 }
 
-#[async_trait]
-impl Executor for HostExecutor {
-    async fn run(&self, job: &Job, mut stop: Stop) -> Result<Execution, ExecutorError> {
+impl HostExecutor {
+    /// Runs the job and counts the objects it took, from the server and from the cache.
+    async fn run_counted(
+        &self,
+        job: &Job,
+        mut stop: Stop,
+    ) -> (Result<Execution, ExecutorError>, ObjectCounts) {
+        let mut counts = ObjectCounts::default();
+        let result = self.run_in_directory(job, &mut stop, &mut counts).await;
+        if let Err(error) = self.cache.evict().await {
+            eprintln!(
+                "job {}: evicting from the object cache failed: {error}",
+                job.id
+            );
+        }
+        (result, counts)
+    }
+
+    async fn run_in_directory(
+        &self,
+        job: &Job,
+        stop: &mut Stop,
+        counts: &mut ObjectCounts,
+    ) -> Result<Execution, ExecutorError> {
         tokio::fs::create_dir_all(&self.work_dir)
             .await
             .map_err(ExecutorError::Directory)?;
@@ -320,7 +380,7 @@ impl Executor for HostExecutor {
         tokio::fs::create_dir(&dir)
             .await
             .map_err(ExecutorError::Directory)?;
-        let result = self.execute(job, &dir, &mut stop).await;
+        let result = self.execute(job, &dir, stop, counts).await;
         let removed = tokio::fs::remove_dir_all(&dir).await;
         match (result, removed) {
             (Ok(execution), Err(error)) => {
@@ -329,6 +389,18 @@ impl Executor for HostExecutor {
             }
             (result, _) => result,
         }
+    }
+}
+
+#[async_trait]
+impl Executor for HostExecutor {
+    async fn run(&self, job: &Job, stop: Stop) -> Result<Execution, ExecutorError> {
+        let (result, counts) = self.run_counted(job, stop).await;
+        eprintln!(
+            "job {}: {} objects downloaded, {} taken from the object cache",
+            job.id, counts.downloaded, counts.cached
+        );
+        result
     }
 }
 

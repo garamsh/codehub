@@ -13,7 +13,7 @@ use crate::run_job::Description;
 use super::*;
 
 fn host() -> HostExecutor {
-    HostExecutor::new(std::env::temp_dir(), reqwest::Client::new(), None)
+    HostExecutor::new(std::env::temp_dir(), u64::MAX, reqwest::Client::new(), None)
 }
 
 const LONG: Duration = Duration::from_secs(60);
@@ -123,7 +123,12 @@ async fn a_host_directory_that_cannot_be_made_is_an_executor_error() {
     let blocker: PathBuf =
         std::env::temp_dir().join(format!("check-blocker-{}", std::process::id()));
     std::fs::write(&blocker, "a file, not a directory").unwrap();
-    let executor = HostExecutor::new(blocker.join("under"), reqwest::Client::new(), None);
+    let executor = HostExecutor::new(
+        blocker.join("under"),
+        u64::MAX,
+        reqwest::Client::new(),
+        None,
+    );
     let outcome = run(&executor, "true", LONG).await;
     assert_eq!(outcome.code, 125);
     assert!(outcome.stderr.contains("directory"), "{}", outcome.stderr);

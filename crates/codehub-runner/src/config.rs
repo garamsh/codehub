@@ -7,6 +7,9 @@ use std::net::SocketAddr;
 
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
+/// The default bound of the object cache in bytes, 10 GiB.
+pub const DEFAULT_OBJECT_CACHE_SIZE: u64 = 10 * 1024 * 1024 * 1024;
+
 /// The label every object the gaon driver creates carries, with the runner's name as its value.
 pub const RUNNER_LABEL: &str = "runner.codehub.garam.sh/name";
 
@@ -53,6 +56,15 @@ pub struct CheckExecutor {
     /// directory where absent.
     #[arg(long, env = "CODEHUB_RUNNER_WORK_DIR")]
     pub work_dir: Option<PathBuf>,
+
+    /// The most bytes of objects the runner keeps between jobs under the work directory, for the
+    /// host executor; the least recently used are removed after each job.
+    #[arg(
+        long,
+        env = "CODEHUB_RUNNER_OBJECT_CACHE_SIZE",
+        default_value_t = DEFAULT_OBJECT_CACHE_SIZE
+    )]
+    pub object_cache_size: u64,
 
     /// Where the job's command runs.
     #[arg(
@@ -255,6 +267,15 @@ pub struct Config {
     #[arg(long, env = "CODEHUB_RUNNER_WORK_DIR")]
     pub work_dir: Option<PathBuf>,
 
+    /// The most bytes of objects the runner keeps between jobs under the work directory, for the
+    /// host executor; the least recently used are removed after each job.
+    #[arg(
+        long,
+        env = "CODEHUB_RUNNER_OBJECT_CACHE_SIZE",
+        default_value_t = DEFAULT_OBJECT_CACHE_SIZE
+    )]
+    pub object_cache_size: u64,
+
     /// Claim once, run the job it returns, and exit.
     #[arg(long)]
     pub once: bool,
@@ -283,6 +304,7 @@ impl fmt::Debug for Config {
             client_id,
             client_secret_env,
             work_dir,
+            object_cache_size,
             once,
             executor,
             gaon,
@@ -295,6 +317,7 @@ impl fmt::Debug for Config {
             .field("client_id", client_id)
             .field("client_secret_env", client_secret_env)
             .field("work_dir", work_dir)
+            .field("object_cache_size", object_cache_size)
             .field("once", once)
             .field("executor", executor)
             .field("gaon", gaon)
