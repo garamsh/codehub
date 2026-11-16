@@ -376,6 +376,8 @@ fn has_the_fields_of_the_workspace_schemas() {
     };
     assert_fields(&changed, &schemas["ChangedPath"], "ChangedPath");
     let workspace = Workspace {
+        instance: 1,
+        version: 0,
         base: None,
         description: String::new(),
         changes: Vec::new(),

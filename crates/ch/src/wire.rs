@@ -490,6 +490,10 @@ pub struct ChangedPath {
 /// A workspace: a draft with its base and description.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Workspace {
+    /// Which opening of the workspace this is; landing closes it.
+    pub instance: u64,
+    /// 0 when the workspace opens, and one more each time its changes are recorded.
+    pub version: u64,
     /// The changeset it is based on; absent where `main` was unset.
     pub base: Option<String>,
     /// The description.

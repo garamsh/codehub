@@ -50,6 +50,8 @@ pub struct ChangedPathBody {
 
 #[derive(Serialize)]
 pub struct WorkspaceBody {
+    instance: u64,
+    version: u64,
     base: Option<String>,
     description: String,
     changes: Vec<ChangedPathBody>,
@@ -58,6 +60,8 @@ pub struct WorkspaceBody {
 impl From<Workspace> for WorkspaceBody {
     fn from(workspace: Workspace) -> Self {
         Self {
+            instance: workspace.instance.get(),
+            version: workspace.version,
             base: workspace.base.map(|base| base.to_string()),
             description: workspace.description,
             changes: workspace

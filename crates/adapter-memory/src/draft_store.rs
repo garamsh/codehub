@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use app::domain::address::Address;
-use app::domain::draft::{Draft, DraftId, Edit};
+use app::domain::draft::{Draft, DraftId, Edit, Instance};
 use app::domain::path::Path;
 use app::domain::repository::RepositoryId;
 use app::port::driven::draft_store::{DraftStore, DraftStoreError};
@@ -13,6 +14,7 @@ use crate::lock;
 #[derive(Default)]
 pub struct MemoryDraftStore {
     drafts: Mutex<BTreeMap<(RepositoryId, DraftId), Draft>>,
+    instances: AtomicU64,
 }
 
 #[async_trait::async_trait]
@@ -26,6 +28,8 @@ impl DraftStore for MemoryDraftStore {
         Ok(lock(&self.drafts)
             .entry((repository, draft.clone()))
             .or_insert_with(|| Draft {
+                instance: Instance::new(self.instances.fetch_add(1, Ordering::Relaxed)),
+                version: 0,
                 base,
                 description: String::new(),
                 changes: BTreeMap::new(),
@@ -49,12 +53,19 @@ impl DraftStore for MemoryDraftStore {
         &self,
         repository: RepositoryId,
         draft: &DraftId,
+        expected: u64,
         edits: BTreeMap<Path, Edit>,
     ) -> Result<(), DraftStoreError> {
         let mut drafts = lock(&self.drafts);
         let held = drafts
             .get_mut(&(repository, draft.clone()))
             .ok_or_else(|| DraftStoreError::NotFound(draft.clone()))?;
+        if held.version != expected {
+            return Err(DraftStoreError::Moved {
+                current: held.version,
+            });
+        }
+        held.version += 1;
         for (path, edit) in edits {
             match edit {
                 Edit::Record(change) => {

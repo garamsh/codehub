@@ -6,11 +6,12 @@ use std::collections::BTreeMap;
 use crate::domain::address::Address;
 use crate::domain::changeset::Change;
 use crate::domain::diff::{self, Side};
-use crate::domain::draft::{ChangeStatus, Draft, Edit};
+use crate::domain::draft::{ChangeStatus, Draft, DraftId, Edit};
 use crate::domain::file::{File, FileKind};
 use crate::domain::path::Path;
 use crate::domain::repository::RepositoryId;
 use crate::port::driven::derived_data::{DerivedData, DerivedDataError};
+use crate::port::driven::draft_store::{DraftStore, DraftStoreError};
 use crate::port::driven::object_store::ObjectStore;
 use crate::port::driving::source_control::{ChangedPath, PathDiff, Workspace, WorkspaceError};
 use crate::use_case::read_file::file_at;
@@ -83,6 +84,8 @@ pub(crate) async fn workspace(
         });
     }
     Ok(Workspace {
+        instance: draft.instance,
+        version: draft.version,
         base: draft.base,
         description: draft.description.clone(),
         changes,
@@ -130,6 +133,26 @@ fn side(content: &Option<(FileKind, Vec<u8>)>) -> Side<'_> {
     content
         .as_ref()
         .map(|(kind, bytes)| (*kind, bytes.as_slice()))
+}
+
+/// Records `edits` in the draft held under `draft` at the version it holds when read, reading it
+/// again where another record moved it first. Each retry follows another record that succeeded.
+pub(crate) async fn record_now(
+    drafts: &dyn DraftStore,
+    repository: RepositoryId,
+    draft: &DraftId,
+    edits: BTreeMap<Path, Edit>,
+) -> Result<(), DraftStoreError> {
+    loop {
+        let held = drafts.get(repository, draft).await?;
+        match drafts
+            .record(repository, draft, held.version, edits.clone())
+            .await
+        {
+            Err(DraftStoreError::Moved { .. }) => {}
+            recorded => return recorded,
+        }
+    }
 }
 
 /// Requires that every file `edits` records is in `repository`'s object store, so that a snapshot

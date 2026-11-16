@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use app::domain::address::Address;
 use app::domain::changeset::Change;
-use app::domain::draft::{Draft, DraftId, Edit};
+use app::domain::draft::{Draft, DraftId, Edit, Instance};
 use app::domain::file::{File, FileKind};
 use app::domain::path::Path;
 use app::domain::repository::RepositoryId;
@@ -64,9 +64,11 @@ fn change(kind: &str, content: Option<Vec<u8>>) -> Result<Change, String> {
     }))
 }
 
-/// A draft's base and description, and one of its changes' path, kind and content; the change is
-/// null for a draft with none.
+/// A draft's identity, version, base and description, and one of its changes' path, kind and
+/// content; the change is null for a draft with none.
 type Row = (
+    i64,
+    i64,
     Option<Vec<u8>>,
     String,
     Option<Vec<u8>>,
@@ -128,11 +130,12 @@ impl DraftStore for PostgresDraftStore {
         &self,
         repository: RepositoryId,
         draft: &DraftId,
+        expected: u64,
         edits: BTreeMap<Path, Edit>,
     ) -> Result<(), DraftStoreError> {
         let mut transaction = self.pool.begin().await.map_err(backend)?;
-        let id = sqlx::query_scalar::<_, i64>(
-            "select id from drafts \
+        let (id, version) = sqlx::query_as::<_, (i64, i64)>(
+            "select id, version from drafts \
              where repository = $1 and issuer = $2 and subject = $3 and name = $4 \
              for update",
         )
@@ -144,6 +147,15 @@ impl DraftStore for PostgresDraftStore {
         .await
         .map_err(backend)?
         .ok_or_else(|| DraftStoreError::NotFound(draft.clone()))?;
+        let version = u64::try_from(version).map_err(backend)?;
+        if version != expected {
+            return Err(DraftStoreError::Moved { current: version });
+        }
+        sqlx::query("update drafts set version = version + 1 where id = $1")
+            .bind(id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(backend)?;
         for (path, edit) in edits {
             match edit {
                 Edit::Record(change) => {
@@ -183,7 +195,7 @@ impl DraftStore for PostgresDraftStore {
         // One statement, so the base and the changes are from one snapshot; a draft with no
         // changes yields its row alone, with null change columns.
         let rows = sqlx::query_as::<_, Row>(
-            "select d.base, d.description, c.path, c.kind, c.content from drafts d \
+            "select d.id, d.version, d.base, d.description, c.path, c.kind, c.content from drafts d \
              left join draft_changes c on c.draft = d.id \
              where d.repository = $1 and d.issuer = $2 and d.subject = $3 and d.name = $4",
         )
@@ -194,7 +206,7 @@ impl DraftStore for PostgresDraftStore {
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
-        let Some((base, description, ..)) = rows.first() else {
+        let Some((id, version, base, description, ..)) = rows.first() else {
             return Err(DraftStoreError::NotFound(draft.clone()));
         };
         let base = base
@@ -203,8 +215,10 @@ impl DraftStore for PostgresDraftStore {
             .transpose()
             .map_err(DraftStoreError::Backend)?;
         let description = description.clone();
+        let instance = Instance::new(u64::try_from(*id).map_err(backend)?);
+        let version = u64::try_from(*version).map_err(backend)?;
         let mut changes = BTreeMap::new();
-        for (_, _, path, kind, content) in rows {
+        for (.., path, kind, content) in rows {
             if let (Some(path), Some(kind)) = (path, kind) {
                 changes.insert(
                     conversion::path(&path).map_err(DraftStoreError::Backend)?,
@@ -213,6 +227,8 @@ impl DraftStore for PostgresDraftStore {
             }
         }
         Ok(Draft {
+            instance,
+            version,
             base,
             description,
             changes,

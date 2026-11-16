@@ -9,7 +9,7 @@ use crate::domain::address::Address;
 use crate::domain::changeset::Change;
 use crate::domain::derivation::DerivationError;
 use crate::domain::diff::{ContentDiff, KindChange};
-use crate::domain::draft::{ChangeStatus, Edit};
+use crate::domain::draft::{ChangeStatus, Edit, Instance};
 use crate::domain::encoding::EncodeError;
 use crate::domain::file::{File, FileKind};
 use crate::domain::file_version::FileVersionError;
@@ -570,6 +570,10 @@ impl From<ObjectStoreError> for UploadError {
 /// against the base.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Workspace {
+    /// The opening of the draft this is; landing closes it (ADR 0051).
+    pub instance: Instance,
+    /// 0 when the workspace opens, and one more each time its changes are recorded.
+    pub version: u64,
     /// The changeset the workspace was opened on; `None` where `main` was unset.
     pub base: Option<Address>,
     /// What the work is for; empty until set.

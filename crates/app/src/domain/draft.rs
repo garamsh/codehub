@@ -26,9 +26,34 @@ impl fmt::Display for DraftId {
     }
 }
 
-/// A staged draft: the changeset it was based on, its description and the changes staged so far.
+/// One opening of a draft. Landing closes an instance, and opening the same name again starts a
+/// new one (ADR 0051).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Instance(u64);
+
+impl Instance {
+    /// The instance a store numbered `number`.
+    #[must_use]
+    pub const fn new(number: u64) -> Self {
+        Self(number)
+    }
+
+    /// The number the store gave the instance.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// A staged draft: its instance and version, the changeset it was based on, its description and
+/// the changes staged so far.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Draft {
+    /// The opening of the draft this is.
+    pub instance: Instance,
+    /// 0 when the draft opens, and one more each time its changes are recorded; describing it does
+    /// not change it (ADR 0051).
+    pub version: u64,
     /// `main` when the draft was first staged; `None` where `main` was unset.
     pub base: Option<Address>,
     /// What the work is for; a landing without a message takes it as the message. Empty until set.

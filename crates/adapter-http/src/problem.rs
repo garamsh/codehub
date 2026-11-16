@@ -265,6 +265,9 @@ impl From<DraftStoreError> for Problem {
             DraftStoreError::NotFound(draft) => {
                 Self::new(StatusCode::NOT_FOUND, format!("no draft {}", draft.name))
             }
+            DraftStoreError::Moved { .. } => {
+                Self::new(StatusCode::CONFLICT, "the workspace changed; try again")
+            }
             DraftStoreError::Backend(_) => Self::internal(),
         }
     }

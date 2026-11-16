@@ -67,3 +67,18 @@ async fn a_workspace_is_opened_by_a_writer_and_read_by_a_reader_of_its_paths() {
 async fn a_kind_change_is_marked_whatever_the_content_does() {
     workspace::a_kind_change_is_marked_whatever_the_content_does::<Harness>().await;
 }
+
+#[tokio::test]
+async fn the_version_grows_on_snapshot_put_and_restore_and_not_on_describe() {
+    workspace::the_version_grows_on_snapshot_put_and_restore_and_not_on_describe::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_record_at_a_stale_version_is_refused_and_records_nothing() {
+    workspace::a_record_at_a_stale_version_is_refused_and_records_nothing::<Harness>().await;
+}
+
+#[tokio::test]
+async fn landing_closes_the_instance_and_reopening_starts_a_new_one_at_version_zero() {
+    workspace::landing_closes_the_instance_and_reopening_starts_a_new_one_at_version_zero::<Harness>().await;
+}

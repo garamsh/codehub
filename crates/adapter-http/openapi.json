@@ -3915,11 +3915,23 @@
       "Workspace": {
         "type": "object",
         "required": [
+          "instance",
+          "version",
           "base",
           "description",
           "changes"
         ],
         "properties": {
+          "instance": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Which opening of the workspace this is. Landing closes an instance, and opening the same name again starts a new one."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "0 when the workspace opens, and one more each time its changes are recorded: a snapshot, a put or a restore. Setting the description does not change it."
+          },
           "base": {
             "oneOf": [
               {
