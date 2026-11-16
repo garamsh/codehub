@@ -45,6 +45,8 @@ impl Executor for Recording {
             end: self.end,
             output: String::new(),
             produced: Produced::default(),
+            objects: None,
+            run: None,
         })
     }
 }
@@ -89,6 +91,8 @@ fn an_end_that_is_not_a_code_from_0_to_255_gives_code_1_and_the_line_names_it() 
             end,
             output: String::new(),
             produced: Produced::default(),
+            objects: None,
+            run: None,
         }))
     };
     let signalled = of(End::Signalled);

@@ -135,6 +135,8 @@ async fn a_report_carries_its_status_exit_code_and_output() {
         exit_code: Some(7),
         output: "broken".into(),
         produced: Produced::default(),
+        objects: None,
+        run: None,
     };
     source.report(JobId::new(5), &failed).await.unwrap();
     let timed_out = Report {
@@ -142,6 +144,8 @@ async fn a_report_carries_its_status_exit_code_and_output() {
         exit_code: None,
         output: String::new(),
         produced: Produced::default(),
+        objects: None,
+        run: None,
     };
     source.report(JobId::new(6), &timed_out).await.unwrap();
     let seen = seen.lock().unwrap().clone();
@@ -309,6 +313,8 @@ async fn a_report_uploads_the_files_the_server_lacks_and_lists_all_of_them() {
             outputs: vec![kept.clone()],
             caches: vec![new.clone()],
         },
+        objects: None,
+        run: None,
     };
     source.report(JobId::new(4), &report).await.unwrap();
     assert_eq!(
@@ -322,5 +328,259 @@ async fn a_report_uploads_the_files_the_server_lacks_and_lists_all_of_them() {
     };
     assert_eq!(body["outputs"][0]["path"], "web/dist/a");
     assert_eq!(body["caches"][0]["address"], json!(new.address.to_string()));
+    std::fs::remove_file(file).unwrap();
+}
+
+fn run_job_json() -> Value {
+    let grant = json!({"url": "http://files/x", "headers": [{"name": "x-grant", "value": "yes"}]});
+    let file = |path: &str| {
+        json!({"path": path, "address": format!("sha256:{}", "ab".repeat(32)), "size": 3,
+            "executable": true, "download": grant})
+    };
+    json!({
+        "id": 11, "organisation": "acme", "repository_id": 3, "draft": "feature",
+        "command": "make", "timeout": 600, "add": ["docs"], "outputs": ["dist"],
+        "env": {"CODEHUB_DRAFT": "feature",
+            "CODEHUB_CHANGESET": format!("sha256:{}", "cd".repeat(32))},
+        "heartbeat_interval": 10,
+        "files": [file("src/main.rs")],
+        "caches": [{"path": "target", "files": [file("deps/lib")]}],
+    })
+}
+
+#[tokio::test]
+async fn a_claim_that_names_a_draft_is_a_run() {
+    let (source, file) = source_claiming(Seen::default(), Some(run_job_json())).await;
+    let job = source.claim().await.unwrap().unwrap();
+    let run = job.run.unwrap();
+    assert_eq!(run.draft, "feature");
+    assert_eq!(job.command, "make");
+    assert_eq!(job.check, "");
+    assert_eq!(job.folder, "");
+    assert_eq!(
+        job.changeset.to_string(),
+        format!("sha256:{}", "cd".repeat(32))
+    );
+    assert_eq!(run.add[0].to_string(), "docs");
+    assert_eq!(job.outputs[0].to_string(), "dist");
+    assert_eq!(job.caches[0].to_string(), "target");
+    assert_eq!(run.caches[0].files[0].path.to_string(), "deps/lib");
+    assert_eq!(job.files[0].path.to_string(), "src/main.rs");
+    assert!(
+        run.env
+            .contains(&("CODEHUB_DRAFT".into(), "feature".into()))
+    );
+    std::fs::remove_file(file).unwrap();
+}
+
+#[tokio::test]
+async fn a_run_without_a_base_has_the_zero_changeset() {
+    let mut wire = run_job_json();
+    wire["env"] = json!({"CODEHUB_DRAFT": "feature"});
+    let (source, file) = source_claiming(Seen::default(), Some(wire)).await;
+    let job = source.claim().await.unwrap().unwrap();
+    assert_eq!(job.changeset, Address::new([0; 32]));
+    std::fs::remove_file(file).unwrap();
+}
+
+#[tokio::test]
+async fn a_claim_that_names_a_check_is_a_check_job() {
+    let wire = json!({
+        "id": 2, "organisation": "acme", "repository_id": 3,
+        "changeset": format!("sha256:{}", "cd".repeat(32)),
+        "check": {"id": "unit", "folder": "", "command": "true", "outputs": [], "caches": []},
+        "heartbeat_interval": 10, "files": [],
+    });
+    let (source, file) = source_claiming(Seen::default(), Some(wire)).await;
+    let job = source.claim().await.unwrap().unwrap();
+    assert!(job.run.is_none());
+    assert_eq!(job.check, "unit");
+    std::fs::remove_file(file).unwrap();
+}
+
+#[tokio::test]
+async fn a_claim_states_the_executor_and_without_one_sends_no_body() {
+    let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+    let seen = Arc::clone(&bodies);
+    let app = Router::new().route(
+        "/v1/runner/jobs/claim",
+        post(move |body: axum::body::Bytes| async move {
+            seen.lock()
+                .unwrap()
+                .push(String::from_utf8(body.to_vec()).unwrap());
+            StatusCode::NO_CONTENT
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    let file = std::env::temp_dir().join(format!(
+        "codehub-runner-http-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::write(&file, "token\n").unwrap();
+    let make = || {
+        HttpJobSource::new(
+            reqwest::Client::new(),
+            &url,
+            TokenSource::File(file.clone()),
+        )
+    };
+    make().claim().await.unwrap();
+    make()
+        .with_executor(ExecutorKind::Host)
+        .claim()
+        .await
+        .unwrap();
+    make()
+        .with_executor(ExecutorKind::Gaon)
+        .claim()
+        .await
+        .unwrap();
+    assert_eq!(
+        *bodies.lock().unwrap(),
+        ["", r#"{"executor":"host"}"#, r#"{"executor":"gaon"}"#]
+    );
+    std::fs::remove_file(file).unwrap();
+}
+
+#[tokio::test]
+async fn a_run_report_names_its_streams_changes_and_refusals_and_uploads_each_object_once() {
+    let out = Stream::new(b"hello".to_vec(), false);
+    let err = Stream::new(b"hello".to_vec(), true);
+    let edited = produced_file("a.txt", b"new");
+    let mut tool = produced_file("tool", b"#!/bin/sh");
+    tool.executable = true;
+    let puts = Arc::default();
+    let seen = Seen::default();
+    let url = storing(
+        produced_file("none", b"none").address,
+        Arc::clone(&puts),
+        seen.clone(),
+    )
+    .await;
+    let file = std::env::temp_dir().join(format!(
+        "codehub-runner-http-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::write(&file, "token\n").unwrap();
+    let source = HttpJobSource::new(
+        reqwest::Client::new(),
+        &url,
+        TokenSource::File(file.clone()),
+    );
+    let report = Report {
+        status: Status::Failed,
+        exit_code: Some(3),
+        output: String::new(),
+        produced: Produced {
+            outputs: vec![edited.clone()],
+            caches: Vec::new(),
+        },
+        objects: Some(ObjectCounts {
+            downloaded: 2,
+            cached: 5,
+        }),
+        run: Some(RunOutcome {
+            stdout: Some(out.clone()),
+            stderr: Some(err.clone()),
+            changes: vec![
+                Change::Written(edited.clone()),
+                Change::Written(tool.clone()),
+                Change::Deleted("gone.txt".parse().unwrap()),
+            ],
+            refused: vec!["link".into()],
+        }),
+    };
+    source.report(JobId::new(8), &report).await.unwrap();
+    let mut addresses: Vec<String> = puts
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(a, _)| a.clone())
+        .collect();
+    addresses.sort();
+    let mut wanted = vec![
+        out.address.to_string(),
+        edited.address.to_string(),
+        tool.address.to_string(),
+    ];
+    wanted.sort();
+    assert_eq!(
+        addresses, wanted,
+        "each object once, though two share a digest"
+    );
+    let seen = seen.lock().unwrap().clone();
+    let [(8, body)] = seen.as_slice() else {
+        panic!("{seen:?}")
+    };
+    assert_eq!(
+        *body,
+        json!({
+            "outcome": "exited", "exit_code": 3,
+            "stdout": {"address": out.address.to_string(), "cut": false},
+            "stderr": {"address": err.address.to_string(), "cut": true},
+            "objects": {"downloaded": 2, "from_cache": 5},
+            "outputs": [{"path": "a.txt", "address": edited.address.to_string(), "executable": false}],
+            "caches": [],
+            "changes": [
+                {"path": "a.txt", "kind": "regular", "address": edited.address.to_string()},
+                {"path": "tool", "kind": "executable", "address": tool.address.to_string()},
+                {"path": "gone.txt", "kind": "deleted", "address": null},
+            ],
+            "refused": ["link"],
+        })
+    );
+    std::fs::remove_file(file).unwrap();
+}
+
+#[tokio::test]
+async fn a_run_without_a_command_outcome_reports_executor_failed_with_null_streams() {
+    let seen = Seen::default();
+    let (source, file) = source(seen.clone()).await;
+    for (status, exit_code, name) in [
+        (Status::Failed, None, "executor_failed"),
+        (Status::TimedOut, None, "timed_out"),
+        (Status::Cancelled, None, "cancelled"),
+    ] {
+        let report = Report {
+            status,
+            exit_code,
+            output: String::new(),
+            produced: Produced::default(),
+            objects: None,
+            run: Some(RunOutcome::default()),
+        };
+        source.report(JobId::new(5), &report).await.unwrap();
+        let body = seen.lock().unwrap().pop().unwrap().1;
+        assert_eq!(body["outcome"], name);
+        assert_eq!(body["exit_code"], Value::Null);
+        assert_eq!(body["stdout"], Value::Null);
+        assert_eq!(body["objects"], json!({"downloaded": 0, "from_cache": 0}));
+    }
+    std::fs::remove_file(file).unwrap();
+}
+
+#[tokio::test]
+async fn a_check_report_carries_the_object_counts() {
+    let seen = Seen::default();
+    let (source, file) = source(seen.clone()).await;
+    let report = Report {
+        status: Status::Passed,
+        exit_code: Some(0),
+        output: String::new(),
+        produced: Produced::default(),
+        objects: Some(ObjectCounts {
+            downloaded: 1,
+            cached: 2,
+        }),
+        run: None,
+    };
+    source.report(JobId::new(6), &report).await.unwrap();
+    let body = seen.lock().unwrap().pop().unwrap().1;
+    assert_eq!(body["objects"], json!({"downloaded": 1, "from_cache": 2}));
+    assert!(body.get("outcome").is_none());
     std::fs::remove_file(file).unwrap();
 }

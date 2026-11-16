@@ -1,15 +1,18 @@
 //! The HTTP adapter of the job source port.
 
+use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
+use crate::config::ExecutorKind;
 use crate::job_source::{
-    Address, Download, Heartbeat, Job, JobFile, JobId, JobSource, Produced, ProducedFile, Report,
-    SourceError, Status, StopReason,
+    Address, Change, Download, Heartbeat, Job, JobFile, JobId, JobSource, Produced, ProducedFile,
+    Report, RunCache, RunOutcome, RunWork, SourceError, Status, StopReason, Stream,
 };
+use crate::object_cache::ObjectCounts;
 use crate::token::TokenSource;
 
 /// How long a claim may take. The server holds it, so this exceeds any hold.
@@ -31,6 +34,40 @@ struct WireJob {
     check: WireCheck,
     heartbeat_interval: u64,
     files: Vec<WireFile>,
+}
+
+/// What a claim answers: a run when it names a draft, a check job otherwise.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WireClaim {
+    Run(WireRunJob),
+    Check(WireJob),
+}
+
+#[derive(Deserialize)]
+struct WireRunJob {
+    id: u64,
+    organisation: String,
+    repository_id: u64,
+    draft: String,
+    command: String,
+    add: Vec<String>,
+    outputs: Vec<String>,
+    env: BTreeMap<String, String>,
+    heartbeat_interval: u64,
+    files: Vec<WireFile>,
+    caches: Vec<WireRunCache>,
+}
+
+#[derive(Deserialize)]
+struct WireRunCache {
+    path: String,
+    files: Vec<WireFile>,
+}
+
+#[derive(Serialize)]
+struct WireClaimRequest {
+    executor: &'static str,
 }
 
 #[derive(Deserialize)]
@@ -84,6 +121,90 @@ struct WireResult<'a> {
     output_tail: &'a str,
     outputs: Vec<WireProduced>,
     caches: Vec<WireProduced>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    objects: Option<WireObjects>,
+}
+
+#[derive(Serialize)]
+struct WireObjects {
+    downloaded: usize,
+    from_cache: usize,
+}
+
+impl WireObjects {
+    fn of(counts: Option<ObjectCounts>) -> Self {
+        let counts = counts.unwrap_or_default();
+        Self {
+            downloaded: counts.downloaded,
+            from_cache: counts.cached,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct WireRunReport {
+    outcome: &'static str,
+    exit_code: Option<i32>,
+    stdout: Option<WireStream>,
+    stderr: Option<WireStream>,
+    objects: WireObjects,
+    outputs: Vec<WireProduced>,
+    caches: Vec<WireProduced>,
+    changes: Vec<WireChange>,
+    refused: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct WireStream {
+    address: String,
+    cut: bool,
+}
+
+impl WireStream {
+    fn of(stream: Option<&Stream>) -> Option<Self> {
+        stream.map(|stream| Self {
+            address: stream.address.to_string(),
+            cut: stream.cut,
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct WireChange {
+    path: String,
+    kind: &'static str,
+    address: Option<String>,
+}
+
+impl WireChange {
+    fn of(change: &Change) -> Self {
+        match change {
+            Change::Written(file) => Self {
+                path: file.path.to_string(),
+                kind: if file.executable {
+                    "executable"
+                } else {
+                    "regular"
+                },
+                address: Some(file.address.to_string()),
+            },
+            Change::Deleted(path) => Self {
+                path: path.to_string(),
+                kind: "deleted",
+                address: None,
+            },
+        }
+    }
+}
+
+/// How the run ended, from its status and whether its command ran to an exit code.
+const fn outcome_name(status: Status, exit_code: Option<i32>) -> &'static str {
+    match (status, exit_code) {
+        (Status::TimedOut, _) => "timed_out",
+        (Status::Cancelled, _) => "cancelled",
+        (_, Some(_)) => "exited",
+        (_, None) => "executor_failed",
+    }
 }
 
 #[derive(Serialize)]
@@ -133,6 +254,84 @@ fn address(text: &str) -> Result<Address, SourceError> {
         .map_err(|error| SourceError::Malformed(format!("{text:?}: {error}")))
 }
 
+fn wire_files(files: Vec<WireFile>) -> Result<Vec<JobFile>, SourceError> {
+    files
+        .into_iter()
+        .map(|file| {
+            Ok(JobFile {
+                path: file
+                    .path
+                    .parse()
+                    .map_err(|error| SourceError::Malformed(format!("{:?}: {error}", file.path)))?,
+                address: address(&file.address)?,
+                executable: file.executable,
+                download: Download {
+                    url: file.download.url,
+                    headers: file
+                        .download
+                        .headers
+                        .into_iter()
+                        .map(|header| (header.name, header.value))
+                        .collect(),
+                },
+            })
+        })
+        .collect()
+}
+
+fn wire_paths(texts: Vec<String>) -> Result<Vec<crate::job_source::RelativePath>, SourceError> {
+    texts
+        .into_iter()
+        .map(|text| {
+            text.parse()
+                .map_err(|error| SourceError::Malformed(format!("{text:?}: {error}")))
+        })
+        .collect()
+}
+
+impl WireRunJob {
+    fn into_job(self) -> Result<Job, SourceError> {
+        // A workspace with no base has no changeset; the zero address stands for it.
+        let changeset = match self.env.get("CODEHUB_CHANGESET") {
+            Some(text) => address(text)?,
+            None => Address::new([0; 32]),
+        };
+        let caches = self
+            .caches
+            .into_iter()
+            .map(|cache| {
+                Ok(RunCache {
+                    path: cache.path.parse().map_err(|error| {
+                        SourceError::Malformed(format!("{:?}: {error}", cache.path))
+                    })?,
+                    files: wire_files(cache.files)?,
+                })
+            })
+            .collect::<Result<Vec<_>, SourceError>>()?;
+        let run = RunWork {
+            draft: self.draft,
+            add: wire_paths(self.add)?,
+            env: self.env.into_iter().collect(),
+            caches,
+        };
+        let cache_paths = run.caches.iter().map(|cache| cache.path.clone()).collect();
+        Ok(Job {
+            id: JobId::new(self.id),
+            organisation: self.organisation,
+            repository: self.repository_id,
+            changeset,
+            check: String::new(),
+            folder: String::new(),
+            outputs: wire_paths(self.outputs)?,
+            caches: cache_paths,
+            command: self.command,
+            heartbeat_interval: Duration::from_secs(self.heartbeat_interval),
+            files: wire_files(self.files)?,
+            run: Some(run),
+        })
+    }
+}
+
 impl WireJob {
     fn into_job(self) -> Result<Job, SourceError> {
         let files = self
@@ -178,6 +377,7 @@ impl WireJob {
             command: self.check.command,
             heartbeat_interval: Duration::from_secs(self.heartbeat_interval),
             files,
+            run: None,
         })
     }
 }
@@ -197,6 +397,7 @@ pub struct HttpJobSource {
     server: String,
     tokens: TokenSource,
     call_timeout: Duration,
+    executor: Option<ExecutorKind>,
 }
 
 impl HttpJobSource {
@@ -208,7 +409,16 @@ impl HttpJobSource {
             server: server.trim_end_matches('/').to_owned(),
             tokens,
             call_timeout: CALL_TIMEOUT,
+            executor: None,
         }
+    }
+
+    /// The same source, claiming as a runner that runs jobs on `executor`. Without it a claim
+    /// names none, and the server never hands the runner a run.
+    #[must_use]
+    pub const fn with_executor(mut self, executor: ExecutorKind) -> Self {
+        self.executor = Some(executor);
+        self
     }
 
     /// The same source, with `timeout` as the longest a heartbeat or a result report may take.
@@ -248,18 +458,22 @@ impl HttpJobSource {
         }
     }
 
-    /// Uploads the files of `produced` that the server's object store lacks.
-    async fn upload(&self, job: JobId, produced: &Produced) -> Result<(), SourceError> {
-        let files: Vec<&ProducedFile> = produced.outputs.iter().chain(&produced.caches).collect();
-        if files.is_empty() {
+    /// Uploads the objects among `objects` that the server's object store lacks, each once.
+    async fn upload(&self, job: JobId, objects: &[(Address, &[u8])]) -> Result<(), SourceError> {
+        let mut seen = HashSet::new();
+        let objects: Vec<&(Address, &[u8])> = objects
+            .iter()
+            .filter(|(address, _)| seen.insert(address.to_string()))
+            .collect();
+        if objects.is_empty() {
             return Ok(());
         }
         let request = WireUploads {
-            files: files
+            files: objects
                 .iter()
-                .map(|file| WireUpload {
-                    address: file.address.to_string(),
-                    size: file.bytes.len(),
+                .map(|(address, bytes)| WireUpload {
+                    address: address.to_string(),
+                    size: bytes.len(),
                 })
                 .collect(),
         };
@@ -275,14 +489,14 @@ impl HttpJobSource {
             .map_err(|error| SourceError::Malformed(error.to_string()))?;
         for grant in granted.grants {
             let wanted = address(&grant.address)?;
-            let Some(file) = files.iter().find(|file| file.address == wanted) else {
+            let Some((_, bytes)) = objects.iter().find(|(address, _)| *address == wanted) else {
                 continue;
             };
             let mut put = self
                 .http
                 .put(&grant.grant.url)
                 .timeout(UPLOAD_TIMEOUT)
-                .body(file.bytes.clone());
+                .body(bytes.to_vec());
             for header in grant.grant.headers {
                 put = put.header(header.name, header.value);
             }
@@ -298,20 +512,51 @@ impl HttpJobSource {
     }
 }
 
+/// Every object a report names, with its bytes.
+fn objects_of<'a>(produced: &'a Produced, run: Option<&'a RunOutcome>) -> Vec<(Address, &'a [u8])> {
+    let mut objects: Vec<(Address, &[u8])> = produced
+        .outputs
+        .iter()
+        .chain(&produced.caches)
+        .map(|file| (file.address, file.bytes.as_slice()))
+        .collect();
+    if let Some(run) = run {
+        for stream in run.stdout.iter().chain(&run.stderr) {
+            objects.push((stream.address, stream.bytes.as_slice()));
+        }
+        for change in &run.changes {
+            if let Change::Written(file) = change {
+                objects.push((file.address, file.bytes.as_slice()));
+            }
+        }
+    }
+    objects
+}
+
 #[async_trait]
 impl JobSource for HttpJobSource {
     async fn claim(&self) -> Result<Option<Job>, SourceError> {
+        let body = self.executor.map(|executor| WireClaimRequest {
+            executor: match executor {
+                ExecutorKind::Host => "host",
+                ExecutorKind::Gaon => "gaon",
+            },
+        });
         let response = self
-            .post("/v1/runner/jobs/claim", CLAIM_TIMEOUT, None::<&()>)
+            .post("/v1/runner/jobs/claim", CLAIM_TIMEOUT, body.as_ref())
             .await?;
         if response.status() == StatusCode::NO_CONTENT {
             return Ok(None);
         }
-        let wire: WireJob = response
+        let wire: WireClaim = response
             .json()
             .await
             .map_err(|error| SourceError::Malformed(error.to_string()))?;
-        wire.into_job().map(Some)
+        match wire {
+            WireClaim::Run(run) => run.into_job(),
+            WireClaim::Check(check) => check.into_job(),
+        }
+        .map(Some)
     }
 
     async fn heartbeat(&self, job: JobId) -> Result<Heartbeat, SourceError> {
@@ -338,8 +583,27 @@ impl JobSource for HttpJobSource {
     }
 
     async fn report(&self, job: JobId, report: &Report) -> Result<(), SourceError> {
-        if let Err(error) = self.upload(job, &report.produced).await {
+        let objects = objects_of(&report.produced, report.run.as_ref());
+        if let Err(error) = self.upload(job, &objects).await {
             eprintln!("job {job}: uploading its files failed: {error}");
+        }
+        let path = format!("/v1/runner/jobs/{job}/result");
+        if let Some(run) = &report.run {
+            let body = WireRunReport {
+                outcome: outcome_name(report.status, report.exit_code),
+                exit_code: report.exit_code,
+                stdout: WireStream::of(run.stdout.as_ref()),
+                stderr: WireStream::of(run.stderr.as_ref()),
+                objects: WireObjects::of(report.objects),
+                outputs: WireProduced::of(&report.produced.outputs),
+                caches: WireProduced::of(&report.produced.caches),
+                changes: run.changes.iter().map(WireChange::of).collect(),
+                refused: run.refused.clone(),
+            };
+            return self
+                .post(&path, self.call_timeout, Some(&body))
+                .await
+                .map(|_| ());
         }
         let body = WireResult {
             status: status_name(report.status),
@@ -347,14 +611,11 @@ impl JobSource for HttpJobSource {
             output_tail: &report.output,
             outputs: WireProduced::of(&report.produced.outputs),
             caches: WireProduced::of(&report.produced.caches),
+            objects: report.objects.map(|counts| WireObjects::of(Some(counts))),
         };
-        self.post(
-            &format!("/v1/runner/jobs/{job}/result"),
-            self.call_timeout,
-            Some(&body),
-        )
-        .await
-        .map(|_| ())
+        self.post(&path, self.call_timeout, Some(&body))
+            .await
+            .map(|_| ())
     }
 }
 

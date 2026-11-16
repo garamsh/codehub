@@ -214,6 +214,8 @@ impl GaonExecutor {
                         end: End::Stopped(reason),
                         output: String::new(),
                         produced: Produced::default(),
+                        objects: None,
+                        run: None,
                     });
                 }
                 () = tokio::time::sleep(self.poll) => {}

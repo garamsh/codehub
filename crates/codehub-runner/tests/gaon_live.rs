@@ -263,6 +263,7 @@ fn job(id: u64) -> Job {
         command: "true".into(),
         heartbeat_interval: Duration::from_secs(5),
         files: Vec::new(),
+        run: None,
     }
 }
 

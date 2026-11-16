@@ -57,6 +57,8 @@ pub enum Error {
     },
     /// The gaon driver could not start.
     Gaon(ExecutorError),
+    /// The host executor could not clean its object cache.
+    Cache(std::io::Error),
 }
 
 impl fmt::Display for Error {
@@ -72,6 +74,7 @@ impl fmt::Display for Error {
                 write!(f, "listening for results on {address} failed: {error}")
             }
             Self::Gaon(error) => write!(f, "starting the gaon driver failed: {error}"),
+            Self::Cache(error) => write!(f, "cleaning the object cache failed: {error}"),
         }
     }
 }
@@ -113,7 +116,8 @@ pub async fn run(config: Config) -> Result<ExitCode, Error> {
         (None, None) => TokenSource::File(PathBuf::new()),
     };
     let server = config.server.ok_or(Error::Missing("--server"))?;
-    let source: Arc<dyn JobSource> = Arc::new(HttpJobSource::new(http.clone(), &server, tokens));
+    let source: Arc<dyn JobSource> =
+        Arc::new(HttpJobSource::new(http.clone(), &server, tokens).with_executor(config.executor));
     let mode = if config.once {
         Mode::Once
     } else {
@@ -122,12 +126,9 @@ pub async fn run(config: Config) -> Result<ExitCode, Error> {
     let executor: Arc<dyn Executor> = match config.executor {
         ExecutorKind::Host => {
             let work_dir = config.work_dir.unwrap_or_else(std::env::temp_dir);
-            Arc::new(HostExecutor::new(
-                work_dir,
-                config.object_cache_size,
-                http,
-                hidden,
-            ))
+            let host = HostExecutor::new(work_dir, config.object_cache_size, http, hidden);
+            host.clean().await.map_err(Error::Cache)?;
+            Arc::new(host)
         }
         ExecutorKind::Gaon => Arc::new(gaon_executor(config.gaon).await?),
     };

@@ -6,6 +6,9 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use sha2::{Digest, Sha256};
+
+use crate::object_cache::ObjectCounts;
 
 /// Names a job on the server.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -179,7 +182,79 @@ pub struct Produced {
     pub caches: Vec<ProducedFile>,
 }
 
+/// A standard stream a run's command wrote: the last 64 MiB of it at most.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Stream {
+    /// What its bytes hash to.
+    pub address: Address,
+    /// Its bytes.
+    pub bytes: Vec<u8>,
+    /// Whether the start of the stream was dropped at the bound.
+    pub cut: bool,
+}
+
+impl Stream {
+    /// The stream of `bytes`, cut or not.
+    #[must_use]
+    pub fn new(bytes: Vec<u8>, cut: bool) -> Self {
+        Self {
+            address: Address::new(Sha256::digest(&bytes).into()),
+            bytes,
+            cut,
+        }
+    }
+}
+
+/// A path of a run's workspace the command changed.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Change {
+    /// The path holds a regular file whose content or executable bit differs from what was
+    /// sent, or which was added.
+    Written(ProducedFile),
+    /// The path was sent and is gone.
+    Deleted(RelativePath),
+}
+
+/// What a run's command left in its directory, apart from the files under outputs and caches.
+#[derive(Clone, PartialEq, Eq, Default, Debug)]
+pub struct RunOutcome {
+    /// What it wrote to standard output.
+    pub stdout: Option<Stream>,
+    /// What it wrote to standard error.
+    pub stderr: Option<Stream>,
+    /// The sent and `add` paths it changed.
+    pub changes: Vec<Change>,
+    /// The sent and `add` paths that hold something other than a regular file.
+    pub refused: Vec<String>,
+}
+
+/// A cache path of a run and the files of its cache ref's tree.
+#[derive(Clone, Debug)]
+pub struct RunCache {
+    /// The cache path, from the repository root.
+    pub path: RelativePath,
+    /// The tree's files, each at its path under the cache path.
+    pub files: Vec<JobFile>,
+}
+
+/// What a run's job has beyond a check's.
+#[derive(Clone, Debug)]
+pub struct RunWork {
+    /// The workspace.
+    pub draft: String,
+    /// The paths where the run's changes may add files.
+    pub add: Vec<RelativePath>,
+    /// The command's environment variables, in place of a check's.
+    pub env: Vec<(String, String)>,
+    /// The workspace's cache refs, by cache path.
+    pub caches: Vec<RunCache>,
+}
+
 /// A job a claim returned.
+///
+/// A run's job fills the check fields as far as they mean the same: `outputs` and `caches` are
+/// the run's output and cache paths, `files` the workspace's files, `check` and `folder` are
+/// empty, and `changeset` is the workspace's base, or the zero address where it has none.
 #[derive(Clone, Debug)]
 pub struct Job {
     /// Names the job.
@@ -204,6 +279,8 @@ pub struct Job {
     pub heartbeat_interval: Duration,
     /// The files of the changeset.
     pub files: Vec<JobFile>,
+    /// What makes the job a run's.
+    pub run: Option<RunWork>,
 }
 
 /// Why a runner is told to stop its job.
@@ -248,6 +325,10 @@ pub struct Report {
     pub output: String,
     /// The files the command left under the check's outputs and caches; none unless it passed.
     pub produced: Produced,
+    /// The objects the job's files took, where the executor counts them.
+    pub objects: Option<ObjectCounts>,
+    /// What a run left; `Some` for a run's job, whatever its end.
+    pub run: Option<RunOutcome>,
 }
 
 /// Why a conversation with the server failed.

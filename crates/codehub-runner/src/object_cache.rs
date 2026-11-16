@@ -94,6 +94,25 @@ impl ObjectCache {
         stored
     }
 
+    /// Removes the partial files a runner that was killed while keeping an object left behind.
+    ///
+    /// # Errors
+    ///
+    /// An I/O error while listing or removing.
+    pub async fn clean(&self) -> std::io::Result<()> {
+        let mut entries = match tokio::fs::read_dir(&self.dir).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        while let Some(entry) = entries.next_entry().await? {
+            if entry.file_name().to_string_lossy().starts_with("tmp-") {
+                remove_if_present(&entry.path()).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Removes the least recently used objects until the cache holds at most its limit.
     ///
     /// # Errors

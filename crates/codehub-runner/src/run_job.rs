@@ -124,6 +124,8 @@ impl From<Posted> for Execution {
             end,
             output,
             produced: produced.unwrap_or_default(),
+            objects: None,
+            run: None,
         }
     }
 }
@@ -245,6 +247,7 @@ impl Description {
             command: self.command.clone(),
             heartbeat_interval: Duration::ZERO,
             files,
+            run: None,
         })
     }
 }
@@ -282,6 +285,7 @@ async fn run_within(path: &Path, window: Duration) -> Result<ExitCode, String> {
             end: End::Exited(code),
             output,
             produced,
+            ..
         }) => Posted {
             end: PostedEnd::Exited(code),
             output,
