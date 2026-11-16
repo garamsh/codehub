@@ -21,6 +21,7 @@ pub mod read_file;
 pub mod relay;
 pub mod repositories;
 pub mod runners;
+pub mod runs;
 pub mod source_control;
 pub mod tree_checks;
 pub mod upload;

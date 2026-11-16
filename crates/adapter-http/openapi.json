@@ -1484,6 +1484,514 @@
         ]
       }
     },
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/runs": {
+      "post": {
+        "summary": "Start a run of a command in the caller's workspace. The run's input is the workspace tree at its current version, limited to `prefix`, and the server records the files, the instance and the version with the run. `.codehub/run.toml` at the root of the workspace tree sets `caches`, `labels` and `timeout` (seconds, default 600), whatever the prefix; an absent file means the defaults. The run is not a check: it is not blocking, reverts nothing, enters no result cache and does not move `last-green`, and `ch checks` does not list it.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "description": "The organisation's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "description": "The repository's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "draft",
+            "in": "path",
+            "required": true,
+            "description": "The caller's draft name.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRun"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The run, queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A name, path or body is malformed, an `add` path is not under the prefix, or `.codehub/run.toml` cannot be read; the body names the file.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer token was presented.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not run in the repository, may not read a path the run is sent or `.codehub/run.toml`, or may not read the whole repository where a cache ref would be seeded from `main`'s. One refusal; no job is queued.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The repository or the draft does not exist, or the caller may not see the repository.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed; the body names no internals.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/runs/latest": {
+      "get": {
+        "summary": "The run of the caller's workspace with the highest identifier among those that have ended.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "description": "The organisation's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "description": "The repository's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "draft",
+            "in": "path",
+            "required": true,
+            "description": "The caller's draft name.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The run.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A name is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer token was presented.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The repository or the draft does not exist, the caller may not see the repository, or no run of the workspace has ended.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed; the body names no internals.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v1/orgs/{org}/repos/{repo}/runs/{id}": {
+      "get": {
+        "summary": "Read a run, optionally held until it ends. Only the principal that started the run is answered; anyone else gets 404.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "description": "The organisation's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "description": "The repository's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The run's identifier.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "wait",
+            "in": "query",
+            "required": false,
+            "description": "Seconds to hold the read until the run ends, at most 60; the run as it is when the time passes. Absent or 0 answers at once.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 60
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The run.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A name, id or `wait` is malformed or over 60.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer token was presented.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The repository does not exist, the caller may not see it, or the run does not exist or was started by another principal.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed; the body names no internals.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v1/orgs/{org}/repos/{repo}/runs/{id}/cancel": {
+      "post": {
+        "summary": "Cancel a queued or running run of the caller.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "description": "The organisation's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "description": "The repository's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The run's identifier.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The run, ended as cancelled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A name or id is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer token was presented.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The repository does not exist, the caller may not see it, or the run does not exist or was started by another principal.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The run has already ended.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed; the body names no internals.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/v1/orgs/{org}/repos/{repo}/runs/{id}/files": {
+      "get": {
+        "summary": "The files of the run's output tree under `prefix`, each with a download grant. A run has an output tree only once a runner has reported its result, which is not yet served, so the list is empty until then.",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "description": "The organisation's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "description": "The repository's name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The run's identifier.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "prefix",
+            "in": "query",
+            "required": false,
+            "description": "A directory, components separated by `/`; the whole tree where absent or empty.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The files.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunFiles"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A name, id or path is malformed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer token was presented.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The repository does not exist, the caller may not see it, or the run does not exist or was started by another principal.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed; the body names no internals.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/files/{path}": {
       "put": {
         "summary": "Stage a file, whose content is already uploaded, in the caller's draft; the draft is created on `main` as it stands if it does not exist.",
@@ -2292,14 +2800,21 @@
     },
     "/v1/runner/jobs/claim": {
       "post": {
-        "summary": "Claim the oldest queued job a registration of the caller matches.",
+        "summary": "Claim the oldest queued job a registration of the caller matches. A run's job goes only to a runner whose executor is `host`; a runner that states `gaon`, or none, is never handed one.",
         "responses": {
           "200": {
-            "description": "A job, now held by the caller.",
+            "description": "A job, now held by the caller: a check's job, or a run's job where the runner's executor is `host`.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Job"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Job"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RunJob"
+                    }
+                  ]
                 }
               }
             }
@@ -2342,7 +2857,27 @@
           {
             "bearer": []
           }
-        ]
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "executor": {
+                    "type": "string",
+                    "enum": [
+                      "host",
+                      "gaon"
+                    ],
+                    "description": "What the runner runs a command with. Absent means the runner is never handed a run's job. The claim does not hand out run jobs yet: #259 adds the claim of a run and its result."
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/runner/jobs/{id}/heartbeat": {
@@ -4224,6 +4759,439 @@
                 }
               }
             }
+          }
+        }
+      },
+      "StartRun": {
+        "type": "object",
+        "required": [
+          "command"
+        ],
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "What the shell runs."
+          },
+          "prefix": {
+            "type": "string",
+            "description": "The directory the files sent are limited to, components separated by `/`; the whole workspace tree where absent or empty."
+          },
+          "add": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Paths, under `prefix` where one is given, where the run's changes may add files. A path not under the prefix is refused with 400."
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Paths whose files, with the caches', make the run's output tree."
+          }
+        }
+      },
+      "Run": {
+        "type": "object",
+        "required": [
+          "id",
+          "draft",
+          "instance",
+          "version",
+          "command",
+          "prefix",
+          "state",
+          "lease_expires_at",
+          "deadline",
+          "result"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "draft": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The workspace instance the run was started in."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The workspace version the run was started at."
+          },
+          "command": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string",
+            "description": "Empty for the whole workspace tree."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "ended"
+            ]
+          },
+          "lease_expires_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "While running: when the runner's lease lapses, in seconds since 1970-01-01T00:00:00Z."
+          },
+          "deadline": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "While running: when the run times out, in seconds since 1970-01-01T00:00:00Z."
+          },
+          "result": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunResult"
+              }
+            ],
+            "description": "Null until the run ends."
+          }
+        }
+      },
+      "RunResult": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "exit_code",
+          "stdout",
+          "stderr",
+          "objects",
+          "output_tree",
+          "changes",
+          "refused",
+          "write_back"
+        ],
+        "description": "How a run ended. Until #259 serves a runner's report, only a cancelled run ends, with every field empty but the outcome and the write-back.",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "exited",
+              "timed_out",
+              "cancelled",
+              "executor_failed"
+            ],
+            "description": "`exited` where the command ran to its end, whatever its exit code."
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The command's exit code; 128 plus the signal where a signal ended it; null unless the outcome is `exited`."
+          },
+          "stdout": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunStream"
+              }
+            ],
+            "description": "Set by #259."
+          },
+          "stderr": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunStream"
+              }
+            ],
+            "description": "Set by #259."
+          },
+          "objects": {
+            "type": "object",
+            "required": [
+              "downloaded",
+              "from_cache"
+            ],
+            "properties": {
+              "downloaded": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Objects the runner fetched from the store. Set by #259."
+              },
+              "from_cache": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Objects the runner already held. Set by #259."
+              }
+            }
+          },
+          "output_tree": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Address"
+              }
+            ],
+            "description": "The address of the output tree. Set by #259."
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunChange"
+            },
+            "description": "What the command changed: each sent path whose content or kind differs from what it was sent as, or which is gone, and each path under `add` that exists, with its kind and address. Paths under a cache path are never changes. Set by #259."
+          },
+          "refused": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Sent or `add` paths that hold anything other than a regular file, symbolic links included, which the runner reads without following; they are not reported as changes. Set by #259."
+          },
+          "write_back": {
+            "$ref": "#/components/schemas/RunWriteBack"
+          }
+        }
+      },
+      "RunStream": {
+        "type": "object",
+        "required": [
+          "address",
+          "cut"
+        ],
+        "properties": {
+          "address": {
+            "$ref": "#/components/schemas/Address"
+          },
+          "cut": {
+            "type": "boolean",
+            "description": "Whether the stream was cut at the 64 MiB bound."
+          }
+        }
+      },
+      "RunChange": {
+        "type": "object",
+        "required": [
+          "path",
+          "kind",
+          "address"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "regular",
+              "executable",
+              "deleted"
+            ]
+          },
+          "address": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Address"
+              }
+            ],
+            "description": "Null where the file was deleted."
+          }
+        }
+      },
+      "RunWriteBack": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "reason",
+          "paths"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "written",
+              "not_written"
+            ],
+            "description": "Whether the changes were staged into the workspace. A run that exited with no changes is `written` with no paths: it writes nothing and conflicts with nothing, whatever happened to the workspace meanwhile."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              null,
+              "instance_closed",
+              "workspace_moved",
+              "write_denied",
+              "timed_out",
+              "cancelled",
+              "executor_failed"
+            ],
+            "description": "Why nothing was written: the instance was closed; the workspace moved, naming the paths in `paths`; the write was denied, naming the paths in `paths`; or the run timed out, was cancelled or failed in its executor, where nothing is written."
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "RunFile": {
+        "type": "object",
+        "required": [
+          "path",
+          "address",
+          "executable",
+          "download"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "address": {
+            "$ref": "#/components/schemas/Address"
+          },
+          "executable": {
+            "type": "boolean"
+          },
+          "download": {
+            "$ref": "#/components/schemas/TransferGrant"
+          }
+        }
+      },
+      "RunFiles": {
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunFile"
+            }
+          }
+        }
+      },
+      "RunJob": {
+        "type": "object",
+        "required": [
+          "id",
+          "organisation",
+          "repository_id",
+          "draft",
+          "command",
+          "timeout",
+          "add",
+          "outputs",
+          "env",
+          "heartbeat_interval",
+          "files",
+          "caches"
+        ],
+        "description": "The job of a run, as a runner whose executor is `host` claims it. A run job is claimed only once #259 lands.",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The run's identifier."
+          },
+          "organisation": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "draft": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "timeout": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Seconds."
+          },
+          "add": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "`CODEHUB_ORGANISATION`, `CODEHUB_REPOSITORY` and `CODEHUB_DRAFT`, and `CODEHUB_CHANGESET` set to the workspace's base where it has one and unset where it has none; `CODEHUB_CHECK` and `CODEHUB_FOLDER` are unset."
+          },
+          "heartbeat_interval": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "How often the runner heartbeats, in seconds."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobFile"
+            },
+            "description": "The workspace files sent with the run, each with a download grant."
+          },
+          "caches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunCache"
+            },
+            "description": "Each cache path with the files of its cache ref's tree. A freshly seeded cache is the empty tree and has no file, so the path is named: the runner excludes it from the changes and puts it in the output tree."
+          }
+        }
+      },
+      "RunCache": {
+        "type": "object",
+        "required": [
+          "path",
+          "files"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The cache path, relative to the repository root."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobFile"
+            },
+            "description": "The files of the cache ref's tree, each at its path under the cache path, with a download grant."
           }
         }
       }

@@ -66,6 +66,7 @@ pub fn state(stores: &MemoryDeployment<Taught>, administration: Administration) 
         runners: Arc::new(assembly.runners()),
         jobs: Arc::new(assembly.jobs()),
         checks: Arc::new(assembly.checks()),
+        runs: Arc::new(assembly.runs()),
         settings: settings(),
         readiness: Arc::new(()),
     }

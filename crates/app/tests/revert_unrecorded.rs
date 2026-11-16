@@ -9,10 +9,13 @@ use adapter_memory::MemoryJobQueue;
 use app::domain::address::Address;
 use app::domain::changeset::Changeset;
 use app::domain::check::CheckKey;
+use app::domain::draft::Instance;
 use app::domain::job::{Heartbeat, Job, JobId, JobResult, NewJob, Outcome, Produced, Resolution};
-use app::domain::name::OrganisationName;
+use app::domain::name::{DraftName, OrganisationName};
+use app::domain::principal::Principal;
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
+use app::domain::run::{NewRun, Run, RunId};
 use app::domain::runner::{Registration, RegistrationId};
 use app::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
 use app::port::driven::check_definitions::CheckDefinitions;
@@ -161,6 +164,30 @@ impl JobQueue for RecordRefusingQueue {
         changeset: Address,
     ) -> Result<Vec<Job>, JobQueueError> {
         self.0.of_changeset(repository, changeset).await
+    }
+
+    async fn queue_run(&self, run: NewRun) -> Result<Run, JobQueueError> {
+        self.0.queue_run(run).await
+    }
+
+    async fn run(&self, run: RunId) -> Result<Run, JobQueueError> {
+        self.0.run(run).await
+    }
+
+    async fn cancel_run(&self, run: RunId) -> Result<Run, JobQueueError> {
+        self.0.cancel_run(run).await
+    }
+
+    async fn latest_run(
+        &self,
+        repository: RepositoryId,
+        principal: &Principal,
+        draft: &DraftName,
+        instance: Instance,
+    ) -> Result<Option<Run>, JobQueueError> {
+        self.0
+            .latest_run(repository, principal, draft, instance)
+            .await
     }
 
     async fn expire(&self, now: i64) -> Result<Vec<Job>, JobQueueError> {

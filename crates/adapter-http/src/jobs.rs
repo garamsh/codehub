@@ -29,7 +29,7 @@ pub struct CheckBody {
 }
 
 /// `prefix` as `/`-separated components, empty for the whole repository.
-fn text(prefix: &Prefix) -> String {
+pub(crate) fn text(prefix: &Prefix) -> String {
     let parts: Vec<_> = prefix
         .components()
         .iter()

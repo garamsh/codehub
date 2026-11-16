@@ -6,6 +6,7 @@ use app::domain::address::Address;
 use app::domain::check::{CheckDefinition, Command, Need, Pattern, Timeout};
 use app::domain::name::{Label, OrganisationName};
 use app::domain::principal::Caller;
+use app::domain::run::RunSettings;
 use app::port::driven::check_definitions::{CheckDefinitions, CheckFileError};
 use app::port::driving::runners::Runners;
 use app::port::driving::source_control::{SourceControl, SourceControlError};
@@ -26,6 +27,10 @@ pub trait RunnerDeployment: Deployment {
     /// definitions parse the file format itself ignores `outcome`, so `text` is always in that
     /// format and `outcome` is what it reads as.
     fn teach(&self, text: &str, outcome: Result<Vec<CheckDefinition>, CheckFileError>);
+
+    /// Makes the run settings file read the content `text` as `outcome`, as
+    /// [`RunnerDeployment::teach`] does for a check file.
+    fn teach_run(&self, text: &str, outcome: Result<RunSettings, CheckFileError>);
 
     /// The runners port over this deployment's adapters.
     fn runners(&self) -> RunnersService {

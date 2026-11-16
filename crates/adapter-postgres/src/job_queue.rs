@@ -1,17 +1,21 @@
 use app::domain::address::Address;
 use app::domain::check::CheckKey;
+use app::domain::draft::Instance;
 use app::domain::job::{
     Heartbeat, Job, JobId, JobResult, JobState, NewJob, Resolution, StopReason,
 };
-use app::domain::name::OrganisationName;
+use app::domain::name::{DraftName, OrganisationName};
+use app::domain::principal::Principal;
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
+use app::domain::run::{NewRun, Run, RunId};
 use app::domain::runner::{Registration, RegistrationId};
 use app::port::driven::job_queue::{JobQueue, JobQueueError};
 use sqlx::{FromRow, PgConnection, PgPool};
 
 use crate::conversion;
 use crate::database::Database;
+use crate::runs;
 
 /// The columns of a job, in the order [`JobRow`] reads them.
 macro_rules! job_columns {
@@ -523,6 +527,28 @@ impl JobQueue for PostgresJobQueue {
         .await
         .map_err(backend)?;
         jobs(rows)
+    }
+
+    async fn queue_run(&self, run: NewRun) -> Result<Run, JobQueueError> {
+        runs::queue(&self.pool, run).await
+    }
+
+    async fn run(&self, run: RunId) -> Result<Run, JobQueueError> {
+        runs::find(&self.pool, run).await
+    }
+
+    async fn cancel_run(&self, run: RunId) -> Result<Run, JobQueueError> {
+        runs::cancel(&self.pool, run).await
+    }
+
+    async fn latest_run(
+        &self,
+        repository: RepositoryId,
+        principal: &Principal,
+        draft: &DraftName,
+        instance: Instance,
+    ) -> Result<Option<Run>, JobQueueError> {
+        runs::latest(&self.pool, repository, principal, draft, instance).await
     }
 
     async fn expire(&self, now: i64) -> Result<Vec<Job>, JobQueueError> {

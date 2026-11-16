@@ -76,6 +76,23 @@ pub async fn seed_workspace_cache_ref(
         Some(main) => main.tree,
         None => empty_output_tree(),
     };
+    create_workspace_cache_ref(refs, repository, instance, path, seed).await
+}
+
+/// Creates the workspace cache ref of `path` of `instance` in `repository` at `seed`, for a
+/// caller that has read the ref it seeds from. Where the ref is created between the read and the
+/// create, returns the tree that was created.
+///
+/// # Errors
+///
+/// The failure of the cache refs.
+pub async fn create_workspace_cache_ref(
+    refs: &dyn CacheRefs,
+    repository: RepositoryId,
+    instance: Instance,
+    path: &Path,
+    seed: Address,
+) -> Result<Address, CacheRefsError> {
     if refs
         .create_workspace_cache_ref(repository, instance, path, seed)
         .await?

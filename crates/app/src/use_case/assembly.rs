@@ -26,6 +26,7 @@ use crate::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
 use crate::use_case::relay::Delivery;
 use crate::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
 use crate::use_case::runners::{RunnersAdapters, RunnersService};
+use crate::use_case::runs::{RunsAdapters, RunsService};
 use crate::use_case::source_control::{SourceControlAdapters, SourceControlService};
 
 /// The driving ports as the application ships them, over the driven ports it is given: source
@@ -178,5 +179,20 @@ impl Assembly {
             },
             self.post_land_checks(),
         )
+    }
+
+    /// The runs port.
+    pub fn runs(&self) -> RunsService {
+        RunsService::new(RunsAdapters {
+            queue: Arc::clone(&self.queue),
+            directory: Arc::clone(&self.directory),
+            authorisation: Arc::clone(&self.authorisation),
+            drafts: Arc::clone(&self.drafts),
+            derived: Arc::clone(&self.derived),
+            objects: Arc::clone(&self.objects),
+            log: Arc::clone(&self.log),
+            cache_refs: Arc::clone(&self.cache_refs),
+            definitions: Arc::clone(&self.definitions),
+        })
     }
 }

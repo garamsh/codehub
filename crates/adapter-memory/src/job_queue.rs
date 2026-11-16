@@ -3,12 +3,15 @@ use std::sync::Mutex;
 
 use app::domain::address::Address;
 use app::domain::check::CheckKey;
+use app::domain::draft::Instance;
 use app::domain::job::{
     Heartbeat, Job, JobId, JobResult, JobState, NewJob, Resolution, StopReason,
 };
-use app::domain::name::OrganisationName;
+use app::domain::name::{DraftName, OrganisationName};
+use app::domain::principal::Principal;
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
+use app::domain::run::{NewRun, Run, RunId, RunState};
 use app::domain::runner::{Registration, RegistrationId};
 use app::port::driven::job_queue::{JobQueue, JobQueueError};
 
@@ -18,6 +21,7 @@ use crate::lock;
 struct Jobs {
     issued: u64,
     held: BTreeMap<JobId, Job>,
+    runs: BTreeMap<RunId, Run>,
     reserved: BTreeSet<(RepositoryId, Address)>,
 }
 
@@ -250,6 +254,60 @@ impl JobQueue for MemoryJobQueue {
             .filter(|job| job.repository == repository && job.changeset == changeset)
             .cloned()
             .collect())
+    }
+
+    async fn queue_run(&self, run: NewRun) -> Result<Run, JobQueueError> {
+        let mut held = lock(&self.jobs);
+        held.issued = held.issued.saturating_add(1);
+        let run = Run {
+            id: RunId::new(held.issued),
+            state: RunState::Queued,
+            request: run,
+        };
+        held.runs.insert(run.id, run.clone());
+        Ok(run)
+    }
+
+    async fn run(&self, run: RunId) -> Result<Run, JobQueueError> {
+        lock(&self.jobs)
+            .runs
+            .get(&run)
+            .cloned()
+            .ok_or_else(|| JobQueueError::NotFound(JobId::new(run.value())))
+    }
+
+    async fn cancel_run(&self, run: RunId) -> Result<Run, JobQueueError> {
+        let mut held = lock(&self.jobs);
+        let found = held
+            .runs
+            .get_mut(&run)
+            .ok_or_else(|| JobQueueError::NotFound(JobId::new(run.value())))?;
+        if found.state.ended() {
+            return Err(JobQueueError::Finished(JobId::new(run.value())));
+        }
+        found.state = RunState::Cancelled;
+        Ok(found.clone())
+    }
+
+    async fn latest_run(
+        &self,
+        repository: RepositoryId,
+        principal: &Principal,
+        draft: &DraftName,
+        instance: Instance,
+    ) -> Result<Option<Run>, JobQueueError> {
+        Ok(lock(&self.jobs)
+            .runs
+            .values()
+            .rev()
+            .find(|run| {
+                run.state.ended()
+                    && run.request.repository == repository
+                    && run.request.principal == *principal
+                    && run.request.draft == *draft
+                    && run.request.instance == instance
+            })
+            .cloned())
     }
 
     async fn expire(&self, now: i64) -> Result<Vec<Job>, JobQueueError> {
