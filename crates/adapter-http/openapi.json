@@ -1597,7 +1597,7 @@
     },
     "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/runs/latest": {
       "get": {
-        "summary": "The latest run of the caller's workspace that has ended.",
+        "summary": "The run of the caller's workspace with the highest identifier among those that have ended.",
         "parameters": [
           {
             "name": "org",
@@ -4955,14 +4955,14 @@
             "items": {
               "$ref": "#/components/schemas/RunChange"
             },
-            "description": "What the command changed under `add`. Set by #259."
+            "description": "What the command changed: each sent path whose content or kind differs from what it was sent as, or which is gone, and each path under `add` that exists, with its kind and address. Paths under a cache path are never changes. Set by #259."
           },
           "refused": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Changed paths outside `add`, which were not taken. Set by #259."
+            "description": "Sent or `add` paths that hold anything other than a regular file, symbolic links included, which the runner reads without following; they are not reported as changes. Set by #259."
           },
           "write_back": {
             "$ref": "#/components/schemas/RunWriteBack"
@@ -5031,7 +5031,7 @@
               "written",
               "not_written"
             ],
-            "description": "Whether the changes were staged into the workspace."
+            "description": "Whether the changes were staged into the workspace. A run that exited with no changes is `written` with no paths: it writes nothing and conflicts with nothing, whatever happened to the workspace meanwhile."
           },
           "reason": {
             "type": [
@@ -5152,7 +5152,7 @@
             "additionalProperties": {
               "type": "string"
             },
-            "description": "`CODEHUB_ORGANISATION`, `CODEHUB_REPOSITORY`, `CODEHUB_DRAFT` and `CODEHUB_CHANGESET` (the workspace's base); `CODEHUB_CHECK` and `CODEHUB_FOLDER` are unset."
+            "description": "`CODEHUB_ORGANISATION`, `CODEHUB_REPOSITORY` and `CODEHUB_DRAFT`, and `CODEHUB_CHANGESET` set to the workspace's base where it has one and unset where it has none; `CODEHUB_CHECK` and `CODEHUB_FOLDER` are unset."
           },
           "heartbeat_interval": {
             "type": "integer",
@@ -5169,9 +5169,29 @@
           "caches": {
             "type": "array",
             "items": {
+              "$ref": "#/components/schemas/RunCache"
+            },
+            "description": "Each cache path with the files of its cache ref's tree. A freshly seeded cache is the empty tree and has no file, so the path is named: the runner excludes it from the changes and puts it in the output tree."
+          }
+        }
+      },
+      "RunCache": {
+        "type": "object",
+        "required": [
+          "path",
+          "files"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The cache path, relative to the repository root."
+          },
+          "files": {
+            "type": "array",
+            "items": {
               "$ref": "#/components/schemas/JobFile"
             },
-            "description": "The files of each cache ref's tree at the cache paths."
+            "description": "The files of the cache ref's tree, each at its path under the cache path, with a download grant."
           }
         }
       }
