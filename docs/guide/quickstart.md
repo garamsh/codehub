@@ -505,27 +505,30 @@ CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
 
 ## Push an image to the registry
 
-`codehub` signs the tokens an image registry accepts, so a person pushes and pulls with the grants `image_pull` and `image_push` that `ch member add --image-pull --image-push` gives. The registry is Distribution v3 (ADR 0053, `docs/architecture/registry.md`); the check environment's runs from the `registry` profile of `compose.yaml`. `make e2e-registry` writes throwaway keys, starts the registry beside the running services without recreating them, runs the end-to-end test against it with a real OCI client, and removes the registry and the keys.
+`codehub` signs the tokens an image registry accepts, so a person pushes and pulls with the grants `image_pull` and `image_push` that `ch member add --image-pull --image-push` gives. The registry is Distribution v3 (ADR 0053, `docs/architecture/registry.md`); the check environment's runs from the `registry` profile of `compose.yaml`. `make e2e` writes throwaway keys, starts the registry beside the running services without recreating them, runs the end-to-end test against it with a real OCI client, and removes the registry and the keys; `make e2e TEST_ARGS=registry_` runs that test alone.
 
 The registry's client sends a person's codehub token as the Basic password to `GET /v1/registry/token` and receives a registry token for the repositories it holds a grant on; the registry's repository `acme/app/web` is the image `web` of the codehub repository `acme/app`.
 
-The output below was produced on 2026-11-16 from the commit `e8292edf403d4c127dbb226f9dd7933bd1e227a5` plus this file's change, with the check services running. Nothing is pushed by hand: the test is the client.
+The output below was produced on 2026-11-16 from the commit `1947836dd91581f6454bdf5a82bb360b3b42aaea` plus this file's change, with the check services running. Nothing is pushed by hand: the test is the client. Long server messages are shortened to `...`.
 
 ```console
-$ make e2e-registry
+$ make e2e TEST_ARGS="registry_ --no-capture"
 step 1: push Ok(()); pull Ok(25)
 step 2: carol's push Err(ServerError { code: 401, url: "http://127.0.0.1:18083/v2/acme/app/web/blobs/uploads/", message: "..." })
-step 3: bob's pull of acme/pushonly Err(UnauthorizedError { url: "http://127.0.0.1:18083/v2/acme/pushonly/web/manifests/latest" }); his token grants [{"actions":["push"],"name":"acme/pushonly/web","type":"repository"}]
+step 3: carol's pull of acme/pushonly Err(UnauthorizedError { url: "http://127.0.0.1:18083/v2/acme/pushonly/web/manifests/latest" }); her push Err(ServerError { code: 401, url: "http://127.0.0.1:18083/v2/acme/pushonly/web/blobs/uploads/", message: "..." })
 step 4: no token 401 Unauthorized with Bearer realm="http://127.0.0.1:18084/v1/registry/token",service="codehub-registry",scope="repository:acme/app/web:pull"
-step 5: unknown repository grants [{"actions":[],"name":"acme/nothing/web","type":"repository"}]; denied scope grants [{"actions":[],"name":"acme/pushonly/web","type":"repository"}]
+step 5: unknown repository grants [{"actions":[],"name":"acme/nothing/web","type":"repository"}]; denied scope grants [{"actions":[],"name":"acme/app/web","type":"repository"}]
 step 5: bob's push to an unknown repository Err(ServerError { code: 401, url: "http://127.0.0.1:18083/v2/acme/nothing/web/blobs/uploads/", message: "..." })
+step 6: codehub's token 200 OK; the same claims signed by a stranger 401 Unauthorized
 test registry_accepts_what_codehub_grants_and_refuses_the_rest ... ok
+     Summary [  49.854s] 1 test run: 1 passed, 42 skipped
 ```
 
 What each step shows:
 
 - Step 1: a person holding both grants pushes a small image and pulls it back.
 - Step 2: a person holding `image_pull` and not `image_push` is refused the push (401 from the registry) and pulls the same image.
-- Step 3: a person holding `image_push` and not `image_pull` is refused the pull, and the token for them grants `push`. Distribution asks for pull as well as push of every push, so that grant alone cannot complete one.
+- Step 3: a person holding `image_push` and not `image_pull` on `acme/pushonly` is refused the pull and the push, though the token grants `push`: Distribution asks for pull as well as push of every push. The controls: a holder of both pushes there and pulls it back.
 - Step 4: a request with no token is answered 401 with a Bearer challenge naming the token endpoint.
 - Step 5: a repository codehub does not hold and a repository the person has no grant on both get a token with no action, so the answer does not tell them apart.
+- Step 6: the registry accepts the token as codehub signed it and refuses the same claims signed by a key its JWKS does not hold.
