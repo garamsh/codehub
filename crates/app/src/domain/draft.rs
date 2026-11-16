@@ -45,6 +45,12 @@ impl Instance {
     }
 }
 
+impl fmt::Display for Instance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// A staged draft: its instance and version, the changeset it was based on, its description and
 /// the changes staged so far.
 #[derive(Clone, PartialEq, Eq, Debug)]
