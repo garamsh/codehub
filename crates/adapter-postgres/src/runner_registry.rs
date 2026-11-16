@@ -6,11 +6,13 @@ use sqlx::PgPool;
 
 use crate::conversion;
 use crate::database::Database;
+use crate::statements::Statements;
 
 /// The runner registry in PostgreSQL; it numbers registrations from 1 in registration order,
 /// leaving gaps where a registration was refused.
 pub struct PostgresRunnerRegistry {
     pool: PgPool,
+    statements: Statements,
 }
 
 impl PostgresRunnerRegistry {
@@ -19,6 +21,7 @@ impl PostgresRunnerRegistry {
     pub fn new(database: &Database) -> Self {
         Self {
             pool: database.pool.clone(),
+            statements: database.statements,
         }
     }
 }
@@ -56,7 +59,7 @@ impl RunnerRegistry for PostgresRunnerRegistry {
             .map(conversion::repository_column)
             .transpose()
             .map_err(backend)?;
-        let id = sqlx::query_scalar::<_, i64>(
+        let id = self.statements.query_scalar::<i64>(
             "insert into runner_registrations (organisation, repository, issuer, subject, labels) \
              values ($1, $2, $3, $4, $5) returning id",
         )
@@ -76,14 +79,15 @@ impl RunnerRegistry for PostgresRunnerRegistry {
         organisation: &OrganisationName,
         id: RegistrationId,
     ) -> Result<(), RunnerRegistryError> {
-        let removed =
-            sqlx::query("delete from runner_registrations where id = $1 and organisation = $2")
-                .bind(conversion::number_column(id.value(), "registration").map_err(backend)?)
-                .bind(organisation.as_str())
-                .execute(&self.pool)
-                .await
-                .map_err(backend)?
-                .rows_affected();
+        let removed = self
+            .statements
+            .query("delete from runner_registrations where id = $1 and organisation = $2")
+            .bind(conversion::number_column(id.value(), "registration").map_err(backend)?)
+            .bind(organisation.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(backend)?
+            .rows_affected();
         if removed == 0 {
             return Err(RunnerRegistryError::NotFound(id));
         }
@@ -94,34 +98,36 @@ impl RunnerRegistry for PostgresRunnerRegistry {
         &self,
         organisation: &OrganisationName,
     ) -> Result<Vec<Registration>, RunnerRegistryError> {
-        sqlx::query_as::<_, Row>(
-            "select id, organisation, repository, issuer, subject, labels \
+        self.statements
+            .query_as::<Row>(
+                "select id, organisation, repository, issuer, subject, labels \
              from runner_registrations where organisation = $1 order by id",
-        )
-        .bind(organisation.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(backend)?
-        .into_iter()
-        .map(registration)
-        .collect()
+            )
+            .bind(organisation.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend)?
+            .into_iter()
+            .map(registration)
+            .collect()
     }
 
     async fn of_principal(
         &self,
         principal: &Principal,
     ) -> Result<Vec<Registration>, RunnerRegistryError> {
-        sqlx::query_as::<_, Row>(
-            "select id, organisation, repository, issuer, subject, labels \
+        self.statements
+            .query_as::<Row>(
+                "select id, organisation, repository, issuer, subject, labels \
              from runner_registrations where issuer = $1 and subject = $2 order by id",
-        )
-        .bind(principal.issuer())
-        .bind(principal.subject())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(backend)?
-        .into_iter()
-        .map(registration)
-        .collect()
+            )
+            .bind(principal.issuer())
+            .bind(principal.subject())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend)?
+            .into_iter()
+            .map(registration)
+            .collect()
     }
 }

@@ -5,12 +5,14 @@ use sqlx::PgPool;
 
 use crate::conversion;
 use crate::database::Database;
+use crate::statements::Statements;
 
 /// The repository directory in PostgreSQL; it numbers repositories from 1 in creation order,
 /// leaving gaps where a creation lost to an existing name. It writes each creation as an outbox
 /// entry in the transaction that inserts the repository.
 pub struct PostgresRepositoryDirectory {
     pool: PgPool,
+    statements: Statements,
 }
 
 impl PostgresRepositoryDirectory {
@@ -19,6 +21,7 @@ impl PostgresRepositoryDirectory {
     pub fn new(database: &Database) -> Self {
         Self {
             pool: database.pool.clone(),
+            statements: database.statements,
         }
     }
 }
@@ -38,14 +41,14 @@ fn identifier(value: i64) -> Result<RepositoryId, DirectoryError> {
 #[async_trait::async_trait]
 impl RepositoryDirectory for PostgresRepositoryDirectory {
     async fn create_organisation(&self, name: &OrganisationName) -> Result<(), DirectoryError> {
-        let created = sqlx::query(
-            "insert into organisations (name) values ($1) on conflict (name) do nothing",
-        )
-        .bind(name.as_str())
-        .execute(&self.pool)
-        .await
-        .map_err(backend)?
-        .rows_affected();
+        let created = self
+            .statements
+            .query("insert into organisations (name) values ($1) on conflict (name) do nothing")
+            .bind(name.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(backend)?
+            .rows_affected();
         if created == 0 {
             return Err(DirectoryError::OrganisationExists(name.clone()));
         }
@@ -58,41 +61,44 @@ impl RepositoryDirectory for PostgresRepositoryDirectory {
         repository: &RepositoryName,
     ) -> Result<RepositoryId, DirectoryError> {
         let mut transaction = self.pool.begin().await.map_err(backend)?;
-        let inserted = sqlx::query_as::<_, (i64, i64)>(
-            "insert into repositories (organisation, name) values ($1, $2) \
+        let inserted = self
+            .statements
+            .query_as::<(i64, i64)>(
+                "insert into repositories (organisation, name) values ($1, $2) \
              on conflict (organisation, name) do nothing returning id, change_sequence",
-        )
-        .bind(organisation.as_str())
-        .bind(repository.as_str())
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(|error| {
-            let no_organisation = error
-                .as_database_error()
-                .is_some_and(|error| error.is_foreign_key_violation());
-            if no_organisation {
-                DirectoryError::OrganisationNotFound(organisation.clone())
-            } else {
-                backend(error)
-            }
-        })?;
+            )
+            .bind(organisation.as_str())
+            .bind(repository.as_str())
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|error| {
+                let no_organisation = error
+                    .as_database_error()
+                    .is_some_and(|error| error.is_foreign_key_violation());
+                if no_organisation {
+                    DirectoryError::OrganisationNotFound(organisation.clone())
+                } else {
+                    backend(error)
+                }
+            })?;
         let Some((id, sequence)) = inserted else {
             return Err(DirectoryError::RepositoryExists(
                 organisation.clone(),
                 repository.clone(),
             ));
         };
-        sqlx::query(
-            "insert into directory_outbox (repository, organisation, name, kind, sequence) \
+        self.statements
+            .query(
+                "insert into directory_outbox (repository, organisation, name, kind, sequence) \
              values ($1, $2, $3, 'created', $4)",
-        )
-        .bind(id)
-        .bind(organisation.as_str())
-        .bind(repository.as_str())
-        .bind(sequence)
-        .execute(&mut *transaction)
-        .await
-        .map_err(backend)?;
+            )
+            .bind(id)
+            .bind(organisation.as_str())
+            .bind(repository.as_str())
+            .bind(sequence)
+            .execute(&mut *transaction)
+            .await
+            .map_err(backend)?;
         transaction.commit().await.map_err(backend)?;
         identifier(id)
     }
@@ -102,14 +108,16 @@ impl RepositoryDirectory for PostgresRepositoryDirectory {
         organisation: &OrganisationName,
         repository: &RepositoryName,
     ) -> Result<RepositoryId, DirectoryError> {
-        let found = sqlx::query_scalar::<_, i64>(
-            "select id from repositories where organisation = $1 and name = $2",
-        )
-        .bind(organisation.as_str())
-        .bind(repository.as_str())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(backend)?;
+        let found = self
+            .statements
+            .query_scalar::<i64>(
+                "select id from repositories where organisation = $1 and name = $2",
+            )
+            .bind(organisation.as_str())
+            .bind(repository.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?;
         match found {
             Some(id) => identifier(id),
             None => Err(DirectoryError::RepositoryNotFound(
@@ -127,13 +135,15 @@ impl RepositoryDirectory for PostgresRepositoryDirectory {
         let Ok(id) = conversion::repository_column(repository) else {
             return Ok(None);
         };
-        let found = sqlx::query_as::<_, (String, String)>(
-            "select organisation, name from repositories where id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(backend)?;
+        let found = self
+            .statements
+            .query_as::<(String, String)>(
+                "select organisation, name from repositories where id = $1",
+            )
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?;
         found
             .map(|(organisation, name)| {
                 Ok((

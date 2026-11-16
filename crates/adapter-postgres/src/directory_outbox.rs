@@ -5,6 +5,7 @@ use sqlx::PgPool;
 
 use crate::conversion;
 use crate::database::Database;
+use crate::statements::Statements;
 
 /// Serialises claims, so that two claimers never read one repository as claimable at once. It is
 /// held for the claim only, never while the entries are delivered.
@@ -13,6 +14,7 @@ const CLAIM_LOCK: i64 = 0x0D17_0001;
 /// The directory outbox over the table [`crate::PostgresRepositoryDirectory`] writes.
 pub struct PostgresDirectoryOutbox {
     pool: PgPool,
+    statements: Statements,
 }
 
 impl PostgresDirectoryOutbox {
@@ -21,6 +23,7 @@ impl PostgresDirectoryOutbox {
     pub fn new(database: &Database) -> Self {
         Self {
             pool: database.pool.clone(),
+            statements: database.statements,
         }
     }
 }
@@ -66,13 +69,16 @@ impl DirectoryOutbox for PostgresDirectoryOutbox {
             .transpose()
             .map_err(backend)?;
         let mut transaction = self.pool.begin().await.map_err(backend)?;
-        sqlx::query("select pg_advisory_xact_lock($1)")
+        self.statements
+            .query("select pg_advisory_xact_lock($1)")
             .bind(CLAIM_LOCK)
             .execute(&mut *transaction)
             .await
             .map_err(backend)?;
-        let rows = sqlx::query_as::<_, Row>(
-            "with target as ( \
+        let rows = self
+            .statements
+            .query_as::<Row>(
+                "with target as ( \
                  select repository from directory_outbox \
                  where $1::bigint is null or repository = $1 \
                  group by repository \
@@ -81,13 +87,13 @@ impl DirectoryOutbox for PostgresDirectoryOutbox {
              update directory_outbox set lease_expires_at = $2 + $3 \
              where repository in (select repository from target) \
              returning repository, organisation, name, kind, sequence",
-        )
-        .bind(repository)
-        .bind(now)
-        .bind(lease)
-        .fetch_all(&mut *transaction)
-        .await
-        .map_err(backend)?;
+            )
+            .bind(repository)
+            .bind(now)
+            .bind(lease)
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(backend)?;
         transaction.commit().await.map_err(backend)?;
         let mut changes = rows
             .into_iter()
@@ -103,7 +109,8 @@ impl DirectoryOutbox for PostgresDirectoryOutbox {
         until: i64,
     ) -> Result<(), DirectoryOutboxError> {
         let repository = conversion::repository_column(repository).map_err(backend)?;
-        sqlx::query("update directory_outbox set lease_expires_at = $2 where repository = $1")
+        self.statements
+            .query("update directory_outbox set lease_expires_at = $2 where repository = $1")
             .bind(repository)
             .bind(until)
             .execute(&self.pool)
@@ -119,7 +126,8 @@ impl DirectoryOutbox for PostgresDirectoryOutbox {
     ) -> Result<(), DirectoryOutboxError> {
         let repository = conversion::repository_column(repository).map_err(backend)?;
         let sequence = conversion::number_column(sequence, "sequence").map_err(backend)?;
-        sqlx::query("delete from directory_outbox where repository = $1 and sequence = $2")
+        self.statements
+            .query("delete from directory_outbox where repository = $1 and sequence = $2")
             .bind(repository)
             .bind(sequence)
             .execute(&self.pool)

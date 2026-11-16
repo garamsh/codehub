@@ -2,10 +2,12 @@ use app::port::driven::backlog::{Backlog, BacklogError, BacklogReading, QueueBac
 use sqlx::PgPool;
 
 use crate::database::Database;
+use crate::statements::Statements;
 
 /// The backlog read from the queues of jobs and runs and from the directory outbox.
 pub struct PostgresBacklog {
     pool: PgPool,
+    statements: Statements,
 }
 
 impl PostgresBacklog {
@@ -14,6 +16,7 @@ impl PostgresBacklog {
     pub fn new(database: &Database) -> Self {
         Self {
             pool: database.pool.clone(),
+            statements: database.statements,
         }
     }
 }
@@ -28,10 +31,12 @@ type Row = (String, i64, f64);
 /// leaving it changes a queued row.
 async fn queue(
     pool: &PgPool,
+    statements: Statements,
     kind: &'static str,
     sql: &'static str,
 ) -> Result<Vec<QueueBacklog>, BacklogError> {
-    let rows = sqlx::query_as::<_, Row>(sql)
+    let rows = statements
+        .query_as::<Row>(sql)
         .fetch_all(pool)
         .await
         .map_err(backend)?;
@@ -52,6 +57,7 @@ impl Backlog for PostgresBacklog {
     async fn read(&self) -> Result<BacklogReading, BacklogError> {
         let mut queues = queue(
             &self.pool,
+            self.statements,
             "job",
             "select array_to_string(check_labels, ','), count(*), \
                     coalesce(extract(epoch from now() - min(updated_at)), 0)::float8 \
@@ -61,6 +67,7 @@ impl Backlog for PostgresBacklog {
         queues.extend(
             queue(
                 &self.pool,
+                self.statements,
                 "run",
                 "select array_to_string(labels, ','), count(*), \
                         coalesce(extract(epoch from now() - min(updated_at)), 0)::float8 \
@@ -68,7 +75,9 @@ impl Backlog for PostgresBacklog {
             )
             .await?,
         );
-        let pending = sqlx::query_scalar::<_, i64>("select count(*) from directory_outbox")
+        let pending = self
+            .statements
+            .query_scalar::<i64>("select count(*) from directory_outbox")
             .fetch_one(&self.pool)
             .await
             .map_err(backend)?;

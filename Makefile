@@ -5,7 +5,7 @@ export
 # Extra arguments for cargo nextest run in `test` and `e2e`: a filter, for instance.
 TEST_ARGS ?=
 
-.PHONY: lint format test e2e e2e-garam e2e-gaon loadtest loadtest-smoke build images ci mutants services services-down
+.PHONY: lint format test e2e e2e-garam test-pg-modes e2e-gaon loadtest loadtest-smoke build images ci mutants services services-down
 
 lint:
 	CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets --locked
@@ -33,7 +33,7 @@ e2e: build services
 	trap 'docker compose --env-file dev/test.env --profile registry rm --stop --force --volumes registry registry-bucket; rm -rf "$$CODEHUB_REGISTRY_E2E_DIR"' EXIT INT TERM; \
 	rm -rf "$$CODEHUB_REGISTRY_E2E_DIR" && mkdir -p "$$CODEHUB_REGISTRY_E2E_DIR" && cargo run --locked -p e2e --example garam_keys -- "$$CODEHUB_REGISTRY_E2E_DIR" && \
 	docker compose --env-file dev/test.env --profile registry up --detach --wait --wait-timeout 90 --no-recreate registry && \
-	cargo nextest run -p e2e --locked --no-tests=fail -E 'not test(garam_)' $(TEST_ARGS)
+	cargo nextest run -p e2e --locked --no-tests=fail -E 'not test(garam_) and not test(pg_modes_)' $(TEST_ARGS)
 
 # The e2e tests whose names contain garam_ run against garam's published images, the garam profile
 # of compose.yaml, which the garam-e2e workflow alone may pull, so `e2e` skips them and this target
@@ -52,6 +52,18 @@ e2e-garam: services
 	rm -rf "$$CODEHUB_GARAM_E2E_DIR" && mkdir -p "$$CODEHUB_GARAM_E2E_DIR" && cargo run --locked -p e2e --example garam_keys -- "$$CODEHUB_GARAM_E2E_DIR" && \
 	docker compose --env-file dev/test.env -p $(CODEHUB_GARAM_E2E_PROJECT) --profile garam up --detach --wait --wait-timeout 180 gateway && \
 	cargo nextest run -p e2e --locked --no-tests=fail --test garam
+
+# The tests whose names begin pg_modes_ run against the profile pg-modes of compose.yaml (ADR 0054):
+# a primary, a standby and PgBouncer, as a project of its own, brought up with `up --wait`, torn
+# down with its volumes at every exit, so the check services stay up. The failover test stops the
+# primary, so it runs after the others, which share it.
+test-pg-modes: export CODEHUB_PG_MODES_COMPOSE := $(CURDIR)/compose.yaml
+test-pg-modes: export CODEHUB_PG_MODES_ENV := $(CURDIR)/dev/test.env
+test-pg-modes: build services
+	trap 'docker compose --env-file dev/test.env -p $(CODEHUB_PG_MODES_PROJECT) --profile pg-modes down --volumes --remove-orphans' EXIT INT TERM; \
+	docker compose --env-file dev/test.env -p $(CODEHUB_PG_MODES_PROJECT) --profile pg-modes up --detach --wait --wait-timeout 180 pg-standby pgbouncer && \
+	cargo nextest run -p e2e --locked --no-tests=fail --test pg_modes -E 'not test(pg_modes_failover)' && \
+	cargo nextest run -p e2e --locked --no-tests=fail --test pg_modes -E 'test(pg_modes_failover)'
 
 # The live tests of the gaon driver (crates/codehub-runner/tests/gaon_live.rs) against a gaon-apiserver
 # built from the commit pinned in dev/gaon/env.sh and run with etcd under RBAC: it builds the server
@@ -104,7 +116,7 @@ images:
 ci:
 	$(MAKE) -j2 services ci-compile
 	$(MAKE) helm-check
-	$(MAKE) test e2e loadtest-smoke
+	$(MAKE) test e2e test-pg-modes loadtest-smoke
 
 # Lints the chart (deploy/helm/codehub) and renders it for each set of values in its ci/ directory,
 # and reports how many sets and objects. A set that renders no object fails.
