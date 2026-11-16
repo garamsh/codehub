@@ -1,6 +1,6 @@
 # ADR 0006: Authentication and authorisation are separated from the core and speak standards
 
-> Status: accepted; the agent and Token Exchange parts superseded by ADR-0027; mutual TLS for runner identity superseded by ADR-0034
+> Status: accepted; the agent and Token Exchange parts superseded by ADR-0027; mutual TLS for runner identity superseded by ADR-0034; "issues no tokens" narrowed by ADR-0053 for registry tokens
 > Date: 2026-11-11
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
