@@ -14,7 +14,7 @@ use crate::domain::name::{DraftName, OrganisationName};
 use crate::domain::principal::Principal;
 use crate::domain::repository::RepositoryId;
 use crate::domain::revert::Revert;
-use crate::domain::run::{NewRun, Run, RunId};
+use crate::domain::run::{NewRun, Run, RunId, RunResult};
 use crate::domain::runner::{Registration, RegistrationId};
 
 /// Holds the jobs.
@@ -189,6 +189,70 @@ pub trait JobQueue: Send + Sync {
         draft: &DraftName,
         instance: Instance,
     ) -> Result<Option<Run>, JobQueueError>;
+
+    /// Takes the queued run with the lowest identifier that one of `registrations` may take, as
+    /// [`Registration::takes_run`] says, and holds it for the first such registration for `lease`
+    /// seconds from `now`. Its deadline is its timeout from `now`. `None` where none is queued.
+    ///
+    /// # Errors
+    ///
+    /// [`JobQueueError::Backend`] where the queue fails.
+    async fn claim_run(
+        &self,
+        registrations: &[Registration],
+        now: i64,
+        lease: i64,
+    ) -> Result<Option<Run>, JobQueueError>;
+
+    /// Extends the lease on `run` to `lease` seconds from `now`, where it runs under one of
+    /// `runners`, as [`JobQueue::heartbeat`] does for a job: a run its principal cancelled, one
+    /// that timed out while one of `runners` held it, and a running one whose deadline has passed
+    /// answer that the runner is to stop.
+    ///
+    /// # Errors
+    ///
+    /// [`JobQueueError::NotFound`] where `run` is not running, cancelled or timed out under one of
+    /// `runners`.
+    async fn heartbeat_run(
+        &self,
+        run: RunId,
+        runners: &[RegistrationId],
+        now: i64,
+        lease: i64,
+    ) -> Result<Heartbeat, JobQueueError>;
+
+    /// The run `run`, where it runs under one of `runners`.
+    ///
+    /// # Errors
+    ///
+    /// [`JobQueueError::NotFound`] where `run` is not running under one of `runners`.
+    async fn running_run(
+        &self,
+        run: RunId,
+        runners: &[RegistrationId],
+    ) -> Result<Run, JobQueueError>;
+
+    /// Ends `run` as finished with `result`, where it runs under one of `runners`, and returns it
+    /// as it now stands.
+    ///
+    /// # Errors
+    ///
+    /// [`JobQueueError::NotFound`] where `run` is not running under one of `runners`.
+    async fn complete_run(
+        &self,
+        run: RunId,
+        runners: &[RegistrationId],
+        result: RunResult,
+    ) -> Result<Run, JobQueueError>;
+
+    /// Acts on time having passed to `now`, as [`JobQueue::expire`] does for jobs: a running run
+    /// past its deadline times out, and one whose lease lapsed before its deadline returns to the
+    /// queue with no runner.
+    ///
+    /// # Errors
+    ///
+    /// [`JobQueueError::Backend`] where the queue fails.
+    async fn expire_runs(&self, now: i64) -> Result<(), JobQueueError>;
 
     /// Acts on time having passed to `now`. A running job past its deadline times out, and a
     /// running job whose lease lapsed before its deadline returns to the queue with no runner.

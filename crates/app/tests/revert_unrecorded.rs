@@ -15,7 +15,7 @@ use app::domain::name::{DraftName, OrganisationName};
 use app::domain::principal::Principal;
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
-use app::domain::run::{NewRun, Run, RunId};
+use app::domain::run::{NewRun, Run, RunId, RunResult};
 use app::domain::runner::{Registration, RegistrationId};
 use app::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
 use app::port::driven::check_definitions::CheckDefinitions;
@@ -190,6 +190,46 @@ impl JobQueue for RecordRefusingQueue {
             .await
     }
 
+    async fn claim_run(
+        &self,
+        registrations: &[Registration],
+        now: i64,
+        lease: i64,
+    ) -> Result<Option<Run>, JobQueueError> {
+        self.0.claim_run(registrations, now, lease).await
+    }
+
+    async fn heartbeat_run(
+        &self,
+        run: RunId,
+        runners: &[RegistrationId],
+        now: i64,
+        lease: i64,
+    ) -> Result<Heartbeat, JobQueueError> {
+        self.0.heartbeat_run(run, runners, now, lease).await
+    }
+
+    async fn running_run(
+        &self,
+        run: RunId,
+        runners: &[RegistrationId],
+    ) -> Result<Run, JobQueueError> {
+        self.0.running_run(run, runners).await
+    }
+
+    async fn complete_run(
+        &self,
+        run: RunId,
+        runners: &[RegistrationId],
+        result: RunResult,
+    ) -> Result<Run, JobQueueError> {
+        self.0.complete_run(run, runners, result).await
+    }
+
+    async fn expire_runs(&self, now: i64) -> Result<(), JobQueueError> {
+        self.0.expire_runs(now).await
+    }
+
     async fn expire(&self, now: i64) -> Result<Vec<Job>, JobQueueError> {
         self.0.expire(now).await
     }
@@ -231,6 +271,9 @@ async fn a_failed_revert_that_cannot_be_recorded_returns_both_failures() {
             objects: harness.objects.clone(),
             derived: harness.derived.clone(),
             log,
+            drafts: harness.drafts.clone(),
+            authorisation: harness.authorisation.clone(),
+            directory: harness.directory.clone(),
         },
         checks,
         30,

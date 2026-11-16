@@ -8,13 +8,16 @@ use crate::domain::file::FileKind;
 use crate::domain::job::{Heartbeat, Job, JobId, JobResult, Produced};
 use crate::domain::path::{Path, PathError};
 use crate::domain::principal::Caller;
+use crate::domain::run::{Run, RunId, RunReport};
 use crate::domain::tree::DeriveError;
 use crate::port::driven::cache_refs::CacheRefsError;
 use crate::port::driven::changeset_log::ChangesetLogError;
 use crate::port::driven::derived_data::DerivedDataError;
+use crate::port::driven::draft_store::DraftStoreError;
 use crate::port::driven::job_queue::JobQueueError;
 use crate::port::driven::object_store::{Grant, ObjectStoreError};
 use crate::port::driven::runner_registry::RunnerRegistryError;
+use crate::port::driving::access::AccessError;
 use crate::port::driving::revert::RevertError;
 
 /// What a registered runner asks of the application. Each operation is refused with
@@ -30,7 +33,16 @@ pub trait Jobs: Send + Sync {
     /// [`JobsError::NotRegistered`] where the caller is not registered as a runner.
     async fn claim(&self, caller: &Caller, now: i64) -> Result<Option<Claimed>, JobsError>;
 
-    /// Extends the lease on `job`, which the caller holds, or tells it to stop.
+    /// Takes the oldest queued run the caller's registrations may take, or `None` where none is
+    /// queued. The caller holds it for the service's lease, and keeps it by heartbeating.
+    ///
+    /// # Errors
+    ///
+    /// [`JobsError::NotRegistered`] where the caller is not registered as a runner.
+    async fn claim_run(&self, caller: &Caller, now: i64) -> Result<Option<ClaimedRun>, JobsError>;
+
+    /// Extends the lease on `job`, which is a check's job or a run, which the caller holds, or
+    /// tells it to stop.
     ///
     /// # Errors
     ///
@@ -42,8 +54,8 @@ pub trait Jobs: Send + Sync {
         now: i64,
     ) -> Result<Heartbeat, JobsError>;
 
-    /// Grants uploads of those of `files` the object store lacks, for `job`, which the caller
-    /// holds. A file the store has is not granted.
+    /// Grants uploads of those of `files` the object store lacks, for `job`, which is a check's
+    /// job or a run, which the caller holds. A file the store has is not granted.
     ///
     /// # Errors
     ///
@@ -70,6 +82,24 @@ pub trait Jobs: Send + Sync {
         job: JobId,
         result: JobResult,
         produced: Produced,
+        now: i64,
+    ) -> Result<(), JobsError>;
+
+    /// Ends the run `run`, which the caller holds, as `report` says, whose files the caller has
+    /// uploaded. Records the output tree of the files under the run's outputs and cache paths and
+    /// writes the run's changes back to its workspace as ADR 0051 says; after a command that
+    /// exited, moves the workspace's cache refs. A report that names a file the object store lacks
+    /// ends the run as an executor failure.
+    ///
+    /// # Errors
+    ///
+    /// [`JobsError::Queue`] with [`JobQueueError::NotFound`] where the caller does not hold `run`;
+    /// [`JobsError::WrongKind`] where the caller holds a check's job of that number.
+    async fn report_run(
+        &self,
+        caller: &Caller,
+        run: RunId,
+        report: RunReport,
         now: i64,
     ) -> Result<(), JobsError>;
 }
@@ -101,6 +131,26 @@ pub struct Claimed {
     /// of the checks it needs and the trees of its cache refs. A file is listed once, at its path
     /// from the repository root; where more than one grant gives a path, the inputs win, then the
     /// outputs, then the caches.
+    pub files: Vec<ClaimedFile>,
+}
+
+/// A run a runner took, and the files it is sent.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ClaimedRun {
+    /// The run, running.
+    pub run: Run,
+    /// The workspace files sent with the run, each at its path from the repository root.
+    pub files: Vec<ClaimedFile>,
+    /// The run's cache paths, each with the files of its workspace cache ref's tree.
+    pub caches: Vec<ClaimedCache>,
+}
+
+/// A cache path of a run and the files of the tree its cache ref held when the run started.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ClaimedCache {
+    /// The cache path, from the repository root.
+    pub path: Path,
+    /// The files of the tree, each at its path under the cache path.
     pub files: Vec<ClaimedFile>,
 }
 
@@ -140,6 +190,12 @@ pub enum JobsError {
     Path(PathError),
     /// A blocking check ended in failure and its changeset was not reverted.
     Revert(RevertError),
+    /// A run's workspace could not be read, or the principal's access could not be decided.
+    Access(AccessError),
+    /// The draft store failed.
+    Drafts(DraftStoreError),
+    /// The caller reported a run's result for a check's job, or a check's result for a run.
+    WrongKind(JobId),
 }
 
 impl fmt::Display for JobsError {
@@ -154,6 +210,9 @@ impl fmt::Display for JobsError {
             Self::Log(error) => write!(f, "{error}"),
             Self::Path(error) => write!(f, "{error}"),
             Self::Revert(error) => write!(f, "{error}"),
+            Self::Access(error) => write!(f, "{error}"),
+            Self::Drafts(error) => write!(f, "{error}"),
+            Self::WrongKind(job) => write!(f, "the report does not fit the kind of job {job}"),
         }
     }
 }
@@ -161,7 +220,7 @@ impl fmt::Display for JobsError {
 impl std::error::Error for JobsError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::NotRegistered => None,
+            Self::NotRegistered | Self::WrongKind(_) => None,
             Self::Queue(error) => Some(error),
             Self::CacheRefs(error) => Some(error),
             Self::Registry(error) => Some(error),
@@ -170,6 +229,8 @@ impl std::error::Error for JobsError {
             Self::Log(error) => Some(error),
             Self::Path(error) => Some(error),
             Self::Revert(error) => Some(error),
+            Self::Access(error) => Some(error),
+            Self::Drafts(error) => Some(error),
         }
     }
 }
@@ -236,6 +297,18 @@ impl From<EncodeError> for JobsError {
 impl From<DeriveError> for JobsError {
     fn from(error: DeriveError) -> Self {
         Self::Derived(DerivedDataError::Backend(error.to_string()))
+    }
+}
+
+impl From<AccessError> for JobsError {
+    fn from(error: AccessError) -> Self {
+        Self::Access(error)
+    }
+}
+
+impl From<DraftStoreError> for JobsError {
+    fn from(error: DraftStoreError) -> Self {
+        Self::Drafts(error)
     }
 }
 

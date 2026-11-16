@@ -17,7 +17,7 @@ use crate::port::driven::authorisation_decision::{Action, AuthorisationDecision,
 use crate::port::driven::cache_refs::CacheRefs;
 use crate::port::driven::changeset_log::{ChangesetLog, Ref};
 use crate::port::driven::check_definitions::CheckDefinitions;
-use crate::port::driven::derived_data::DerivedData;
+use crate::port::driven::derived_data::{DerivedData, DerivedDataError};
 use crate::port::driven::draft_store::DraftStore;
 use crate::port::driven::job_queue::{JobQueue, JobQueueError};
 use crate::port::driven::membership::Access;
@@ -26,6 +26,7 @@ use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driving::runs::{OutputFile, Runs, RunsError, StartRun};
 use crate::use_case::access::{readable_repository, require, require_paths};
 use crate::use_case::cache_refs::create_workspace_cache_ref;
+use crate::use_case::jobs::walk_tree;
 use crate::use_case::list_files::files_under;
 use crate::use_case::tree_checks::tree_files;
 
@@ -51,6 +52,30 @@ pub struct RunsAdapters {
     pub definitions: Arc<dyn CheckDefinitions>,
 }
 
+/// The files of `draft` under `prefix`: its base's, with its changes applied.
+pub(crate) async fn workspace_files(
+    derived: &dyn DerivedData,
+    repository: RepositoryId,
+    draft: &Draft,
+    prefix: &Prefix,
+) -> Result<BTreeMap<Path, File>, DerivedDataError> {
+    let mut files = BTreeMap::new();
+    if let Some(base) = draft.base {
+        let root = derived.root(repository, base).await?;
+        files.extend(files_under(derived, repository, root, prefix).await?);
+    }
+    for (path, change) in &draft.changes {
+        if !prefix.covers(path) {
+            continue;
+        }
+        match change {
+            Change::File(file) => files.insert(path.clone(), *file),
+            Change::Deletion => files.remove(path),
+        };
+    }
+    Ok(files)
+}
+
 /// The runs of a repository over the driven ports the composition site passes to it.
 pub struct RunsService {
     adapters: RunsAdapters,
@@ -70,21 +95,7 @@ impl RunsService {
         draft: &Draft,
         prefix: &Prefix,
     ) -> Result<BTreeMap<Path, File>, RunsError> {
-        let mut files = BTreeMap::new();
-        if let Some(base) = draft.base {
-            let root = self.adapters.derived.root(repository, base).await?;
-            files.extend(files_under(&*self.adapters.derived, repository, root, prefix).await?);
-        }
-        for (path, change) in &draft.changes {
-            if !prefix.covers(path) {
-                continue;
-            }
-            match change {
-                Change::File(file) => files.insert(path.clone(), *file),
-                Change::Deletion => files.remove(path),
-            };
-        }
-        Ok(files)
+        Ok(workspace_files(&*self.adapters.derived, repository, draft, prefix).await?)
     }
 
     /// The workspace's run file, where it has one.
@@ -371,9 +382,29 @@ impl Runs for RunsService {
         caller: &Caller,
         repository: RepositoryId,
         run: RunId,
-        _prefix: &Prefix,
+        prefix: &Prefix,
     ) -> Result<Vec<OutputFile>, RunsError> {
-        self.own(caller, repository, run).await?;
-        Ok(Vec::new())
+        let held = self.own(caller, repository, run).await?;
+        let Some(tree) = held.ended().and_then(|result| result.output_tree) else {
+            return Ok(Vec::new());
+        };
+        let mut files = Vec::new();
+        for (path, file) in
+            walk_tree::<RunsError>(&*self.adapters.objects, repository, tree).await?
+        {
+            if prefix.covers(&path) {
+                let download = self
+                    .adapters
+                    .objects
+                    .download_grant(repository, file.content)
+                    .await?;
+                files.push(OutputFile {
+                    path,
+                    file,
+                    download,
+                });
+            }
+        }
+        Ok(files)
     }
 }

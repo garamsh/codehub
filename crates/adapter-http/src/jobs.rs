@@ -3,11 +3,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::collections::BTreeMap;
+
+use app::domain::changeset::Change;
 use app::domain::file::{File, FileKind};
 use app::domain::job::{Heartbeat, JobId, JobResult, Outcome, Produced, ProducedFile, StopReason};
-use app::domain::path::Prefix;
-use app::port::driving::jobs::{Claimed, ClaimedFile, Upload};
+use app::domain::path::{Path, Prefix};
+use app::domain::run::{ObjectCounts, RunId, RunOutcome, RunReport, RunStream};
+use app::port::driving::jobs::{Claimed, ClaimedFile, ClaimedRun, Upload};
 use axum::Json;
+use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -95,6 +100,69 @@ impl From<ClaimedFile> for JobFileBody {
 }
 
 #[derive(Serialize)]
+pub struct RunCacheBody {
+    path: String,
+    files: Vec<JobFileBody>,
+}
+
+#[derive(Serialize)]
+pub struct RunJobBody {
+    id: u64,
+    organisation: String,
+    repository_id: u64,
+    draft: String,
+    command: String,
+    timeout: u64,
+    add: Vec<String>,
+    outputs: Vec<String>,
+    env: BTreeMap<&'static str, String>,
+    heartbeat_interval: u64,
+    files: Vec<JobFileBody>,
+    caches: Vec<RunCacheBody>,
+}
+
+impl RunJobBody {
+    fn new(claimed: ClaimedRun, heartbeat_interval: Duration) -> Self {
+        let ClaimedRun { run, files, caches } = claimed;
+        let request = run.request;
+        let mut env = BTreeMap::new();
+        env.insert("CODEHUB_ORGANISATION", request.organisation.to_string());
+        env.insert("CODEHUB_REPOSITORY", request.repository.to_string());
+        env.insert("CODEHUB_DRAFT", request.draft.to_string());
+        if let Some(base) = request.base {
+            env.insert("CODEHUB_CHANGESET", base.to_string());
+        }
+        Self {
+            id: run.id.value(),
+            organisation: request.organisation.to_string(),
+            repository_id: request.repository.value(),
+            draft: request.draft.to_string(),
+            command: request.command.as_str().to_owned(),
+            timeout: request.timeout.seconds(),
+            add: request.add.iter().map(ToString::to_string).collect(),
+            outputs: request.outputs.iter().map(ToString::to_string).collect(),
+            env,
+            heartbeat_interval: heartbeat_interval.as_secs(),
+            files: files.into_iter().map(JobFileBody::from).collect(),
+            caches: caches
+                .into_iter()
+                .map(|cache| RunCacheBody {
+                    path: cache.path.to_string(),
+                    files: cache.files.into_iter().map(JobFileBody::from).collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum ClaimBody {
+    Check(Box<JobBody>),
+    Run(Box<RunJobBody>),
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasonBody {
     Cancelled,
@@ -118,10 +186,32 @@ pub enum StatusBody {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutorBody {
+    Host,
+    Gaon,
+}
+
+/// What a runner says of itself when it claims; the body may be absent.
+#[derive(Deserialize, Default)]
+pub struct ClaimRequest {
+    executor: Option<ExecutorBody>,
+}
+
+#[derive(Deserialize)]
+pub struct ObjectCountsBody {
+    downloaded: u64,
+    from_cache: u64,
+}
+
+#[derive(Deserialize)]
 pub struct ResultBody {
     status: StatusBody,
     exit_code: Option<i32>,
     output_tail: String,
+    /// The object counts, which a check's result is accepted with and does not keep.
+    #[serde(default, rename = "objects")]
+    _objects: Option<ObjectCountsBody>,
     /// The files the command left under its outputs; absent where it left none.
     #[serde(default)]
     outputs: Vec<ProducedBody>,
@@ -154,6 +244,131 @@ impl ProducedBody {
 }
 
 #[derive(Deserialize)]
+pub struct StreamIn {
+    address: String,
+    cut: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKindIn {
+    Regular,
+    Executable,
+    Deleted,
+}
+
+#[derive(Deserialize)]
+pub struct ChangeIn {
+    path: String,
+    kind: ChangeKindIn,
+    address: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunOutcomeIn {
+    Exited,
+    TimedOut,
+    Cancelled,
+    ExecutorFailed,
+}
+
+#[derive(Deserialize)]
+pub struct RunReportBody {
+    outcome: RunOutcomeIn,
+    exit_code: Option<i32>,
+    stdout: Option<StreamIn>,
+    stderr: Option<StreamIn>,
+    objects: ObjectCountsBody,
+    outputs: Vec<ProducedBody>,
+    caches: Vec<ProducedBody>,
+    changes: Vec<ChangeIn>,
+    refused: Vec<String>,
+}
+
+impl StreamIn {
+    fn stream(self) -> Result<RunStream, Problem> {
+        Ok(RunStream {
+            address: parse("address", &self.address)?,
+            cut: self.cut,
+        })
+    }
+}
+
+impl ChangeIn {
+    fn change(self) -> Result<(Path, Change), Problem> {
+        let path = parse("path", &self.path)?;
+        let kind = match self.kind {
+            ChangeKindIn::Regular => FileKind::Regular,
+            ChangeKindIn::Executable => FileKind::Executable,
+            ChangeKindIn::Deleted => {
+                if self.address.is_some() {
+                    return Err(Problem::bad_request(format!(
+                        "{path} is deleted and has an address"
+                    )));
+                }
+                return Ok((path, Change::Deletion));
+            }
+        };
+        let Some(address) = self.address else {
+            return Err(Problem::bad_request(format!("{path} has no address")));
+        };
+        Ok((
+            path,
+            Change::File(File {
+                kind,
+                content: parse("address", &address)?,
+            }),
+        ))
+    }
+}
+
+impl RunReportBody {
+    fn report(self) -> Result<RunReport, Problem> {
+        Ok(RunReport {
+            outcome: match self.outcome {
+                RunOutcomeIn::Exited => RunOutcome::Exited,
+                RunOutcomeIn::TimedOut => RunOutcome::TimedOut,
+                RunOutcomeIn::Cancelled => RunOutcome::Cancelled,
+                RunOutcomeIn::ExecutorFailed => RunOutcome::ExecutorFailed,
+            },
+            exit_code: self.exit_code,
+            stdout: self.stdout.map(StreamIn::stream).transpose()?,
+            stderr: self.stderr.map(StreamIn::stream).transpose()?,
+            objects: ObjectCounts {
+                downloaded: self.objects.downloaded,
+                from_cache: self.objects.from_cache,
+            },
+            outputs: self
+                .outputs
+                .into_iter()
+                .map(ProducedBody::file)
+                .collect::<Result<_, _>>()?,
+            caches: self
+                .caches
+                .into_iter()
+                .map(ProducedBody::file)
+                .collect::<Result<_, _>>()?,
+            changes: self
+                .changes
+                .into_iter()
+                .map(ChangeIn::change)
+                .collect::<Result<_, _>>()?,
+            refused: self.refused,
+        })
+    }
+}
+
+/// A runner's report, of a check's job or of a run's: a run's names its `outcome`, a check's its
+/// `status`.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum ReportBody {
+    Run(RunReportBody),
+    Check(ResultBody),
+}
+
+#[derive(Deserialize)]
 pub struct UploadsBody {
     files: Vec<UploadBody>,
 }
@@ -178,12 +393,27 @@ pub struct UploadGrantsBody {
 pub async fn claim(
     State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
+    body: Bytes,
 ) -> Result<Response, Problem> {
+    let request: ClaimRequest = if body.is_empty() {
+        ClaimRequest::default()
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|error| Problem::bad_request(format!("the body is not valid: {error}")))?
+    };
+    // A runner that states no executor takes it to be the host.
+    let takes_runs = !matches!(request.executor, Some(ExecutorBody::Gaon));
     let settings = ports.settings;
     let mut waited = Duration::ZERO;
     loop {
+        // A run has a person waiting for it, so it goes before a check's job.
+        if takes_runs && let Some(claimed) = ports.jobs.claim_run(&caller, now()).await? {
+            let body = RunJobBody::new(claimed, settings.heartbeat_interval);
+            return Ok(Json(ClaimBody::Run(Box::new(body))).into_response());
+        }
         if let Some(claimed) = ports.jobs.claim(&caller, now()).await? {
-            return Ok(Json(JobBody::new(claimed, settings.heartbeat_interval)).into_response());
+            let body = JobBody::new(claimed, settings.heartbeat_interval);
+            return Ok(Json(ClaimBody::Check(Box::new(body))).into_response());
         }
         let remaining = settings.hold.saturating_sub(waited);
         if remaining.is_zero() {
@@ -222,8 +452,18 @@ pub async fn report(
     State(ports): State<Arc<ApiState>>,
     Authenticated(caller): Authenticated,
     Params(job): Params<u64>,
-    Body(result): Body<ResultBody>,
+    Body(result): Body<ReportBody>,
 ) -> Result<StatusCode, Problem> {
+    let result = match result {
+        ReportBody::Check(result) => result,
+        ReportBody::Run(report) => {
+            ports
+                .jobs
+                .report_run(&caller, RunId::new(job), report.report()?, now())
+                .await?;
+            return Ok(StatusCode::NO_CONTENT);
+        }
+    };
     let outcome = match result.status {
         StatusBody::Passed => Outcome::Passed,
         StatusBody::Failed => Outcome::Failed,

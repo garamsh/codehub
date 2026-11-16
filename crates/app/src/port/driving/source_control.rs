@@ -19,6 +19,7 @@ use crate::domain::path::{Path, Prefix};
 use crate::domain::principal::Caller;
 use crate::domain::repository::RepositoryId;
 use crate::domain::tree::DeriveError;
+use crate::port::driven::cache_refs::CacheRefsError;
 use crate::port::driven::changeset_log::ChangesetLogError;
 use crate::port::driven::derived_data::DerivedDataError;
 use crate::port::driven::draft_store::DraftStoreError;
@@ -384,6 +385,9 @@ pub enum LandError {
         /// Why queuing its checks failed.
         cause: String,
     },
+    /// The draft landed and its checks were queued, but its workspace cache refs were not
+    /// removed. The landing is not undone.
+    CacheRefs(CacheRefsError),
 }
 
 impl fmt::Display for LandError {
@@ -406,6 +410,7 @@ impl fmt::Display for LandError {
                 f,
                 "changeset {landed} landed and its checks were not queued: {cause}"
             ),
+            Self::CacheRefs(error) => write!(f, "landed, but the cache refs stay: {error}"),
         }
     }
 }
@@ -415,6 +420,12 @@ impl std::error::Error for LandError {}
 impl From<ObjectStoreError> for LandError {
     fn from(error: ObjectStoreError) -> Self {
         Self::Objects(error)
+    }
+}
+
+impl From<CacheRefsError> for LandError {
+    fn from(error: CacheRefsError) -> Self {
+        Self::CacheRefs(error)
     }
 }
 

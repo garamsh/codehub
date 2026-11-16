@@ -1553,3 +1553,129 @@ async fn refuses_a_run_to_a_caller_without_the_run_action() {
         first.body["id"].as_u64().unwrap() + 1
     );
 }
+
+/// A run's report, which exited with `changes`, as a runner sends it.
+#[cfg(test)]
+fn run_report(changes: Value) -> Value {
+    json!({
+        "outcome": "exited",
+        "exit_code": 0,
+        "stdout": null,
+        "stderr": null,
+        "objects": {"downloaded": 2, "from_cache": 1},
+        "outputs": [],
+        "caches": [],
+        "changes": changes,
+        "refused": [],
+    })
+}
+
+#[tokio::test]
+async fn hands_a_run_to_a_host_runner_which_reports_it_and_the_changes_are_written_back() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    api.repository(&ada, "acme").await;
+    api.stage(&ada, "acme", "work", "src/a.txt", "a\n").await;
+    let runner = register_runner(&api, &ada, "bot", &[]).await;
+    let started = api
+        .post(
+            &format!("{RUNS}/drafts/work/runs"),
+            &ada,
+            json!({"command": "make", "outputs": ["out"]}),
+        )
+        .await;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let id = started.body["id"].as_u64().unwrap();
+
+    // A runner that states `gaon` is never handed it.
+    let gaon = api
+        .post(
+            "/v1/runner/jobs/claim",
+            &runner,
+            json!({"executor": "gaon"}),
+        )
+        .await;
+    assert_eq!(gaon.status, StatusCode::NO_CONTENT, "{}", gaon.body);
+    let claimed = api
+        .post(
+            "/v1/runner/jobs/claim",
+            &runner,
+            json!({"executor": "host"}),
+        )
+        .await;
+    assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
+    assert_eq!(claimed.body["id"], id);
+    assert_eq!(claimed.body["command"], "make");
+    assert_eq!(claimed.body["draft"], "work");
+    assert_eq!(claimed.body["outputs"], json!(["out"]));
+    assert_eq!(claimed.body["env"]["CODEHUB_DRAFT"], "work");
+    assert_eq!(claimed.body["files"][0]["path"], "src/a.txt");
+    assert!(claimed.body["files"][0]["download"]["url"].is_string());
+
+    let address = api.upload(&ada, "acme", "b\n").await;
+    let report = run_report(json!([
+        {"path": "src/a.txt", "kind": "regular", "address": address},
+        {"path": "src/gone", "kind": "deleted", "address": null},
+    ]));
+    let reported = api
+        .post(&format!("/v1/runner/jobs/{id}/result"), &runner, report)
+        .await;
+    assert_eq!(reported.status, StatusCode::NO_CONTENT, "{}", reported.body);
+
+    let ended = api.get(&format!("{RUNS}/runs/{id}"), &ada).await;
+    assert_eq!(ended.body["state"], "ended", "{}", ended.body);
+    let result = &ended.body["result"];
+    assert_eq!(result["outcome"], "exited");
+    assert_eq!(result["objects"]["downloaded"], 2);
+    assert_eq!(result["write_back"]["outcome"], "written");
+    assert_eq!(
+        result["write_back"]["paths"],
+        json!(["src/a.txt", "src/gone"])
+    );
+    assert_eq!(result["changes"][0]["address"], address);
+    // The run is over: a second report is refused.
+    let again = api
+        .post(
+            &format!("/v1/runner/jobs/{id}/result"),
+            &runner,
+            run_report(json!([])),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn takes_the_object_counts_in_a_checks_result_and_refuses_a_report_of_the_other_kind() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    let changeset = landed_with_a_check(&api, &ada).await;
+    let runner = register_runner(&api, &ada, "bot", &["linux"]).await;
+    let claimed = claim(&api, &runner).await;
+    assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
+    assert_eq!(claimed.body["changeset"], changeset);
+    let id = claimed.body["id"].as_u64().unwrap();
+
+    // The report of a run, for a job that is a check's.
+    let wrong = api
+        .post(
+            &format!("/v1/runner/jobs/{id}/result"),
+            &runner,
+            run_report(json!([])),
+        )
+        .await;
+    assert_eq!(wrong.status, StatusCode::BAD_REQUEST, "{}", wrong.body);
+
+    let result = api
+        .post(
+            &format!("/v1/runner/jobs/{id}/result"),
+            &runner,
+            json!({
+                "status": "passed",
+                "exit_code": 0,
+                "output_tail": "",
+                "objects": {"downloaded": 1, "from_cache": 0},
+            }),
+        )
+        .await;
+    assert_eq!(result.status, StatusCode::NO_CONTENT, "{}", result.body);
+}

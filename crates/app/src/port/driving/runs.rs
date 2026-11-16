@@ -5,9 +5,10 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::domain::check::Command;
+use crate::domain::encoding::DecodeError;
 use crate::domain::file::File;
 use crate::domain::name::DraftName;
-use crate::domain::path::{Path, Prefix};
+use crate::domain::path::{Path, PathError, Prefix};
 use crate::domain::principal::Caller;
 use crate::domain::repository::RepositoryId;
 use crate::domain::run::{Run, RunId};
@@ -197,6 +198,20 @@ impl From<DerivedDataError> for RunsError {
 impl From<ObjectStoreError> for RunsError {
     fn from(error: ObjectStoreError) -> Self {
         Self::Objects(error)
+    }
+}
+
+/// A stored output tree that is not a tree is a fault of the object store.
+impl From<DecodeError> for RunsError {
+    fn from(error: DecodeError) -> Self {
+        Self::Objects(ObjectStoreError::Backend(error.to_string()))
+    }
+}
+
+/// A stored output tree holding an invalid path is a fault of the object store.
+impl From<PathError> for RunsError {
+    fn from(error: PathError) -> Self {
+        Self::Objects(ObjectStoreError::Backend(error.to_string()))
     }
 }
 
