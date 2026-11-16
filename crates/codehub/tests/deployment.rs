@@ -4,9 +4,64 @@ use clap::CommandFactory;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// The command of the role `name`.
+#[cfg(test)]
+fn role(name: &str) -> clap::Command {
+    codehub::Cli::command()
+        .find_subcommand(name)
+        .unwrap_or_else(|| panic!("no role `{name}`"))
+        .clone()
+}
+
 #[test]
 fn deployment_md_names_every_server_setting_and_no_other() {
-    test_support::assert_contract(&codehub::Config::command(), "Server settings");
+    test_support::assert_contract(&role("all"), "Server settings");
+}
+
+/// The `(option, roles)` of each row of the server settings table.
+#[cfg(test)]
+fn rows() -> Vec<(String, Vec<String>)> {
+    let doc = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/guide/deployment.md"
+    ))
+    .unwrap();
+    doc.lines()
+        .skip_while(|line| *line != "## Server settings")
+        .skip(1)
+        .take_while(|line| !line.starts_with("## "))
+        .filter(|line| line.starts_with("| `--"))
+        .map(|line| {
+            let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+            let option = cells[0]
+                .trim_matches('`')
+                .trim_start_matches("--")
+                .to_owned();
+            let roles = cells[3].split(", ").map(str::to_owned).collect();
+            (option, roles)
+        })
+        .collect()
+}
+
+#[test]
+fn deployment_md_lists_for_each_option_the_roles_that_take_it_and_no_other() {
+    let rows = rows();
+    for name in ["api", "runner-api", "worker", "migrate", "all"] {
+        let mut taken: Vec<String> = role(name)
+            .get_arguments()
+            .filter_map(|argument| argument.get_long())
+            .filter(|long| !matches!(*long, "help" | "version"))
+            .map(str::to_owned)
+            .collect();
+        taken.sort();
+        let mut listed: Vec<String> = rows
+            .iter()
+            .filter(|(_, roles)| roles.iter().any(|listed| listed == name))
+            .map(|(option, _)| option.clone())
+            .collect();
+        listed.sort();
+        assert_eq!(listed, taken, "the options of the role `{name}`");
+    }
 }
 
 #[cfg(test)]

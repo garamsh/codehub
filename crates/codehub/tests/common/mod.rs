@@ -74,6 +74,27 @@ impl Server {
     }
 }
 
+impl Server {
+    /// Starts the built `codehub` as the role `role` against `database`, as [`Server::start`]
+    /// does.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the process does not print the line that names its address within the bound.
+    pub fn start_role(role: &str, database: &TestDatabase, settings: &[(&str, &str)]) -> Self {
+        let mut variables = vec![("CODEHUB_OIDC_AUDIENCE", AUDIENCE)];
+        variables.extend_from_slice(settings);
+        test_support::Server::try_start_role(
+            Path::new(env!("CARGO_BIN_EXE_codehub")),
+            Some(role),
+            database,
+            &variables,
+        )
+        .map(Self)
+        .unwrap_or_else(|line| panic!("codehub {role} did not start: {line}"))
+    }
+}
+
 impl Deref for Server {
     type Target = test_support::Server;
 

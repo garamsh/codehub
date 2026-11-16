@@ -30,7 +30,7 @@ use app::port::driven::object_store::ObjectStoreError;
 use app::use_case::assembly::Assembly;
 use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::relay::{DirectoryRelay, RelayEnvironment};
-use oauth_client::{InvalidClient, TokenClient};
+use oauth_client::{Authentication, InvalidClient, TokenClient};
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -39,10 +39,16 @@ mod settings;
 
 use readiness::Probe;
 pub use settings::{
-    Authorisation, AuthzenClientAuthentication, AuthzenProfile, Config, DirectoryChangesMode,
-    Identity,
+    AllOptions, ApiOptions, Authorisation, AuthorisationOptions, AuthzenClientAuthentication,
+    AuthzenClientOptions, AuthzenProfile, Cli, DatabaseOptions, DeliveryOptions,
+    DirectoryChangesMode, DirectoryOptions, Identity, IdentityOptions, LandingOptions,
+    ListenOptions, MigrateOptions, ObjectOptions, Role, RunnerApiOptions, RunnerOptions,
+    WorkerOptions,
 };
-use settings::{AuthorisationMode, AuthzenMode, IdentityMode};
+use settings::{
+    AuthorisationMode, AuthzenMode, IdentityMode, Serving, UNUSED_DELIVERY_WAIT, UNUSED_RUNNER,
+    select_delivery,
+};
 
 /// Why the server did not start or stopped serving.
 #[derive(Debug)]
@@ -158,18 +164,17 @@ impl RelayEnvironment for ServerEnvironment {
     }
 }
 
-/// Builds the identity verification `selection` names.
+/// Builds the identity verification `selection` names, fetching an issuer's key set no more than
+/// once in `jwks_min_refetch`.
 fn verifier(
     selection: IdentityMode<'_>,
-    config: &Config,
+    jwks_min_refetch: Duration,
 ) -> Result<Arc<dyn IdentityVerification>, Error> {
     match selection {
-        IdentityMode::Oidc { issuer, audience } => OidcIdentityVerification::new(
-            issuer,
-            audience,
-            Duration::from_secs(config.jwks_min_refetch_seconds),
-        )
-        .map(|verifier| Arc::new(verifier) as Arc<dyn IdentityVerification>),
+        IdentityMode::Oidc { issuer, audience } => {
+            OidcIdentityVerification::new(issuer, audience, jwks_min_refetch)
+                .map(|verifier| Arc::new(verifier) as Arc<dyn IdentityVerification>)
+        }
         IdentityMode::Introspection {
             endpoint,
             client_id,
@@ -191,80 +196,230 @@ fn verifier(
 /// The adapters the authorisation mode selects: the decision point, and where directory changes go.
 type Selected = (Arc<dyn AuthorisationDecision>, Arc<dyn DirectoryChanges>);
 
-/// Builds the AuthZEN decision point's adapter and where the directory changes go, with the one
-/// token client they share: garam binds each token to an organisation, so the changes are sent
-/// under the `grn` profile's clients (ADR 0043).
-fn authzen(mode: AuthzenMode<'_>, config: &Config) -> Result<Selected, Error> {
-    let tokens = Arc::new(
-        TokenClient::new(
-            mode.token_endpoint,
-            config.authzen_audience.clone(),
-            mode.authentication,
-        )
-        .map_err(Error::Client)?,
-    );
+/// Builds the token client the AuthZEN decision point and the garam directory changes share:
+/// garam binds each token to an organisation, so the changes are sent under the `grn` profile's
+/// clients (ADR 0043).
+fn token_client(
+    token_endpoint: &str,
+    audience: Option<String>,
+    authentication: Authentication,
+) -> Result<Arc<TokenClient>, Error> {
+    TokenClient::new(token_endpoint, audience, authentication)
+        .map(Arc::new)
+        .map_err(Error::Client)
+}
+
+/// Builds the garam directory changes over `tokens`.
+fn garam_changes(url: &str, tokens: Arc<TokenClient>) -> Result<Arc<dyn DirectoryChanges>, Error> {
+    GaramDirectoryChanges::new(url, tokens)
+        .map(|changes| Arc::new(changes) as Arc<dyn DirectoryChanges>)
+        .map_err(Error::DirectoryChanges)
+}
+
+/// Builds the AuthZEN decision point's adapter and where the directory changes go.
+fn authzen(
+    mode: AuthzenMode<'_>,
+    audience: Option<String>,
+    evaluations: bool,
+) -> Result<Selected, Error> {
+    let tokens = token_client(mode.token_endpoint, audience, mode.authentication)?;
     let profile = match mode.profile {
         AuthzenProfile::Plain => Profile::Plain,
         AuthzenProfile::Grn => Profile::Grn,
     };
     let decider = AuthzenAuthorisationDecision::new(mode.url, Arc::clone(&tokens), profile)
         .map_err(Error::Authorisation)?
-        .with_access_evaluations(config.authzen_evaluations);
+        .with_access_evaluations(evaluations);
     let changes: Arc<dyn DirectoryChanges> = match mode.garam_url {
         None => Arc::new(()),
-        Some(url) => {
-            Arc::new(GaramDirectoryChanges::new(url, tokens).map_err(Error::DirectoryChanges)?)
-        }
+        Some(url) => garam_changes(url, tokens)?,
     };
     Ok((Arc::new(decider), changes))
 }
 
-/// Connects, migrates, binds and serves until SIGTERM or SIGINT, then finishes the requests in
-/// flight and returns.
+/// Which routes a serving process answers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Routes {
+    /// `/v1` except `/v1/runner/`.
+    Api,
+    /// `/v1/runner/`.
+    RunnerApi,
+    /// Every route, after migrating, with the directory outbox relayed in the same process.
+    All,
+}
+
+/// What a role that serves routes is built from.
+struct Http<'a> {
+    routes: Routes,
+    listen: SocketAddr,
+    database: &'a DatabaseOptions,
+    objects: &'a ObjectOptions,
+    landing: &'a LandingOptions,
+    /// How long answering a creation waits for its change, in seconds.
+    delivery_wait: u64,
+    serving: Serving<'a>,
+}
+
+/// Connects, and migrates where this is the `all` role, binds and serves until SIGTERM or SIGINT,
+/// then finishes the requests in flight and returns.
 ///
 /// # Errors
 ///
 /// An [`Error`] naming the step that failed.
-pub async fn run(config: Config) -> Result<(), Error> {
-    let selection = config.select()?;
-    let administration = selection.administration;
-    let identity = verifier(selection.identity, &config)?;
-    let database = Database::connect(&config.postgres_url, config.postgres_pool_size)
+pub async fn run(cli: Cli) -> Result<(), Error> {
+    match cli.role {
+        Role::Migrate(options) => migrate(&options.database).await,
+        Role::Worker(options) => work(&options).await,
+        Role::Api(options) => {
+            serve(Http {
+                routes: Routes::Api,
+                listen: options.listen.listen,
+                database: &options.database,
+                objects: &options.objects,
+                landing: &options.landing,
+                delivery_wait: options.delivery.directory_delivery_wait,
+                serving: options.serving(),
+            })
+            .await
+        }
+        Role::RunnerApi(options) => {
+            serve(Http {
+                routes: Routes::RunnerApi,
+                listen: options.listen.listen,
+                database: &options.database,
+                objects: &options.objects,
+                landing: &options.landing,
+                delivery_wait: UNUSED_DELIVERY_WAIT,
+                serving: options.serving(),
+            })
+            .await
+        }
+        Role::All(options) => {
+            serve(Http {
+                routes: Routes::All,
+                listen: options.listen.listen,
+                database: &options.database,
+                objects: &options.objects,
+                landing: &options.landing,
+                delivery_wait: options.delivery.directory_delivery_wait,
+                serving: options.serving(),
+            })
+            .await
+        }
+    }
+}
+
+/// Opens the pool `options` names.
+async fn connect(options: &DatabaseOptions) -> Result<Database, Error> {
+    Database::connect(&options.postgres_url, options.postgres_pool_size)
         .await
-        .map_err(Error::Database)?;
-    database.migrate().await.map_err(Error::Database)?;
+        .map_err(Error::Database)
+}
+
+/// Applies the migrations the database has not had.
+async fn migrate(options: &DatabaseOptions) -> Result<(), Error> {
+    connect(options)
+        .await?
+        .migrate()
+        .await
+        .map_err(Error::Database)
+}
+
+/// Builds the directory outbox's relay, which delivers through `changes`.
+fn relay(
+    database: &Database,
+    changes: Arc<dyn DirectoryChanges>,
+    delivery_wait: u64,
+) -> Arc<DirectoryRelay<ServerEnvironment>> {
+    Arc::new(DirectoryRelay::new(
+        Arc::new(PostgresDirectoryOutbox::new(database)),
+        changes,
+        Arc::new(ServerEnvironment),
+        Duration::from_secs(delivery_wait),
+    ))
+}
+
+/// Delivers the directory outbox, and answers the probes on the listening address.
+async fn work(options: &WorkerOptions) -> Result<(), Error> {
+    let delivery = select_delivery(&options.authzen, &options.directory)?;
+    let database = connect(&options.database).await?;
+    let changes: Arc<dyn DirectoryChanges> = match delivery {
+        None => Arc::new(()),
+        Some(delivery) => {
+            let tokens = token_client(
+                delivery.token_endpoint,
+                options.authzen.authzen_audience.clone(),
+                delivery.authentication,
+            )?;
+            garam_changes(delivery.url, tokens)?
+        }
+    };
+    let relay = relay(&database, changes, UNUSED_DELIVERY_WAIT);
+    let readiness = Probe {
+        directory: Arc::new(PostgresRepositoryDirectory::new(&database)),
+        schema: Arc::new(database),
+        objects: None,
+    };
+    listen_and_serve(
+        options.listen.listen,
+        adapter_http::health_router(Arc::new(readiness)),
+        Some(relay),
+    )
+    .await
+}
+
+/// Builds the adapters and use cases a role that serves routes needs and serves them.
+async fn serve(http: Http<'_>) -> Result<(), Error> {
+    let Http {
+        routes,
+        listen,
+        database: database_options,
+        objects: object_options,
+        landing,
+        delivery_wait,
+        serving,
+    } = http;
+    let selection = serving.select()?;
+    let administration = selection.administration;
+    let identity = verifier(
+        selection.identity,
+        Duration::from_secs(serving.identity.jwks_min_refetch_seconds),
+    )?;
+    let database = connect(database_options).await?;
+    if routes == Routes::All {
+        database.migrate().await.map_err(Error::Database)?;
+    }
     let (authorisation, changes): Selected = match selection.authorisation {
         AuthorisationMode::Postgres => (
             Arc::new(PostgresAuthorisationDecision::new(&database)),
             Arc::new(()),
         ),
-        AuthorisationMode::Authzen(mode) => authzen(mode, &config)?,
+        AuthorisationMode::Authzen(mode) => authzen(
+            mode,
+            serving.client.authzen_audience.clone(),
+            serving.authorisation.authzen_evaluations,
+        )?,
     };
-    let relay = Arc::new(DirectoryRelay::new(
-        Arc::new(PostgresDirectoryOutbox::new(&database)),
-        Arc::clone(&changes),
-        Arc::new(ServerEnvironment),
-        Duration::from_secs(config.directory_delivery_wait),
-    ));
+    let relay = relay(&database, Arc::clone(&changes), delivery_wait);
     let objects = Arc::new(
         S3ObjectStore::new(
-            &config.s3_endpoint,
-            &config.s3_region,
-            &config.s3_bucket,
-            &config.s3_access_key,
-            &config.s3_secret_key,
-            config.max_object_size,
+            &object_options.s3_endpoint,
+            &object_options.s3_region,
+            &object_options.s3_bucket,
+            &object_options.s3_access_key,
+            &object_options.s3_secret_key,
+            object_options.max_object_size,
         )
         .map_err(Error::ObjectStore)?
-        .with_expiry(Duration::from_secs(config.grant_expiry_seconds)),
+        .with_expiry(Duration::from_secs(object_options.grant_expiry_seconds)),
     );
-    let directory = Arc::new(PostgresRepositoryDirectory::new(&database));
+    let runner = serving.runner.unwrap_or(&UNUSED_RUNNER);
     let assembly = Assembly {
         objects: objects.clone(),
         log: Arc::new(PostgresChangesetLog::new(&database)),
         derived: Arc::new(PostgresDerivedData::new(&database)),
         drafts: Arc::new(PostgresDraftStore::new(&database)),
-        directory: directory.clone(),
+        directory: Arc::new(PostgresRepositoryDirectory::new(&database)),
         authorisation,
         membership: Arc::new(PostgresMembership::new(&database)),
         queue: Arc::new(PostgresJobQueue::new(&database)),
@@ -276,11 +431,11 @@ pub async fn run(config: Config) -> Result<(), Error> {
         identity,
 
         administration,
-        max_upload_size: config.max_object_size,
-        attempts: LandingAttempts::new(config.landing_attempts),
-        lease: i64::from(config.runner_lease.get()),
+        max_upload_size: object_options.max_object_size,
+        attempts: LandingAttempts::new(landing.landing_attempts),
+        lease: i64::from(runner.runner_lease.get()),
     };
-    let router = adapter_http::router(ApiState {
+    let state = ApiState {
         authentication: Arc::new(assembly.authentication()),
         repositories: Arc::new(assembly.repositories()),
         members: Arc::new(assembly.members()),
@@ -290,24 +445,43 @@ pub async fn run(config: Config) -> Result<(), Error> {
         checks: Arc::new(assembly.checks()),
         runs: Arc::new(assembly.runs()),
         settings: RunnerSettings {
-            hold: Duration::from_secs(config.runner_claim_hold),
+            hold: Duration::from_secs(runner.runner_claim_hold),
             retry_interval: CLAIM_RETRY_INTERVAL,
             heartbeat_interval: Duration::from_secs(u64::from(
-                config.runner_heartbeat_interval.get(),
+                runner.runner_heartbeat_interval.get(),
             )),
             pause,
         },
-        readiness: Arc::new(Probe { directory, objects }),
-    });
-    let listener = TcpListener::bind(config.listen)
+        readiness: Arc::new(Probe {
+            directory: Arc::new(PostgresRepositoryDirectory::new(&database)),
+            schema: Arc::new(database),
+            objects: Some(objects),
+        }),
+    };
+    let (router, delivering) = match routes {
+        Routes::Api => (adapter_http::api_router(state), None),
+        Routes::RunnerApi => (adapter_http::runner_router(state), None),
+        Routes::All => (adapter_http::router(state), Some(relay)),
+    };
+    listen_and_serve(listen, router, delivering).await
+}
+
+/// Binds `listen` and serves `router`, with `relay` delivering alongside where given, until
+/// SIGTERM or SIGINT; then finishes the requests in flight and returns.
+async fn listen_and_serve(
+    listen: SocketAddr,
+    router: axum::Router,
+    relay: Option<Arc<DirectoryRelay<ServerEnvironment>>>,
+) -> Result<(), Error> {
+    let listener = TcpListener::bind(listen)
         .await
-        .map_err(|error| Error::Bind(config.listen, error))?;
+        .map_err(|error| Error::Bind(listen, error))?;
     let address = listener.local_addr().map_err(Error::Serve)?;
     let mut terminate = signal(SignalKind::terminate()).map_err(Error::Serve)?;
     let mut interrupt = signal(SignalKind::interrupt()).map_err(Error::Serve)?;
     // Nowhere left to report a failed stderr write.
     let _ = writeln!(std::io::stderr(), "codehub listening on {address}");
-    let delivering = tokio::spawn(async move { relay.run().await });
+    let delivering = relay.map(|relay| tokio::spawn(async move { relay.run().await }));
     let served = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             tokio::select! {
@@ -317,6 +491,8 @@ pub async fn run(config: Config) -> Result<(), Error> {
         })
         .await
         .map_err(Error::Serve);
-    delivering.abort();
+    if let Some(delivering) = delivering {
+        delivering.abort();
+    }
     served
 }

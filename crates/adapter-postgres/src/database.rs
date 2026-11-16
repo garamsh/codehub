@@ -48,6 +48,35 @@ impl Database {
         Ok(Self { pool })
     }
 
+    /// Whether the database has applied every migration this build embeds. A schema that is newer,
+    /// one that has applied migrations this build does not know, is current too (ADR 0052).
+    ///
+    /// # Errors
+    ///
+    /// [`DatabaseError::Connect`] where the database does not answer.
+    pub async fn schema_is_current(&self) -> Result<bool, DatabaseError> {
+        let unanswered = |error: sqlx::Error| DatabaseError::Connect(error.to_string());
+        let recorded =
+            sqlx::query_scalar::<_, bool>("select to_regclass('_sqlx_migrations') is not null")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(unanswered)?;
+        if !recorded {
+            return Ok(false);
+        }
+        let applied = sqlx::query_scalar::<_, Option<i64>>(
+            "select max(version) from _sqlx_migrations where success",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(unanswered)?;
+        let latest = sqlx::migrate!("./migrations")
+            .iter()
+            .map(|migration| migration.version)
+            .max();
+        Ok(applied >= latest)
+    }
+
     /// Applies the migrations the database has not yet had, in order; a migration already
     /// applied is not applied again.
     ///

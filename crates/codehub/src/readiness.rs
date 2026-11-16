@@ -1,9 +1,11 @@
-//! The readiness probe: PostgreSQL and the object store each answer within [`LIMIT`].
+//! The readiness probe: PostgreSQL, the schema it holds and the object store each answer within
+//! [`LIMIT`].
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use adapter_http::{NotReady, Readiness};
+use adapter_postgres::{Database, DatabaseError};
 use app::domain::address::Address;
 use app::domain::repository::RepositoryId;
 use app::port::driven::object_store::ObjectStore;
@@ -13,10 +15,26 @@ use tokio::time::timeout;
 /// How long each dependency has to answer.
 const LIMIT: Duration = Duration::from_secs(2);
 
-/// Asks the directory, which PostgreSQL holds, and the object store a question each.
+/// Whether the database has the schema this binary was built for.
+#[async_trait::async_trait]
+pub(crate) trait Schema: Send + Sync {
+    /// Whether every migration this binary embeds has been applied; a newer schema is current.
+    async fn is_current(&self) -> Result<bool, DatabaseError>;
+}
+
+#[async_trait::async_trait]
+impl Schema for Database {
+    async fn is_current(&self) -> Result<bool, DatabaseError> {
+        self.schema_is_current().await
+    }
+}
+
+/// Asks the directory, which PostgreSQL holds, the schema and the object store a question each. A
+/// role that keeps no objects has none to ask.
 pub(crate) struct Probe {
     pub(crate) directory: Arc<dyn RepositoryDirectory>,
-    pub(crate) objects: Arc<dyn ObjectStore>,
+    pub(crate) schema: Arc<dyn Schema>,
+    pub(crate) objects: Option<Arc<dyn ObjectStore>>,
 }
 
 #[async_trait::async_trait]
@@ -25,14 +43,31 @@ impl Readiness for Probe {
         // Neither repository 0 nor the empty object need exist: a question answered "none" is
         // an answer.
         let probed = RepositoryId::new(0);
-        let (database, objects) = tokio::join!(
+        let (schema, database, objects) = tokio::join!(
+            timeout(LIMIT, self.schema.is_current()),
             timeout(LIMIT, self.directory.names_of(probed)),
-            timeout(LIMIT, self.objects.exists(probed, Address::of(b""))),
+            async {
+                match &self.objects {
+                    Some(objects) => {
+                        Some(timeout(LIMIT, objects.exists(probed, Address::of(b""))).await)
+                    }
+                    None => None,
+                }
+            },
         );
+        // A database that has not been migrated cannot answer the directory's question, so the
+        // schema is the reason given first.
+        match schema {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => {
+                return Err(NotReady("the database schema is older than this binary"));
+            }
+            _ => return Err(NotReady("PostgreSQL did not answer")),
+        }
         if !matches!(database, Ok(Ok(_))) {
             return Err(NotReady("PostgreSQL did not answer"));
         }
-        if !matches!(objects, Ok(Ok(_))) {
+        if objects.is_some_and(|answer| !matches!(answer, Ok(Ok(_)))) {
             return Err(NotReady("the object store did not answer"));
         }
         Ok(())
@@ -142,12 +177,58 @@ mod tests {
         }
     }
 
+    /// A schema that is current, older than the binary, or whose question fails.
+    struct Schemas(Result<bool, ()>);
+
+    #[async_trait::async_trait]
+    impl Schema for Schemas {
+        async fn is_current(&self) -> Result<bool, DatabaseError> {
+            self.0
+                .map_err(|()| DatabaseError::Connect("down".to_owned()))
+        }
+    }
+
+    async fn check_schema(
+        schema: Result<bool, ()>,
+        objects: Option<Answer>,
+    ) -> Result<(), NotReady> {
+        let probe = Probe {
+            directory: Arc::new(Directory(Answer::Ok)),
+            schema: Arc::new(Schemas(schema)),
+            objects: objects.map(|answer| Arc::new(Objects(answer)) as Arc<dyn ObjectStore>),
+        };
+        probe.check().await
+    }
+
     async fn check(database: Answer, objects: Answer) -> Result<(), NotReady> {
         let probe = Probe {
             directory: Arc::new(Directory(database)),
-            objects: Arc::new(Objects(objects)),
+            schema: Arc::new(Schemas(Ok(true))),
+            objects: Some(Arc::new(Objects(objects))),
         };
         probe.check().await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn is_not_ready_where_the_schema_is_older_than_the_binary() {
+        assert_eq!(check_schema(Ok(true), Some(Answer::Ok)).await, Ok(()));
+        assert_eq!(
+            check_schema(Ok(false), Some(Answer::Ok)).await,
+            Err(NotReady("the database schema is older than this binary"))
+        );
+        assert_eq!(
+            check_schema(Err(()), Some(Answer::Ok)).await,
+            Err(NotReady("PostgreSQL did not answer"))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn asks_no_object_store_of_a_role_that_has_none() {
+        assert_eq!(check_schema(Ok(true), None).await, Ok(()));
+        assert_eq!(
+            check_schema(Ok(true), Some(Answer::Fails)).await,
+            Err(NotReady("the object store did not answer"))
+        );
     }
 
     #[tokio::test(start_paused = true)]
