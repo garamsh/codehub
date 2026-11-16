@@ -15,9 +15,9 @@ use app::use_case::landing_attempts::LandingAttempts;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use oauth_client::Authentication;
 
-use crate::Error;
 use crate::overload::{OverloadOptions, TimingOptions};
 use crate::telemetry::{BacklogOptions, TelemetryOptions};
+use crate::{Error, RegistryOptions};
 
 /// The default of `--runner-claim-hold`, in seconds.
 const DEFAULT_CLAIM_HOLD: u64 = 30;
@@ -174,6 +174,8 @@ pub struct ApiOptions {
     #[command(flatten)]
     pub(crate) delivery: DeliveryOptions,
     #[command(flatten)]
+    pub(crate) registry: RegistryOptions,
+    #[command(flatten)]
     pub(crate) overload: OverloadOptions,
     #[command(flatten)]
     pub(crate) timing: TimingOptions,
@@ -261,6 +263,8 @@ pub struct AllOptions {
     pub(crate) directory: DirectoryOptions,
     #[command(flatten)]
     pub(crate) delivery: DeliveryOptions,
+    #[command(flatten)]
+    pub(crate) registry: RegistryOptions,
     #[command(flatten)]
     pub(crate) overload: OverloadOptions,
     #[command(flatten)]
@@ -1006,6 +1010,7 @@ mod tests {
             delivery: DeliveryOptions {
                 directory_delivery_wait: 2,
             },
+            registry: RegistryOptions::default(),
             overload: OverloadOptions {
                 rate_limit_per_second: NonZeroU32::MIN,
                 rate_limit_burst: NonZeroU32::MIN,
@@ -1106,7 +1111,7 @@ mod tests {
     #[test]
     fn each_role_takes_the_options_it_uses_and_no_others() {
         let all = options_of("all");
-        assert_eq!(all.len(), 51, "{all:?}");
+        assert_eq!(all.len(), 55, "{all:?}");
         let without = |role: &str, left_out: &[&str]| {
             let taken = options_of(role);
             let expected: Vec<String> = all
@@ -1144,6 +1149,12 @@ mod tests {
         ];
         let directory_settings = ["directory-changes", "directory-garam-url"];
         let creation_wait = ["directory-delivery-wait"];
+        let registry_settings = [
+            "registry-issuer",
+            "registry-service",
+            "registry-key-file",
+            "registry-key-id",
+        ];
         let landing = ["landing-attempts"];
         let backlog = ["backlog-interval"];
         let overload_settings = [
@@ -1162,7 +1173,12 @@ mod tests {
         without("api", &concat(&[&runner_settings, &backlog]));
         without(
             "runner-api",
-            &concat(&[&directory_settings, &creation_wait, &backlog]),
+            &concat(&[
+                &directory_settings,
+                &creation_wait,
+                &registry_settings,
+                &backlog,
+            ]),
         );
         without(
             "worker",
@@ -1172,6 +1188,7 @@ mod tests {
                 &decision_settings,
                 &runner_settings,
                 &creation_wait,
+                &registry_settings,
                 &landing,
                 &overload_settings,
             ]),

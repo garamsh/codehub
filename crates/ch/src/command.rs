@@ -399,9 +399,14 @@ fn issuer(given: Option<String>, token: &str) -> Result<String, Failure> {
     }
 }
 
-/// The grants the `--read` and `--write` prefixes name, and the `--run` grant on the whole
-/// repository where `run` is set.
-fn grants(principal: &Principal, read: Vec<String>, write: Vec<String>, run: bool) -> Vec<Grant> {
+/// The grants the `--read` and `--write` prefixes name, and one on the whole repository for each
+/// access of `whole`.
+fn grants(
+    principal: &Principal,
+    read: Vec<String>,
+    write: Vec<String>,
+    whole: &[Access],
+) -> Vec<Grant> {
     let named = |prefixes: Vec<String>, access: Access| {
         prefixes.into_iter().map(move |prefix| Grant {
             issuer: principal.issuer.clone(),
@@ -412,10 +417,11 @@ fn grants(principal: &Principal, read: Vec<String>, write: Vec<String>, run: boo
     };
     named(read, Access::Read)
         .chain(named(write, Access::Write))
-        .chain(named(
-            run.then(String::new).into_iter().collect(),
-            Access::Run,
-        ))
+        .chain(
+            whole
+                .iter()
+                .flat_map(|access| named(vec![String::new()], *access)),
+        )
         .collect()
 }
 
@@ -431,6 +437,8 @@ async fn member(context: &Context, command: MemberCommand) -> Result<(), Failure
             read,
             write,
             run,
+            image_pull,
+            image_push,
         } => {
             let principal = Principal {
                 issuer: issuer(given, &session.token)?,
@@ -445,7 +453,15 @@ async fn member(context: &Context, command: MemberCommand) -> Result<(), Failure
                 },
             };
             api.put_member(&repository.organisation, &member).await?;
-            for grant in grants(&principal, read, write, run) {
+            let whole: Vec<Access> = [
+                (run, Access::Run),
+                (image_pull, Access::ImagePull),
+                (image_push, Access::ImagePush),
+            ]
+            .into_iter()
+            .filter_map(|(held, access)| held.then_some(access))
+            .collect();
+            for grant in grants(&principal, read, write, &whole) {
                 api.change_grant(repository, &grant, true).await?;
             }
             Ok(())
@@ -465,7 +481,7 @@ async fn member(context: &Context, command: MemberCommand) -> Result<(), Failure
                     .delete_member(&repository.organisation, &principal)
                     .await;
             }
-            for grant in grants(&principal, read, write, false) {
+            for grant in grants(&principal, read, write, &[]) {
                 api.change_grant(repository, &grant, false).await?;
             }
             Ok(())

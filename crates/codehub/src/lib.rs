@@ -32,6 +32,7 @@ use app::port::driven::backlog::Backlog;
 use app::port::driven::directory_changes::DirectoryChanges;
 use app::port::driven::identity_verification::{IdentityError, IdentityVerification};
 use app::port::driven::object_store::ObjectStoreError;
+use app::port::driving::registry_token::RegistryToken;
 use app::use_case::assembly::Assembly;
 use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::relay::{DirectoryRelay, RelayEnvironment};
@@ -41,11 +42,13 @@ use tokio::signal::unix::{SignalKind, signal};
 
 mod overload;
 mod readiness;
+mod registry;
 mod settings;
 mod telemetry;
 
 pub use overload::{OverloadOptions, TimingOptions};
 use readiness::Probe;
+pub use registry::{RegistryError, RegistryOptions};
 pub use settings::{
     AllOptions, ApiOptions, Authorisation, AuthorisationOptions, AuthzenClientAuthentication,
     AuthzenClientOptions, AuthzenProfile, Cli, DatabaseOptions, DeliveryOptions,
@@ -93,6 +96,8 @@ pub enum Error {
     },
     /// The log, the trace export or the metrics could not be set up; carries a description.
     Telemetry(String),
+    /// The registry token endpoint could not be configured.
+    Registry(RegistryError),
     /// The listening address could not be bound.
     Bind(SocketAddr, std::io::Error),
     /// Signal handlers could not be installed, the address read or the server run.
@@ -141,6 +146,7 @@ impl fmt::Display for Error {
             Self::Telemetry(description) => {
                 write!(f, "configuring telemetry failed: {description}")
             }
+            Self::Registry(error) => error.fmt(f),
             Self::Bind(address, error) => write!(f, "binding {address} failed: {error}"),
             Self::Serve(error) => write!(f, "serving failed: {error}"),
         }
@@ -292,6 +298,8 @@ struct Http<'a> {
     telemetry: &'a Telemetry,
     /// How often the backlog is read, in seconds, where this role runs the background work.
     backlog: Option<NonZeroU32>,
+    /// The registry token endpoint, for a role that serves the user API.
+    registry: Option<&'a RegistryOptions>,
 }
 
 /// Connects, and migrates where this is the `all` role, binds and serves until SIGTERM or SIGINT,
@@ -325,6 +333,7 @@ async fn run_role(role: Role, telemetry: &Telemetry) -> Result<(), Error> {
                 serving: options.serving(),
                 telemetry,
                 backlog: None,
+                registry: Some(&options.registry),
             })
             .await
         }
@@ -341,6 +350,7 @@ async fn run_role(role: Role, telemetry: &Telemetry) -> Result<(), Error> {
                 serving: options.serving(),
                 telemetry,
                 backlog: None,
+                registry: None,
             })
             .await
         }
@@ -357,6 +367,7 @@ async fn run_role(role: Role, telemetry: &Telemetry) -> Result<(), Error> {
                 serving: options.serving(),
                 telemetry,
                 backlog: Some(options.backlog.backlog_interval),
+                registry: Some(&options.registry),
             })
             .await
         }
@@ -447,7 +458,13 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
         serving,
         telemetry,
         backlog,
+        registry,
     } = http;
+    let registry = registry
+        .map(RegistryOptions::configure)
+        .transpose()
+        .map_err(Error::Registry)?
+        .flatten();
     let selection = serving.select()?;
     let administration = selection.administration;
     let identity = verifier(
@@ -532,6 +549,13 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
         jobs: Arc::new(assembly.jobs()),
         checks: Arc::new(assembly.checks()),
         runs: Arc::new(assembly.runs()),
+        registry_token: registry.map(|registry| {
+            Arc::new(
+                assembly.registry_token(registry.issuance, registry.service, || {
+                    ServerEnvironment.now()
+                }),
+            ) as Arc<dyn RegistryToken>
+        }),
         settings: RunnerSettings {
             hold: Duration::from_secs(runner.runner_claim_hold),
             retry_interval: CLAIM_RETRY_INTERVAL,

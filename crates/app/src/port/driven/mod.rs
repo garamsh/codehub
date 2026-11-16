@@ -13,5 +13,6 @@ pub mod identity_verification;
 pub mod job_queue;
 pub mod membership;
 pub mod object_store;
+pub mod registry_token_issuance;
 pub mod repository_directory;
 pub mod runner_registry;

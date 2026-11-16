@@ -17,7 +17,7 @@ pub enum Role {
     Member,
 }
 
-/// What a grant allows; `Write` includes `Read`, and `Run` includes neither.
+/// What a grant allows; `Write` includes `Read`; `Run`, `ImagePull` and `ImagePush` include nothing else.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Access {
     /// Read.
@@ -27,6 +27,12 @@ pub enum Access {
     /// Run a command on a runner against the caller's workspace (ADR 0051); held for the whole
     /// repository only.
     Run,
+    /// Pull the repository's images from the registry (ADR 0053); held for the whole repository
+    /// only.
+    ImagePull,
+    /// Push the repository's images to the registry (ADR 0053); held for the whole repository
+    /// only, and not including `ImagePull`.
+    ImagePush,
 }
 
 /// Permission for a member over the paths of one repository under a prefix.

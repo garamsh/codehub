@@ -8,6 +8,7 @@ rust-version.workspace = true
 app = { path = "../app" }
 async-trait.workspace = true
 axum = { workspace = true, features = ["json", "matched-path", "query"] }
+base64.workspace = true
 metrics.workspace = true
 opentelemetry.workspace = true
 opentelemetry-http.workspace = true

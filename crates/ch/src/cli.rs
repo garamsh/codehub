@@ -444,6 +444,14 @@ pub enum MemberCommand {
         /// workspace; for the whole repository only.
         #[arg(long)]
         run: bool,
+        /// Grant the right to pull the repository's images from the registry; for the whole
+        /// repository only.
+        #[arg(long)]
+        image_pull: bool,
+        /// Grant the right to push the repository's images to the registry; for the whole
+        /// repository only.
+        #[arg(long)]
+        image_push: bool,
     },
     /// Remove a member, or only the grants named.
     Remove {
@@ -523,6 +531,25 @@ mod tests {
         };
         assert!(run);
         assert!(parse(&["member", "add", "bob", "--run", "src"]).is_err());
+    }
+
+    #[test]
+    fn takes_the_image_grants_as_flags_for_the_whole_repository() {
+        let cli = parse(&["member", "add", "bob", "--image-pull", "--image-push"]).unwrap();
+        let Command::Member {
+            command:
+                MemberCommand::Add {
+                    image_pull,
+                    image_push,
+                    run,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("not member add");
+        };
+        assert!(image_pull && image_push && !run);
+        assert!(parse(&["member", "add", "bob", "--image-pull", "src"]).is_err());
     }
 
     #[test]

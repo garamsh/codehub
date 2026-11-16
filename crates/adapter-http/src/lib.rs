@@ -10,6 +10,7 @@ mod members;
 mod observe;
 mod overload;
 mod problem;
+mod registry;
 mod repositories;
 mod runners;
 mod runs;
@@ -24,6 +25,7 @@ use app::port::driving::authentication::Authentication;
 use app::port::driving::checks::Checks;
 use app::port::driving::jobs::Jobs;
 use app::port::driving::members::Members;
+use app::port::driving::registry_token::RegistryToken;
 use app::port::driving::repositories::Repositories;
 use app::port::driving::runners::Runners;
 use app::port::driving::runs::Runs;
@@ -101,6 +103,9 @@ pub struct ApiState {
     pub checks: Arc<dyn Checks>,
     /// Starts, reads and cancels the runs of a workspace.
     pub runs: Arc<dyn Runs>,
+    /// Issues the registry's tokens; `None` where the server is not configured to, and the token
+    /// endpoint answers 404.
+    pub registry_token: Option<Arc<dyn RegistryToken>>,
     /// How a runner's claim is held.
     pub settings: RunnerSettings,
     /// Asked on every request to `/readyz`.
@@ -163,6 +168,19 @@ routes! {
     "/v1/orgs/{org}/repos/{repo}/runs/{id}" => get(runs::get);
     "/v1/orgs/{org}/repos/{repo}/runs/{id}/cancel" => post(runs::cancel);
     "/v1/orgs/{org}/repos/{repo}/runs/{id}/files" => get(runs::files);
+}
+
+/// Every route of the registry's token endpoint, which [`router`] and [`api_router`] serve beside
+/// [`ROUTES`]: its path template and the lowercase names of its methods. It is declared apart
+/// because a method it does not take is answered with the `Allow` header the endpoint's protocol
+/// asks for.
+pub const REGISTRY_ROUTES: &[(&str, &[&str])] = &[(registry::PATH, &["get"])];
+
+fn registry_routed() -> Router<Arc<ApiState>> {
+    Router::new().route(
+        registry::PATH,
+        routing::get(registry::token).fallback(registry::not_get),
+    )
 }
 
 routes! {
@@ -230,16 +248,19 @@ fn runner_bounded() -> Router<Arc<ApiState>> {
     runner_routed().layer(DefaultBodyLimit::max(RUNNER_BODY_BYTES))
 }
 
-/// The router serving the whole API over `state`: every route of [`ROUTES`], [`RUNNER_ROUTES`]
-/// and [`HEALTH_ROUTES`], and a fallback for a request no route matches.
+/// The router serving the whole API over `state`: every route of [`ROUTES`], [`REGISTRY_ROUTES`],
+/// [`RUNNER_ROUTES`] and [`HEALTH_ROUTES`], and a fallback for a request no route matches.
 pub fn router(state: ApiState) -> Router {
-    serve(routed().merge(runner_bounded()), state)
+    serve(
+        routed().merge(registry_routed()).merge(runner_bounded()),
+        state,
+    )
 }
 
-/// The router of the user and agent API: every route of [`ROUTES`] and [`HEALTH_ROUTES`], and a
-/// fallback for a request no route matches, which `/v1/runner/` is.
+/// The router of the user and agent API: every route of [`ROUTES`], [`REGISTRY_ROUTES`] and
+/// [`HEALTH_ROUTES`], and a fallback for a request no route matches, which `/v1/runner/` is.
 pub fn api_router(state: ApiState) -> Router {
-    serve(routed(), state)
+    serve(routed().merge(registry_routed()), state)
 }
 
 /// The router of the runner API: every route of [`RUNNER_ROUTES`] and [`HEALTH_ROUTES`], and a

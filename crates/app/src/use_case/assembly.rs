@@ -14,6 +14,7 @@ use crate::port::driven::identity_verification::IdentityVerification;
 use crate::port::driven::job_queue::JobQueue;
 use crate::port::driven::membership::Membership;
 use crate::port::driven::object_store::ObjectStore;
+use crate::port::driven::registry_token_issuance::RegistryTokenIssuance;
 use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driven::runner_registry::RunnerRegistry;
 use crate::use_case::administration::Administration;
@@ -23,6 +24,7 @@ use crate::use_case::jobs::{JobsAdapters, JobsService};
 use crate::use_case::landing_attempts::LandingAttempts;
 use crate::use_case::members::{MembersAdapters, MembersService};
 use crate::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
+use crate::use_case::registry_token::{RegistryTokenAdapters, RegistryTokenService};
 use crate::use_case::relay::Delivery;
 use crate::use_case::repositories::{RepositoriesAdapters, RepositoriesService};
 use crate::use_case::runners::{RunnersAdapters, RunnersService};
@@ -103,6 +105,25 @@ impl Assembly {
                 membership: Arc::clone(&self.membership),
             },
             self.administration,
+        )
+    }
+
+    /// The registry token port of the registry `service`, signing through `issuance` and reading
+    /// the time in seconds since 1970-01-01T00:00:00Z from `now`.
+    pub fn registry_token(
+        &self,
+        issuance: Arc<dyn RegistryTokenIssuance>,
+        service: String,
+        now: fn() -> i64,
+    ) -> RegistryTokenService {
+        RegistryTokenService::new(
+            RegistryTokenAdapters {
+                directory: Arc::clone(&self.directory),
+                authorisation: Arc::clone(&self.authorisation),
+                issuance,
+            },
+            service,
+            now,
         )
     }
 
