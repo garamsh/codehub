@@ -8,10 +8,12 @@ use sqlx::PgPool;
 
 use crate::conversion;
 use crate::database::Database;
+use crate::statements::Statements;
 
 /// The cache refs in PostgreSQL.
 pub struct PostgresCacheRefs {
     pool: PgPool,
+    statements: Statements,
 }
 
 impl PostgresCacheRefs {
@@ -20,6 +22,7 @@ impl PostgresCacheRefs {
     pub fn new(database: &Database) -> Self {
         Self {
             pool: database.pool.clone(),
+            statements: database.statements,
         }
     }
 }
@@ -44,16 +47,18 @@ impl CacheRefs for PostgresCacheRefs {
         folder: &Prefix,
         path: &Path,
     ) -> Result<Option<CacheRef>, CacheRefsError> {
-        let row = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
-            "select tree, changeset from cache_refs \
+        let row = self
+            .statements
+            .query_as::<(Vec<u8>, Vec<u8>)>(
+                "select tree, changeset from cache_refs \
              where repository = $1 and folder = $2 and cache_path = $3",
-        )
-        .bind(conversion::repository_column(repository).map_err(backend)?)
-        .bind(conversion::prefix_column(folder))
-        .bind(conversion::path_column(path))
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(backend)?;
+            )
+            .bind(conversion::repository_column(repository).map_err(backend)?)
+            .bind(conversion::prefix_column(folder))
+            .bind(conversion::path_column(path))
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?;
         row.map(|(tree, changeset)| {
             Ok::<_, String>(CacheRef {
                 tree: conversion::address(tree)?,
@@ -79,31 +84,33 @@ impl CacheRefs for PostgresCacheRefs {
         let changeset = to.changeset.digest().as_slice();
         let moved = match from {
             None => {
-                sqlx::query(
-                    "insert into cache_refs (repository, folder, cache_path, tree, changeset) \
+                self.statements
+                    .query(
+                        "insert into cache_refs (repository, folder, cache_path, tree, changeset) \
                      values ($1, $2, $3, $4, $5) on conflict do nothing",
-                )
-                .bind(repository)
-                .bind(folder)
-                .bind(path)
-                .bind(tree)
-                .bind(changeset)
-                .execute(&self.pool)
-                .await
+                    )
+                    .bind(repository)
+                    .bind(folder)
+                    .bind(path)
+                    .bind(tree)
+                    .bind(changeset)
+                    .execute(&self.pool)
+                    .await
             }
             Some(from) => {
-                sqlx::query(
-                    "update cache_refs set tree = $4, changeset = $5, updated_at = now() \
+                self.statements
+                    .query(
+                        "update cache_refs set tree = $4, changeset = $5, updated_at = now() \
                      where repository = $1 and folder = $2 and cache_path = $3 and changeset = $6",
-                )
-                .bind(repository)
-                .bind(folder)
-                .bind(path)
-                .bind(tree)
-                .bind(changeset)
-                .bind(from.digest().as_slice())
-                .execute(&self.pool)
-                .await
+                    )
+                    .bind(repository)
+                    .bind(folder)
+                    .bind(path)
+                    .bind(tree)
+                    .bind(changeset)
+                    .bind(from.digest().as_slice())
+                    .execute(&self.pool)
+                    .await
             }
         }
         .map_err(backend)?
@@ -117,16 +124,18 @@ impl CacheRefs for PostgresCacheRefs {
         instance: Instance,
         path: &Path,
     ) -> Result<Option<Address>, CacheRefsError> {
-        let tree = sqlx::query_scalar::<_, Vec<u8>>(
-            "select tree from workspace_cache_refs \
+        let tree = self
+            .statements
+            .query_scalar::<Vec<u8>>(
+                "select tree from workspace_cache_refs \
              where repository = $1 and instance = $2 and cache_path = $3",
-        )
-        .bind(conversion::repository_column(repository).map_err(backend)?)
-        .bind(instance_column(instance)?)
-        .bind(conversion::path_column(path))
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(backend)?;
+            )
+            .bind(conversion::repository_column(repository).map_err(backend)?)
+            .bind(instance_column(instance)?)
+            .bind(conversion::path_column(path))
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?;
         tree.map(conversion::address).transpose().map_err(backend)
     }
 
@@ -137,18 +146,20 @@ impl CacheRefs for PostgresCacheRefs {
         path: &Path,
         tree: Address,
     ) -> Result<bool, CacheRefsError> {
-        let created = sqlx::query(
-            "insert into workspace_cache_refs (repository, instance, cache_path, tree) \
+        let created = self
+            .statements
+            .query(
+                "insert into workspace_cache_refs (repository, instance, cache_path, tree) \
              values ($1, $2, $3, $4) on conflict do nothing",
-        )
-        .bind(conversion::repository_column(repository).map_err(backend)?)
-        .bind(instance_column(instance)?)
-        .bind(conversion::path_column(path))
-        .bind(tree.digest().as_slice())
-        .execute(&self.pool)
-        .await
-        .map_err(backend)?
-        .rows_affected();
+            )
+            .bind(conversion::repository_column(repository).map_err(backend)?)
+            .bind(instance_column(instance)?)
+            .bind(conversion::path_column(path))
+            .bind(tree.digest().as_slice())
+            .execute(&self.pool)
+            .await
+            .map_err(backend)?
+            .rows_affected();
         Ok(created == 1)
     }
 
@@ -160,19 +171,21 @@ impl CacheRefs for PostgresCacheRefs {
         from: Address,
         to: Address,
     ) -> Result<bool, CacheRefsError> {
-        let moved = sqlx::query(
-            "update workspace_cache_refs set tree = $4, updated_at = now() \
+        let moved = self
+            .statements
+            .query(
+                "update workspace_cache_refs set tree = $4, updated_at = now() \
              where repository = $1 and instance = $2 and cache_path = $3 and tree = $5",
-        )
-        .bind(conversion::repository_column(repository).map_err(backend)?)
-        .bind(instance_column(instance)?)
-        .bind(conversion::path_column(path))
-        .bind(to.digest().as_slice())
-        .bind(from.digest().as_slice())
-        .execute(&self.pool)
-        .await
-        .map_err(backend)?
-        .rows_affected();
+            )
+            .bind(conversion::repository_column(repository).map_err(backend)?)
+            .bind(instance_column(instance)?)
+            .bind(conversion::path_column(path))
+            .bind(to.digest().as_slice())
+            .bind(from.digest().as_slice())
+            .execute(&self.pool)
+            .await
+            .map_err(backend)?
+            .rows_affected();
         Ok(moved == 1)
     }
 
@@ -181,7 +194,8 @@ impl CacheRefs for PostgresCacheRefs {
         repository: RepositoryId,
         instance: Instance,
     ) -> Result<(), CacheRefsError> {
-        sqlx::query("delete from workspace_cache_refs where repository = $1 and instance = $2")
+        self.statements
+            .query("delete from workspace_cache_refs where repository = $1 and instance = $2")
             .bind(conversion::repository_column(repository).map_err(backend)?)
             .bind(instance_column(instance)?)
             .execute(&self.pool)

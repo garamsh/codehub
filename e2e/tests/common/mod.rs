@@ -176,7 +176,11 @@ impl Server {
     }
 
     /// Starts the built `codehub` with `settings` set after the check environment's.
-    fn start_with(database: &TestDatabase, settings: Vec<(&'static str, String)>) -> Self {
+    ///
+    /// # Panics
+    ///
+    /// Panics where [`Server::start`] does.
+    pub fn start_with(database: &TestDatabase, settings: Vec<(&'static str, String)>) -> Self {
         Self(test_support::Server::start_with(
             &binary("codehub"),
             database,

@@ -41,12 +41,14 @@ use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 
 mod overload;
+mod postgres;
 mod readiness;
 mod registry;
 mod settings;
 mod telemetry;
 
 pub use overload::{OverloadOptions, TimingOptions};
+pub use postgres::{MigrationOptions, PostgresSettings, ReplicaOptions};
 use readiness::Probe;
 pub use registry::{RegistryError, RegistryOptions};
 pub use settings::{
@@ -288,6 +290,10 @@ struct Http<'a> {
     routes: Routes,
     listen: SocketAddr,
     database: &'a DatabaseOptions,
+    /// The read replica serving the immutable reads, if any.
+    read_url: Option<&'a str>,
+    /// Where migrations are applied, for the role that migrates.
+    migration: Option<&'a MigrationOptions>,
     objects: &'a ObjectOptions,
     landing: &'a LandingOptions,
     overload: &'a OverloadOptions,
@@ -318,13 +324,15 @@ pub async fn run(cli: Cli) -> Result<(), Error> {
 /// Runs `role` until it stops.
 async fn run_role(role: Role, telemetry: &Telemetry) -> Result<(), Error> {
     match role {
-        Role::Migrate(options) => migrate(&options.database).await,
+        Role::Migrate(options) => migrate(&options.database, &options.migration).await,
         Role::Worker(options) => work(&options, telemetry).await,
         Role::Api(options) => {
             serve(Http {
                 routes: Routes::Api,
                 listen: options.listen.listen,
                 database: &options.database,
+                read_url: options.replica.postgres_read_url.as_deref(),
+                migration: None,
                 objects: &options.objects,
                 landing: &options.landing,
                 overload: &options.overload,
@@ -342,6 +350,8 @@ async fn run_role(role: Role, telemetry: &Telemetry) -> Result<(), Error> {
                 routes: Routes::RunnerApi,
                 listen: options.listen.listen,
                 database: &options.database,
+                read_url: options.replica.postgres_read_url.as_deref(),
+                migration: None,
                 objects: &options.objects,
                 landing: &options.landing,
                 overload: &options.overload,
@@ -359,6 +369,8 @@ async fn run_role(role: Role, telemetry: &Telemetry) -> Result<(), Error> {
                 routes: Routes::All,
                 listen: options.listen.listen,
                 database: &options.database,
+                read_url: options.replica.postgres_read_url.as_deref(),
+                migration: Some(&options.migration),
                 objects: &options.objects,
                 landing: &options.landing,
                 overload: &options.overload,
@@ -376,14 +388,12 @@ async fn run_role(role: Role, telemetry: &Telemetry) -> Result<(), Error> {
 
 /// Opens the pool `options` names.
 async fn connect(options: &DatabaseOptions) -> Result<Database, Error> {
-    Database::connect(&options.postgres_url, options.postgres_pool_size)
-        .await
-        .map_err(Error::Database)
+    postgres::open(options, None).await
 }
 
 /// Applies the migrations the database has not had.
-async fn migrate(options: &DatabaseOptions) -> Result<(), Error> {
-    connect(options)
+async fn migrate(options: &DatabaseOptions, migration: &MigrationOptions) -> Result<(), Error> {
+    postgres::open_for_migration(options, migration)
         .await?
         .migrate()
         .await
@@ -450,6 +460,8 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
         routes,
         listen,
         database: database_options,
+        read_url,
+        migration,
         objects: object_options,
         landing,
         overload,
@@ -472,10 +484,10 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
         Duration::from_secs(serving.identity.jwks_min_refetch_seconds),
         overload.identity_timeout(),
     )?;
-    let database = connect(database_options).await?;
-    if routes == Routes::All {
-        database.migrate().await.map_err(Error::Database)?;
+    if let Some(migration) = migration {
+        migrate(database_options, migration).await?;
     }
+    let database = postgres::open(database_options, read_url).await?;
     let _watching = Telemetry::watch(
         database.clone(),
         backlog.map(|interval| {

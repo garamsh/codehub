@@ -18,6 +18,8 @@ use app::port::driven::job_queue::JobQueueError;
 use sqlx::{FromRow, PgPool};
 
 use crate::conversion;
+use crate::retry;
+use crate::statements::Statements;
 
 /// The columns of a run, in the order [`RunRow`] reads them.
 macro_rules! columns {
@@ -341,10 +343,14 @@ fn run(row: RunRow) -> Result<Run, JobQueueError> {
 }
 
 /// Records `new` as queued.
-pub(crate) async fn queue(pool: &PgPool, new: NewRun) -> Result<Run, JobQueueError> {
+pub(crate) async fn queue(
+    pool: &PgPool,
+    statements: Statements,
+    new: NewRun,
+) -> Result<Run, JobQueueError> {
     let files: Vec<_> = new.files.iter().collect();
     let caches: Vec<_> = new.caches.iter().collect();
-    let row = sqlx::query_as::<_, RunRow>(concat!(
+    let row = statements.query_as::<RunRow>(concat!(
         "insert into runs (organisation, repository, issuer, subject, draft, instance, version, \
          base, command, prefix, add_paths, outputs, labels, timeout_seconds, cache_paths, \
          cache_trees, file_paths, file_kinds, file_contents, state) \
@@ -407,33 +413,42 @@ pub(crate) async fn queue(pool: &PgPool, new: NewRun) -> Result<Run, JobQueueErr
 }
 
 /// The run `id`.
-pub(crate) async fn find(pool: &PgPool, id: RunId) -> Result<Run, JobQueueError> {
-    let row =
-        sqlx::query_as::<_, RunRow>(concat!("select ", columns!(), " from runs where id = $1"))
-            .bind(number(id.value(), "run")?)
-            .fetch_optional(pool)
-            .await
-            .map_err(backend)?
-            .ok_or_else(|| JobQueueError::NotFound(app::domain::job::JobId::new(id.value())))?;
+pub(crate) async fn find(
+    pool: &PgPool,
+    statements: Statements,
+    id: RunId,
+) -> Result<Run, JobQueueError> {
+    let row = statements
+        .query_as::<RunRow>(concat!("select ", columns!(), " from runs where id = $1"))
+        .bind(number(id.value(), "run")?)
+        .fetch_optional(pool)
+        .await
+        .map_err(backend)?
+        .ok_or_else(|| JobQueueError::NotFound(app::domain::job::JobId::new(id.value())))?;
     run(row)
 }
 
 /// Ends the run `id` as cancelled.
-pub(crate) async fn cancel(pool: &PgPool, id: RunId) -> Result<Run, JobQueueError> {
-    let row = sqlx::query_as::<_, RunRow>(concat!(
-        "update runs set state = 'cancelled', lease_expires_at = null, deadline = null, \
+pub(crate) async fn cancel(
+    pool: &PgPool,
+    statements: Statements,
+    id: RunId,
+) -> Result<Run, JobQueueError> {
+    let row = statements
+        .query_as::<RunRow>(concat!(
+            "update runs set state = 'cancelled', lease_expires_at = null, deadline = null, \
          updated_at = now() \
          where id = $1 and state in ('queued', 'running') returning ",
-        columns!()
-    ))
-    .bind(number(id.value(), "run")?)
-    .fetch_optional(pool)
-    .await
-    .map_err(backend)?;
+            columns!()
+        ))
+        .bind(number(id.value(), "run")?)
+        .fetch_optional(pool)
+        .await
+        .map_err(backend)?;
     match row {
         Some(row) => run(row),
         None => {
-            find(pool, id).await?;
+            find(pool, statements, id).await?;
             Err(JobQueueError::Finished(app::domain::job::JobId::new(
                 id.value(),
             )))
@@ -444,28 +459,30 @@ pub(crate) async fn cancel(pool: &PgPool, id: RunId) -> Result<Run, JobQueueErro
 /// The latest ended run of the workspace.
 pub(crate) async fn latest(
     pool: &PgPool,
+    statements: Statements,
     repository: RepositoryId,
     principal: &Principal,
     draft: &DraftName,
     instance: Instance,
 ) -> Result<Option<Run>, JobQueueError> {
-    sqlx::query_as::<_, RunRow>(concat!(
-        "select ",
-        columns!(),
-        " from runs where repository = $1 and issuer = $2 and subject = $3 \
+    statements
+        .query_as::<RunRow>(concat!(
+            "select ",
+            columns!(),
+            " from runs where repository = $1 and issuer = $2 and subject = $3 \
          and draft = $4 and instance = $5 and state = any($6) order by id desc limit 1"
-    ))
-    .bind(conversion::repository_column(repository).map_err(backend)?)
-    .bind(principal.issuer())
-    .bind(principal.subject())
-    .bind(draft.as_str())
-    .bind(number(instance.get(), "instance")?)
-    .bind(ended_columns())
-    .fetch_optional(pool)
-    .await
-    .map_err(backend)?
-    .map(run)
-    .transpose()
+        ))
+        .bind(conversion::repository_column(repository).map_err(backend)?)
+        .bind(principal.issuer())
+        .bind(principal.subject())
+        .bind(draft.as_str())
+        .bind(number(instance.get(), "instance")?)
+        .bind(ended_columns())
+        .fetch_optional(pool)
+        .await
+        .map_err(backend)?
+        .map(run)
+        .transpose()
 }
 
 fn runners(held: &[RegistrationId]) -> Result<Vec<i64>, JobQueueError> {
@@ -482,6 +499,7 @@ fn not_found(id: RunId) -> JobQueueError {
 /// that concurrent claims never take one run.
 pub(crate) async fn claim(
     pool: &PgPool,
+    statements: Statements,
     registrations: &[Registration],
     now: i64,
     lease: i64,
@@ -490,8 +508,31 @@ pub(crate) async fn claim(
         .iter()
         .map(|registration| number(registration.id.value(), "registration"))
         .collect::<Result<Vec<_>, _>>()?;
-    sqlx::query_as::<_, RunRow>(concat!(
-        "with next as ( \
+    // A plain read first: with nothing to take, the claim locks no row.
+    let waiting = retry::idempotent(|| async {
+        statements
+            .query_scalar::<bool>(
+                "select exists ( \
+                 select 1 from runs u \
+                 join runner_registrations r \
+                     on r.id = any($1) \
+                     and r.organisation = u.organisation \
+                     and (r.repository is null or r.repository = u.repository) \
+                     and u.labels <@ r.labels \
+                 where u.state = 'queued')",
+            )
+            .bind(&ids)
+            .fetch_one(pool)
+            .await
+    })
+    .await
+    .map_err(backend)?;
+    if !waiting {
+        return Ok(None);
+    }
+    statements
+        .query_as::<RunRow>(concat!(
+            "with next as ( \
              select u.id as run, r.id as registration \
              from runs u \
              join runner_registrations r \
@@ -508,21 +549,22 @@ pub(crate) async fn claim(
              updated_at = now() \
          from next where runs.id = next.run \
          returning ",
-        columns!()
-    ))
-    .bind(ids)
-    .bind(now)
-    .bind(lease)
-    .fetch_optional(pool)
-    .await
-    .map_err(backend)?
-    .map(run)
-    .transpose()
+            columns!()
+        ))
+        .bind(ids)
+        .bind(now)
+        .bind(lease)
+        .fetch_optional(pool)
+        .await
+        .map_err(backend)?
+        .map(run)
+        .transpose()
 }
 
 /// Extends the lease on the run `id`, or says why the runner is to stop.
 pub(crate) async fn heartbeat(
     pool: &PgPool,
+    statements: Statements,
     id: RunId,
     held: &[RegistrationId],
     now: i64,
@@ -531,31 +573,33 @@ pub(crate) async fn heartbeat(
     let number_of = number(id.value(), "run")?;
     let held = runners(held)?;
     let mut transaction = pool.begin().await.map_err(backend)?;
-    let extended = sqlx::query(
-        "update runs set lease_expires_at = $3 + $4, updated_at = now() \
+    let extended = statements
+        .query(
+            "update runs set lease_expires_at = $3 + $4, updated_at = now() \
          where id = $1 and state = 'running' and runner = any($2) and deadline > $3",
-    )
-    .bind(number_of)
-    .bind(&held)
-    .bind(now)
-    .bind(lease)
-    .execute(&mut *transaction)
-    .await
-    .map_err(backend)?
-    .rows_affected();
-    let stopped = if extended == 1 {
-        None
-    } else {
-        sqlx::query_scalar::<_, String>(
-            "select case when state = 'running' and deadline <= $3 then 'timed_out' \
-             else state end from runs where id = $1 and runner = any($2)",
         )
         .bind(number_of)
         .bind(&held)
         .bind(now)
-        .fetch_optional(&mut *transaction)
+        .bind(lease)
+        .execute(&mut *transaction)
         .await
         .map_err(backend)?
+        .rows_affected();
+    let stopped = if extended == 1 {
+        None
+    } else {
+        statements
+            .query_scalar::<String>(
+                "select case when state = 'running' and deadline <= $3 then 'timed_out' \
+             else state end from runs where id = $1 and runner = any($2)",
+            )
+            .bind(number_of)
+            .bind(&held)
+            .bind(now)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(backend)?
     };
     transaction.commit().await.map_err(backend)?;
     match (extended, stopped.as_deref()) {
@@ -570,46 +614,50 @@ pub(crate) async fn heartbeat(
 /// The run `id`, where one of `held` holds it and may still upload and report.
 pub(crate) async fn held(
     pool: &PgPool,
+    statements: Statements,
     id: RunId,
     held: &[RegistrationId],
 ) -> Result<Run, JobQueueError> {
-    let row = sqlx::query_as::<_, RunRow>(concat!(
-        "select ",
-        columns!(),
-        " from runs where id = $1 and runner = any($2) and (state = 'running' \
+    let row = statements
+        .query_as::<RunRow>(concat!(
+            "select ",
+            columns!(),
+            " from runs where id = $1 and runner = any($2) and (state = 'running' \
          or (state in ('cancelled', 'timed_out') and result_outcome is null))"
-    ))
-    .bind(number(id.value(), "run")?)
-    .bind(runners(held)?)
-    .fetch_optional(pool)
-    .await
-    .map_err(backend)?
-    .ok_or_else(|| not_found(id))?;
+        ))
+        .bind(number(id.value(), "run")?)
+        .bind(runners(held)?)
+        .fetch_optional(pool)
+        .await
+        .map_err(backend)?
+        .ok_or_else(|| not_found(id))?;
     run(row)
 }
 
 /// Moves the run `id` from running to reporting, with a deadline `lease` seconds from `now`.
 pub(crate) async fn begin_report(
     pool: &PgPool,
+    statements: Statements,
     id: RunId,
     held: &[RegistrationId],
     now: i64,
     lease: i64,
 ) -> Result<Run, JobQueueError> {
-    let row = sqlx::query_as::<_, RunRow>(concat!(
-        "update runs set state = 'reporting', lease_expires_at = null, deadline = $3 + $4, \
+    let row = statements
+        .query_as::<RunRow>(concat!(
+            "update runs set state = 'reporting', lease_expires_at = null, deadline = $3 + $4, \
          updated_at = now() \
          where id = $1 and state = 'running' and runner = any($2) returning ",
-        columns!()
-    ))
-    .bind(number(id.value(), "run")?)
-    .bind(runners(held)?)
-    .bind(now)
-    .bind(lease)
-    .fetch_optional(pool)
-    .await
-    .map_err(backend)?
-    .ok_or_else(|| not_found(id))?;
+            columns!()
+        ))
+        .bind(number(id.value(), "run")?)
+        .bind(runners(held)?)
+        .bind(now)
+        .bind(lease)
+        .fetch_optional(pool)
+        .await
+        .map_err(backend)?
+        .ok_or_else(|| not_found(id))?;
     run(row)
 }
 
@@ -617,6 +665,7 @@ pub(crate) async fn begin_report(
 /// cancelled or timed-out one that has no result keeps its state and takes `result`.
 pub(crate) async fn complete(
     pool: &PgPool,
+    statements: Statements,
     id: RunId,
     held: &[RegistrationId],
     result: RunResult,
@@ -637,7 +686,7 @@ pub(crate) async fn complete(
         WriteBack::Written { paths } => (None, paths),
         WriteBack::NotWritten { reason, paths } => (Some(reason_column(*reason)), paths),
     };
-    let row = sqlx::query_as::<_, RunRow>(concat!(
+    let row = statements.query_as::<RunRow>(concat!(
         "update runs set state = case when state = 'reporting' then 'finished' else state end, \
          lease_expires_at = null, deadline = null, result_outcome = $3, exit_code = $4, stdout_address = $5, stdout_cut = $6, \
          stderr_address = $7, stderr_cut = $8, objects_downloaded = $9, \
@@ -676,31 +725,37 @@ pub(crate) async fn complete(
 /// Times out the running runs whose deadline is `now` or before, queues again those whose lease
 /// lapsed before their deadline, and ends the reporting runs whose deadline is `now` or
 /// before as failed in the executor, with nothing written. Rows are locked in identifier order.
-pub(crate) async fn expire(pool: &PgPool, now: i64) -> Result<(), JobQueueError> {
+pub(crate) async fn expire(
+    pool: &PgPool,
+    statements: Statements,
+    now: i64,
+) -> Result<(), JobQueueError> {
     let mut transaction = pool.begin().await.map_err(backend)?;
-    sqlx::query(
-        "update runs set state = 'timed_out', lease_expires_at = null, deadline = null, \
+    statements
+        .query(
+            "update runs set state = 'timed_out', lease_expires_at = null, deadline = null, \
          updated_at = now() \
          where id in ( \
              select id from runs where state = 'running' and deadline <= $1 \
              order by id for update)",
-    )
-    .bind(now)
-    .execute(&mut *transaction)
-    .await
-    .map_err(backend)?;
-    sqlx::query(
-        "update runs set state = 'queued', runner = null, lease_expires_at = null, \
+        )
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(backend)?;
+    statements
+        .query(
+            "update runs set state = 'queued', runner = null, lease_expires_at = null, \
          deadline = null, updated_at = now() \
          where id in ( \
              select id from runs where state = 'running' and lease_expires_at <= $1 \
              order by id for update)",
-    )
-    .bind(now)
-    .execute(&mut *transaction)
-    .await
-    .map_err(backend)?;
-    sqlx::query(
+        )
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(backend)?;
+    statements.query(
         "update runs set state = 'finished', deadline = null, result_outcome = 'executor_failed', \
          objects_downloaded = 0, objects_from_cache = 0, change_paths = array[]::bytea[], \
          change_kinds = array[]::text[], change_contents = array[]::bytea[], \
