@@ -86,10 +86,31 @@ pub struct Landing {
     pub status: Status,
     /// A 409 that says `main` moved while landing.
     pub lost_swap: bool,
+    /// The changeset the landing was acknowledged with; none where it was not.
+    pub changeset: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Landed {
+    changeset: String,
+}
+
+/// One version of a file, as `history` lists it.
+#[derive(Deserialize)]
+pub struct Version {
+    /// The changeset that made the version.
+    pub changeset: String,
+    /// The address of the version's content.
+    pub content: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct History {
+    versions: Vec<Version>,
 }
 
 /// The address of `bytes`: `sha256:` and the digest in lowercase hex.
-fn address(bytes: &[u8]) -> String {
+pub fn address(bytes: &[u8]) -> String {
     let mut address = String::from("sha256:");
     for byte in Sha256::digest(bytes) {
         // Writing to a String does not fail.
@@ -195,9 +216,22 @@ impl Session<'_> {
             return Landing {
                 status: 0,
                 lost_swap: false,
+                changeset: None,
             };
         };
         let status = answer.status().as_u16();
+        if succeeded(status) {
+            let changeset = answer
+                .json::<Landed>()
+                .await
+                .ok()
+                .map(|landed| landed.changeset);
+            return Landing {
+                status,
+                lost_swap: false,
+                changeset,
+            };
+        }
         let detail = if status == 409 {
             answer.json::<Problem>().await.map(|problem| problem.detail)
         } else {
@@ -206,6 +240,7 @@ impl Session<'_> {
         Landing {
             status,
             lost_swap: detail.is_ok_and(|detail| is_lost_swap(&detail)),
+            changeset: None,
         }
     }
 
@@ -241,6 +276,25 @@ impl Session<'_> {
         self.send(request)
             .await
             .map_or(0, |answer| answer.status().as_u16())
+    }
+
+    /// The versions of the file at `path`, newest first, with the status that ended the request.
+    pub async fn versions(&self, path: &str) -> (Status, Vec<Version>) {
+        let request = self
+            .api
+            .http
+            .get(self.repository_url(&format!("history/{path}")));
+        let Some(answer) = self.send(request).await else {
+            return (0, Vec::new());
+        };
+        let status = answer.status().as_u16();
+        if !succeeded(status) {
+            return (status, Vec::new());
+        }
+        match answer.json::<History>().await {
+            Ok(history) => (status, history.versions),
+            Err(_) => (0, Vec::new()),
+        }
     }
 
     /// Sends `body` as the JSON of a request of `method` to `url` below the API root, for the
