@@ -92,6 +92,8 @@ mod tests {
     use crate::domain::address::Address;
     use crate::domain::check::{CheckDefinition, Command, Timeout};
     use crate::domain::job::JobState;
+    use crate::domain::path::Prefix;
+    use crate::domain::run::NewRun;
 
     fn job(organisation: &str, repository: u64, labels: &[&str]) -> Job {
         Job {
@@ -142,5 +144,43 @@ mod tests {
         let one = registration(Some(1), &[]);
         assert!(one.matches(&job("acme", 1, &[])));
         assert!(!one.matches(&job("acme", 2, &[])));
+    }
+
+    fn run(organisation: &str, repository: u64, labels: &[&str]) -> NewRun {
+        NewRun {
+            organisation: organisation.parse().unwrap(),
+            repository: RepositoryId::new(repository),
+            principal: Principal::new("https://id.test", "ada").unwrap(),
+            draft: "work".parse().unwrap(),
+            instance: crate::domain::draft::Instance::new(1),
+            version: 0,
+            base: None,
+            command: Command::new("true").unwrap(),
+            prefix: Prefix::whole(),
+            add: BTreeSet::new(),
+            outputs: BTreeSet::new(),
+            labels: labels.iter().map(|l| l.parse().unwrap()).collect(),
+            timeout: Timeout::default_timeout(),
+            files: std::collections::BTreeMap::new(),
+            caches: std::collections::BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn a_registration_takes_runs_of_its_organisation_whose_labels_it_offers() {
+        let all = registration(None, &["linux", "gpu"]);
+        assert!(all.takes_run(&run("acme", 1, &[])));
+        assert!(all.takes_run(&run("acme", 2, &["linux"])));
+        assert!(!all.takes_run(&run("acme", 2, &["linux", "arm"])));
+        assert!(!all.takes_run(&run("other", 1, &[])));
+    }
+
+    #[test]
+    fn a_registration_of_one_repository_takes_only_its_runs() {
+        let one = registration(Some(1), &["linux"]);
+        assert!(one.takes_run(&run("acme", 1, &["linux"])));
+        assert!(!one.takes_run(&run("acme", 2, &["linux"])));
+        assert!(!one.takes_run(&run("other", 1, &["linux"])));
+        assert!(!one.takes_run(&run("acme", 1, &["arm"])));
     }
 }

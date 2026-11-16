@@ -5,7 +5,7 @@ export
 # Extra arguments for cargo nextest run in `test` and `e2e`: a filter, for instance.
 TEST_ARGS ?=
 
-.PHONY: lint format test e2e e2e-garam e2e-gaon loadtest loadtest-smoke build images ci services services-down
+.PHONY: lint format test e2e e2e-garam e2e-gaon loadtest loadtest-smoke build images ci mutants services services-down
 
 lint:
 	CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets --locked
@@ -124,6 +124,17 @@ else ifneq ($(CHANGED_PACKAGES),)
 else
 	@echo "check-changed: no package changed against origin/main; no test selected"
 endif
+
+# Mutation testing of the domain ring and the use cases of landing, write-back, merge and
+# compare-and-swap (.cargo/mutants.toml names the files). A mutant the tests of `app` do not
+# kill, or that times out, fails the run; the report is in target/mutants. It is not part of
+# `ci`: the nightly workflow runs it, a shard at a time (MUTANTS_SHARD=1/4 runs the first of four).
+MUTANTS_JOBS ?= 2
+MUTANTS_SHARD ?=
+
+mutants:
+	mkdir -p target
+	cargo mutants --package app --test-tool nextest --cargo-arg=--locked --jobs $(MUTANTS_JOBS) $(if $(MUTANTS_SHARD),--shard $(MUTANTS_SHARD)) --output target/mutants
 
 # Running containers are kept; pick up a changed image or configuration with
 # `make services-down` and then `make services`.

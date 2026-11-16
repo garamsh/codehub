@@ -1,0 +1,34 @@
+# The domain ring and the use cases of landing, write-back, merge and compare-and-swap.
+examine_globs = [
+    "crates/app/src/domain/**/*.rs",
+    "crates/app/src/use_case/land.rs",
+    "crates/app/src/use_case/source_control.rs",
+    "crates/app/src/use_case/runs.rs",
+]
+
+# A mutant that makes a test loop or run on is cut off after five times the unmutated suite, and
+# at least 60 seconds; the first failing test stops the run and kills the tests still running, so
+# a mutant that also fails a quick test costs seconds and not the timeout.
+timeout_multiplier = 5
+minimum_test_timeout = 60
+additional_cargo_test_args = ["--max-fail=1:immediate"]
+
+# Mutants no test can tell from the original, each with why. A name carries its line and column,
+# so an edit that moves one brings it back as a survivor to be looked at again.
+exclude_re = [
+    # `(nibble(high) << 4) | nibble(low)`: the high nibble has its low four bits clear and the low
+    # nibble is at most 15, so `|`, `^` and `+` give the same byte.
+    'address\.rs:83:43: replace \| with \^ in <impl FromStr for Address>::from_str',
+
+    # `overlaps` is called with edits sorted by start, so `next.start >= region.start` always.
+    # An insertion region against a later change: the `next.start < region.start` test is then
+    # false on its own, and the second operand (`:230:68`) is never evaluated.
+    'file\.rs:230:68: replace < with .* in overlaps',
+    # A non-empty region against an insertion: an insertion at the region's start sorts before the
+    # change that starts there, so it never comes after a non-empty region of that start, and
+    # `<` and `<=` on `region.start` against `next.start` agree on what can occur.
+    'file\.rs:231:39: replace < with <= in overlaps',
+    # Two non-empty ranges: `next` is non-empty and starts at or after `region.start`, so
+    # `next.end` is greater than `region.start` and `<` and `<=` agree.
+    'file\.rs:232:40: replace < with <= in overlaps',
+]
