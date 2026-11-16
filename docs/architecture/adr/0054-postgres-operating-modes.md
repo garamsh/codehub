@@ -28,7 +28,7 @@ A commit of unknown outcome is in neither class and is not retried blindly. Appl
 
 **The compare-and-swap of `main`.** A swap that lost its connection after the statement was sent is settled, not retried. This is the rule #291 built and is recorded here because failover makes it matter:
 
-1. Every swap statement carries a tag of its attempt, `/*swap <pid>-<nanos>-<n>*/`, and is sent unprepared. The tag is not a backend's pid, because a transaction pooler moves statements between backends.
+1. Every swap statement carries a tag of its attempt, `/*swap <pid>-<nanos>-<n>*/`, and is sent like every other statement, named where the statement cache is on (its text is new for each attempt, so the cache evicts it in turn) and unnamed with cache 0, since an unnamed statement behind a transaction pooler fails (below). The tag is not a backend's pid, because a transaction pooler moves statements between backends.
 2. Where the outcome is unknown (a connection I/O error, SQLSTATE 57P01, 57P02, 57P03, class 08, or a crashed worker), every backend that is not idle and whose `pg_stat_activity.query` holds the tag is ended with `pg_terminate_backend`, again until none is left, for at most 5 seconds. A backend that is idle ran its statement to its end, and one that was ended rolled an unfinished transaction back, so the statement cannot commit afterwards. A spent bound settles as a backend error.
 3. The swap won if and only if the new changeset is `main` or is on `main`'s first-parent chain, read to at most 1000 changesets. If `main` is still at the expected value the result is a backend error; any other value is `RefMoved`.
 

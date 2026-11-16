@@ -101,7 +101,6 @@ impl PostgresChangesetLog {
                    and state <> 'idle' and position($1 in query) > 0",
                 )
                 .bind(tag)
-                .persistent(false)
                 .fetch_all(&self.pool)
                 .await?;
             if running.is_empty() {
@@ -342,11 +341,13 @@ impl ChangesetLog for PostgresChangesetLog {
                  where repository = $1 and name = $2 and target = $4"
             ),
         };
-        // The tag is digits and dashes made here, and nothing a caller supplies.
+        // The tag is digits and dashes made here, and nothing a caller supplies. The text is new
+        // for every attempt, so with a statement cache it is named once and the cache evicts it in
+        // turn; sent unnamed behind a transaction pooler it would fail, its two rounds going to
+        // two backends (ADR 0054).
         let query = self
             .statements
             .query(sqlx::AssertSqlSafe(statement))
-            .persistent(false)
             .bind(column)
             .bind(ref_name(name))
             .bind(new.digest().as_slice());
