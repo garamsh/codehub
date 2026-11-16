@@ -191,8 +191,11 @@ impl ChangesetLog for RivalsLandFirst {
         repository: RepositoryId,
         head: Option<Address>,
         base: Option<Address>,
+        limit: usize,
     ) -> Result<Option<Vec<Changeset>>, ChangesetLogError> {
-        self.inner.first_parent_chain(repository, head, base).await
+        self.inner
+            .first_parent_chain(repository, head, base, limit)
+            .await
     }
 
     async fn read_ref(
@@ -499,8 +502,11 @@ impl ChangesetLog for CountsLandingsInFlight {
         repository: RepositoryId,
         head: Option<Address>,
         base: Option<Address>,
+        limit: usize,
     ) -> Result<Option<Vec<Changeset>>, ChangesetLogError> {
-        self.inner.first_parent_chain(repository, head, base).await
+        self.inner
+            .first_parent_chain(repository, head, base, limit)
+            .await
     }
 
     async fn read_ref(
@@ -723,9 +729,12 @@ impl ChangesetLog for CountsReads {
         repository: RepositoryId,
         head: Option<Address>,
         base: Option<Address>,
+        limit: usize,
     ) -> Result<Option<Vec<Changeset>>, ChangesetLogError> {
         self.chains.fetch_add(1, Ordering::SeqCst);
-        self.inner.first_parent_chain(repository, head, base).await
+        self.inner
+            .first_parent_chain(repository, head, base, limit)
+            .await
     }
 
     async fn read_ref(
@@ -806,7 +815,7 @@ pub async fn the_first_parent_chain_runs_from_head_back_to_base_exclusive<H: Dep
         Some(ids.iter().map(|id| changesets[id].clone()).collect())
     };
 
-    let chain = |head, base| log.first_parent_chain(repo.id, head, base);
+    let chain = |head, base| log.first_parent_chain(repo.id, head, base, usize::MAX);
     assert_eq!(
         chain(Some(two), Some(first)).await.unwrap(),
         of(&[two, one])
@@ -820,11 +829,38 @@ pub async fn the_first_parent_chain_runs_from_head_back_to_base_exclusive<H: Dep
     // Control: a base that is not behind the head is not found, whichever way round.
     assert_eq!(chain(Some(first), Some(two)).await.unwrap(), None);
     assert_eq!(chain(None, Some(first)).await.unwrap(), None);
+    // A base the log does not hold is not found, as a changeset the chain passes through is not.
+    let elsewhere = Address::of(b"elsewhere");
     assert_eq!(
-        chain(Some(two), Some(Address::of(b"elsewhere")))
-            .await
-            .unwrap(),
-        None
+        chain(Some(two), Some(elsewhere)).await,
+        Err(ChangesetLogError::NotFound(elsewhere))
+    );
+    assert_eq!(
+        chain(None, Some(elsewhere)).await,
+        Err(ChangesetLogError::NotFound(elsewhere))
+    );
+    // No more than `limit` changesets are read: a chain that is longer is an error, and one that
+    // is exactly as long is not.
+    let bounded = |head, base, limit| log.first_parent_chain(repo.id, head, base, limit);
+    assert_eq!(
+        bounded(Some(two), Some(first), 2).await.unwrap(),
+        of(&[two, one])
+    );
+    assert!(matches!(
+        bounded(Some(two), Some(first), 1).await,
+        Err(ChangesetLogError::Backend(_))
+    ));
+    assert_eq!(
+        bounded(Some(two), None, 3).await.unwrap(),
+        of(&[two, one, first])
+    );
+    assert!(matches!(
+        bounded(Some(two), None, 2).await,
+        Err(ChangesetLogError::Backend(_))
+    ));
+    assert_eq!(
+        bounded(Some(two), Some(two), 0).await.unwrap(),
+        Some(Vec::new())
     );
     let unknown = Address::of(b"unknown");
     assert_eq!(
