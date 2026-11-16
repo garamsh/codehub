@@ -12,9 +12,6 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-/// Bound on each request to the decision point.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// Authorisation by an AuthZEN 1.0 decision point. A decision is one evaluation request, and
 /// decisions on many resources are one evaluations request where the adapter is enabled for it
 /// and the decision point's metadata advertises it, read on first use (ADR 0041); the bearer
@@ -116,9 +113,10 @@ impl AuthzenAuthorisationDecision {
         base_url: &str,
         tokens: Arc<TokenClient>,
         profile: Profile,
+        timeout: Duration,
     ) -> Result<Self, AuthorisationError> {
         let http = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
+            .timeout(timeout)
             .build()
             .map_err(backend)?;
         let base_url = base_url.trim_end_matches('/');
@@ -404,12 +402,16 @@ fn action_name(profile: Profile, action: Action) -> Result<&'static str, Authori
         (Profile::Plain, Action::Read) => "read",
         (Profile::Plain, Action::Write) => "write",
         (Profile::Plain, Action::Run) => "run",
+        (Profile::Plain, Action::ImagePull) => "image_pull",
+        (Profile::Plain, Action::ImagePush) => "image_push",
         (Profile::Grn, Action::CreateOrganisation) => "codehub:org.use",
         (Profile::Grn, Action::CreateRepository) => "codehub:repo.create",
         (Profile::Grn, Action::AdministerRunners) => "codehub:runner.administer",
         (Profile::Grn, Action::Read) => "codehub:repo.read",
         (Profile::Grn, Action::Write) => "codehub:repo.write",
         (Profile::Grn, Action::Run) => "codehub:repo.run",
+        (Profile::Grn, Action::ImagePull) => "codehub:repo.image_pull",
+        (Profile::Grn, Action::ImagePush) => "codehub:repo.image_push",
         (Profile::Grn, Action::AdministerMembers) => {
             return Err(AuthorisationError::Backend(
                 "the grn profile has no action for administering members".to_owned(),

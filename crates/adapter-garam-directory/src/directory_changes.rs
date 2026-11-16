@@ -12,10 +12,6 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-/// Bound on each request to garam. One delivery is at most two token requests and two posts, so it
-/// takes at most four of these; the relay's lease is longer than that.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// Delivers repository changes to garam.
 pub struct GaramDirectoryChanges {
     http: reqwest::Client,
@@ -42,19 +38,24 @@ enum Answer {
 
 impl GaramDirectoryChanges {
     /// An adapter that delivers to `<base_url>/garam/policy/v1/entity-changes` with the bearer
-    /// tokens of `tokens`.
+    /// tokens of `tokens`. Each request takes at most `timeout`; one delivery is at most two token
+    /// requests and two posts, so the relay's lease must outlast four times `timeout`.
     ///
     /// # Errors
     ///
     /// A description where the HTTP client cannot be built.
-    pub fn new(base_url: &str, tokens: Arc<TokenClient>) -> Result<Self, String> {
+    pub fn new(
+        base_url: &str,
+        tokens: Arc<TokenClient>,
+        timeout: Duration,
+    ) -> Result<Self, String> {
         let url = reqwest::Url::parse(base_url)
             .map_err(|error| format!("{base_url:?} is not a URL: {error}"))?;
         if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
             return Err(format!("{base_url:?} is not an http or https URL"));
         }
         let http = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
+            .timeout(timeout)
             .build()
             .map_err(|error| error.to_string())?;
         let base_url = base_url.trim_end_matches('/');

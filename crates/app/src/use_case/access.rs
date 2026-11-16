@@ -18,6 +18,8 @@ const fn action(access: Access) -> Action {
         Access::Read => Action::Read,
         Access::Write => Action::Write,
         Access::Run => Action::Run,
+        Access::ImagePull => Action::ImagePull,
+        Access::ImagePush => Action::ImagePush,
     }
 }
 

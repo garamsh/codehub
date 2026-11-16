@@ -13,6 +13,7 @@ mod identity_verification;
 mod job_queue;
 mod membership;
 mod object_store;
+mod registry_token_issuance;
 mod repository_directory;
 mod runner_registry;
 
@@ -30,6 +31,7 @@ pub use identity_verification::MemoryIdentityVerification;
 pub use job_queue::MemoryJobQueue;
 pub use membership::MemoryMembership;
 pub use object_store::MemoryObjectStore;
+pub use registry_token_issuance::{IssuedRecord, MemoryRegistryTokenIssuance};
 pub use repository_directory::MemoryRepositoryDirectory;
 pub use runner_registry::MemoryRunnerRegistry;
 

@@ -83,7 +83,48 @@ impl fmt::Display for DatabaseError {
 
 impl std::error::Error for DatabaseError {}
 
+/// How the pool's connections are used at one moment.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PoolState {
+    /// Connections open, idle or lent out.
+    pub open: u32,
+    /// Connections open and idle.
+    pub idle: u32,
+    /// The most connections the pool opens.
+    pub max: u32,
+}
+
 impl Database {
+    /// How the pool's connections are used now.
+    #[must_use]
+    pub fn pool_state(&self) -> PoolState {
+        let open = self.pool.size();
+        let idle = u32::try_from(self.pool.num_idle()).unwrap_or(u32::MAX);
+        PoolState {
+            open,
+            idle: idle.min(open),
+            max: self.pool.options().get_max_connections(),
+        }
+    }
+
+    /// How long taking a connection from the pool takes now, the connection returned at once. The
+    /// pool offers no hook around its own acquisitions, so a probe is the measurement there is.
+    ///
+    /// # Errors
+    ///
+    /// [`DatabaseError::Connect`] where no connection could be taken.
+    pub async fn probe_acquire(&self) -> Result<Duration, DatabaseError> {
+        let started = Instant::now();
+        let connection = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|error| DatabaseError::Connect(error.to_string()))?;
+        let waited = started.elapsed();
+        drop(connection);
+        Ok(waited)
+    }
+
     /// Opens a pool of at most `pool_size` connections to the database at `url`, and checks that
     /// one of them connects. The settings of [`PostgresOptions`] not named here take their
     /// defaults, with no statement timeout.

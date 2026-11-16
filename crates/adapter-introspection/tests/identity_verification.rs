@@ -59,6 +59,7 @@ impl Provider {
             secret,
             &self.issuer,
             &env("CODEHUB_TEST_KEYCLOAK_AUDIENCE"),
+            Duration::from_secs(10),
         )
         .unwrap()
     }
@@ -341,6 +342,7 @@ impl Stub {
             "resource-secret",
             "https://configured.example",
             "codehub",
+            Duration::from_secs(10),
         )
         .unwrap()
     }
@@ -375,6 +377,7 @@ async fn form_urlencodes_the_client_credentials_before_basic_encoding_them() {
         "p:w%d s",
         "https://configured.example",
         "codehub",
+        Duration::from_secs(10),
     )
     .unwrap();
 
@@ -462,9 +465,15 @@ async fn fails_where_the_endpoint_is_unreachable() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/introspect", listener.local_addr().unwrap());
     drop(listener);
-    let verifier =
-        IntrospectionIdentityVerification::new(&url, "c", "s", "https://i.example", "codehub")
-            .unwrap();
+    let verifier = IntrospectionIdentityVerification::new(
+        &url,
+        "c",
+        "s",
+        "https://i.example",
+        "codehub",
+        Duration::from_secs(10),
+    )
+    .unwrap();
 
     let result = verifier.verify(&credential("t")).await;
 

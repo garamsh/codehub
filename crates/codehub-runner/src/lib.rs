@@ -12,6 +12,7 @@ pub mod job_source;
 pub mod object_cache;
 pub mod run_job;
 pub mod token;
+mod traceparent;
 
 use std::fmt;
 use std::net::SocketAddr;

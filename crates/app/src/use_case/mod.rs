@@ -18,6 +18,7 @@ pub mod members;
 pub mod plan;
 pub mod post_land_checks;
 pub mod read_file;
+pub mod registry_token;
 pub mod relay;
 pub mod repositories;
 mod run_jobs;

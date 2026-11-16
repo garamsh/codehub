@@ -15,6 +15,7 @@ use app::port::driving::authentication::AuthenticationError;
 use app::port::driving::checks::{ChecksError, PlanError};
 use app::port::driving::jobs::JobsError;
 use app::port::driving::members::MembersError;
+use app::port::driving::registry_token::RegistryTokenError;
 use app::port::driving::repositories::RepositoriesError;
 use app::port::driving::runners::RunnersError;
 use app::port::driving::runs::RunsError;
@@ -30,12 +31,17 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
+/// The challenge of a 401 that asks for a bearer token.
+const BEARER: &str = "Bearer";
+
 /// A failed request, answered as a problem document.
 #[derive(Debug)]
 pub struct Problem {
     status: StatusCode,
     detail: String,
     paths: Vec<String>,
+    challenge: &'static str,
+    retry_after: Option<u64>,
 }
 
 impl Problem {
@@ -44,6 +50,8 @@ impl Problem {
             status,
             detail: detail.into(),
             paths: Vec::new(),
+            challenge: BEARER,
+            retry_after: None,
         }
     }
 
@@ -56,6 +64,8 @@ impl Problem {
             status,
             detail: detail.into(),
             paths: paths.into_iter().collect(),
+            challenge: BEARER,
+            retry_after: None,
         }
     }
 
@@ -69,9 +79,23 @@ impl Problem {
         Self::new(StatusCode::UNAUTHORIZED, detail)
     }
 
+    /// No valid token came with a request to the registry token endpoint, which a registry client
+    /// presents as a bearer token or as the password of Basic credentials.
+    pub(crate) fn unauthorised_for_registry(detail: impl Into<String>) -> Self {
+        Self {
+            challenge: r#"Basic realm="codehub""#,
+            ..Self::new(StatusCode::UNAUTHORIZED, detail)
+        }
+    }
+
     /// The thing the request names does not exist.
     pub(crate) fn not_found(detail: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, detail)
+    }
+
+    /// The route does not take the request's method.
+    pub(crate) fn method_not_allowed(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::METHOD_NOT_ALLOWED, detail)
     }
 
     /// No route answers the request.
@@ -82,6 +106,46 @@ impl Problem {
     /// A dependency of the server does not answer.
     pub(crate) fn unavailable(detail: impl Into<String>) -> Self {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, detail)
+    }
+
+    /// The caller sent more requests than its bucket allows; it may try again in `retry_after`
+    /// seconds.
+    pub(crate) fn rate_limited(retry_after: u64) -> Self {
+        Self {
+            retry_after: Some(retry_after),
+            ..Self::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many requests; slow down",
+            )
+        }
+    }
+
+    /// The request body is larger than the server reads.
+    pub(crate) fn payload_too_large() -> Self {
+        Self::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "the request body is larger than the server accepts",
+        )
+    }
+
+    /// The process is serving as many requests as it takes at once; the caller may try again in
+    /// `retry_after` seconds.
+    pub(crate) fn overloaded(retry_after: u64) -> Self {
+        Self {
+            retry_after: Some(retry_after),
+            ..Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the server is serving as many requests as it can; try again",
+            )
+        }
+    }
+
+    /// The request took longer than the server allows.
+    pub(crate) fn timed_out() -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the request took longer than the server allows",
+        )
     }
 
     /// A failure of ours; the body names no internals.
@@ -106,10 +170,16 @@ impl IntoResponse for Problem {
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/problem+json"),
         );
-        if self.status == StatusCode::UNAUTHORIZED {
+        if let Some(seconds) = self.retry_after {
             response
                 .headers_mut()
-                .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+                .insert(header::RETRY_AFTER, HeaderValue::from(seconds));
+        }
+        if self.status == StatusCode::UNAUTHORIZED {
+            response.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                HeaderValue::from_static(self.challenge),
+            );
         }
         response
     }
@@ -128,6 +198,19 @@ impl From<AuthenticationError> for Problem {
     fn from(error: AuthenticationError) -> Self {
         match error {
             AuthenticationError::Identity(error) => error.into(),
+        }
+    }
+}
+
+impl From<RegistryTokenError> for Problem {
+    fn from(error: RegistryTokenError) -> Self {
+        match error {
+            RegistryTokenError::WrongService | RegistryTokenError::TooManyScopes => {
+                Self::bad_request(error.to_string())
+            }
+            RegistryTokenError::Directory(error) => error.into(),
+            RegistryTokenError::Authorisation(error) => error.into(),
+            RegistryTokenError::Issuance(_) => Self::internal(),
         }
     }
 }
@@ -186,6 +269,8 @@ impl From<AccessError> for Problem {
                     Access::Read => "read",
                     Access::Write => "write",
                     Access::Run => "run",
+                    Access::ImagePull => "image_pull",
+                    Access::ImagePush => "image_push",
                 };
                 Self::naming(
                     StatusCode::FORBIDDEN,
@@ -215,7 +300,9 @@ impl From<MembersError> for Problem {
             MembersError::Access(error) => error.into(),
             MembersError::Directory(error) => error.into(),
             MembersError::Membership(error) => error.into(),
-            MembersError::RunGrantOnPrefix => Self::new(StatusCode::BAD_REQUEST, error.to_string()),
+            MembersError::WholeRepositoryGrantOnPrefix => {
+                Self::new(StatusCode::BAD_REQUEST, error.to_string())
+            }
             MembersError::ExternallyAdministered => Self::new(
                 StatusCode::FORBIDDEN,
                 "members are administered outside codehub",

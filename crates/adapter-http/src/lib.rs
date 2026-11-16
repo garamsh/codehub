@@ -7,7 +7,10 @@ mod extract;
 mod health;
 mod jobs;
 mod members;
+mod observe;
+mod overload;
 mod problem;
+mod registry;
 mod repositories;
 mod runners;
 mod runs;
@@ -22,17 +25,21 @@ use app::port::driving::authentication::Authentication;
 use app::port::driving::checks::Checks;
 use app::port::driving::jobs::Jobs;
 use app::port::driving::members::Members;
+use app::port::driving::registry_token::RegistryToken;
 use app::port::driving::repositories::Repositories;
 use app::port::driving::runners::Runners;
 use app::port::driving::runs::Runs;
 use app::port::driving::source_control::SourceControl;
 use async_trait::async_trait;
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::http::header;
 use axum::response::IntoResponse;
 use axum::routing;
 
 use crate::problem::Problem;
+
+pub use crate::overload::{InFlight, Limits, RateLimiter};
 
 /// The OpenAPI 3.1 document of the API, served at `/v1/openapi.json`.
 pub const OPENAPI: &str = include_str!("../openapi.json");
@@ -51,6 +58,12 @@ pub trait Readiness: Send + Sync {
 /// Why the server is not ready: the short reason `/readyz` answers 503 with.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct NotReady(pub &'static str);
+
+/// The metrics the process has recorded, rendered for a scrape.
+pub trait Scrape: Send + Sync {
+    /// The metrics in the Prometheus text exposition format.
+    fn render(&self) -> String;
+}
 
 /// A wait for a [`Duration`], which the composition site supplies from its runtime: this crate
 /// names no timer of its own.
@@ -90,10 +103,15 @@ pub struct ApiState {
     pub checks: Arc<dyn Checks>,
     /// Starts, reads and cancels the runs of a workspace.
     pub runs: Arc<dyn Runs>,
+    /// Issues the registry's tokens; `None` where the server is not configured to, and the token
+    /// endpoint answers 404.
+    pub registry_token: Option<Arc<dyn RegistryToken>>,
     /// How a runner's claim is held.
     pub settings: RunnerSettings,
     /// Asked on every request to `/readyz`.
     pub readiness: Arc<dyn Readiness>,
+    /// The limits of this process on how much it is asked (ADR 0055).
+    pub limits: Limits,
 }
 
 /// Declares a router's routes once, as both the router and its list of routes, so the two cannot
@@ -152,6 +170,19 @@ routes! {
     "/v1/orgs/{org}/repos/{repo}/runs/{id}/files" => get(runs::files);
 }
 
+/// Every route of the registry's token endpoint, which [`router`] and [`api_router`] serve beside
+/// [`ROUTES`]: its path template and the lowercase names of its methods. It is declared apart
+/// because a method it does not take is answered with the `Allow` header the endpoint's protocol
+/// asks for.
+pub const REGISTRY_ROUTES: &[(&str, &[&str])] = &[(registry::PATH, &["get"])];
+
+fn registry_routed() -> Router<Arc<ApiState>> {
+    Router::new().route(
+        registry::PATH,
+        routing::get(registry::token).fallback(registry::not_get),
+    )
+}
+
 routes! {
     RUNNER_ROUTES, runner_routed, Arc<ApiState>;
     "/v1/runner/jobs/claim" => post(jobs::claim);
@@ -164,6 +195,11 @@ routes! {
     HEALTH_ROUTES, health_routed, Arc<dyn Readiness>;
     "/healthz" => get(health::live);
     "/readyz" => get(health::ready);
+}
+
+routes! {
+    METRICS_ROUTES, metrics_routed, Arc<dyn Scrape>;
+    "/metrics" => get(observe::scrape);
 }
 
 async fn openapi() -> impl IntoResponse {
@@ -186,32 +222,61 @@ impl Readiness for () {
 /// no route matches.
 fn serve(routes: Router<Arc<ApiState>>, state: ApiState) -> Router {
     let readiness = Arc::clone(&state.readiness);
+    let body_bytes = state.limits.body_bytes;
+    let state = Arc::new(state);
     routes
         .fallback(no_route)
-        .with_state(Arc::new(state))
+        .layer(DefaultBodyLimit::max(body_bytes))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            overload::bound,
+        ))
+        // Outermost, so a request the overload layer turns away is measured too.
+        .layer(axum::middleware::from_fn(observe::observe))
+        .with_state(state)
         .merge(health_routed().with_state(readiness))
 }
 
-/// The router serving the whole API over `state`: every route of [`ROUTES`], [`RUNNER_ROUTES`]
-/// and [`HEALTH_ROUTES`], and a fallback for a request no route matches.
-pub fn router(state: ApiState) -> Router {
-    serve(routed().merge(runner_routed()), state)
+/// The largest body a runner route reads, in bytes, where the limit of the settings is lower: a
+/// runner's result and uploads list every file the job produced, and a refused one loses the job
+/// (ADR 0055).
+const RUNNER_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+/// The routes of [`RUNNER_ROUTES`], reading bodies up to [`RUNNER_BODY_BYTES`]. The layer is inner
+/// to the limit of the settings and so overrides it.
+fn runner_bounded() -> Router<Arc<ApiState>> {
+    runner_routed().layer(DefaultBodyLimit::max(RUNNER_BODY_BYTES))
 }
 
-/// The router of the user and agent API: every route of [`ROUTES`] and [`HEALTH_ROUTES`], and a
-/// fallback for a request no route matches, which `/v1/runner/` is.
+/// The router serving the whole API over `state`: every route of [`ROUTES`], [`REGISTRY_ROUTES`],
+/// [`RUNNER_ROUTES`] and [`HEALTH_ROUTES`], and a fallback for a request no route matches.
+pub fn router(state: ApiState) -> Router {
+    serve(
+        routed().merge(registry_routed()).merge(runner_bounded()),
+        state,
+    )
+}
+
+/// The router of the user and agent API: every route of [`ROUTES`], [`REGISTRY_ROUTES`] and
+/// [`HEALTH_ROUTES`], and a fallback for a request no route matches, which `/v1/runner/` is.
 pub fn api_router(state: ApiState) -> Router {
-    serve(routed(), state)
+    serve(routed().merge(registry_routed()), state)
 }
 
 /// The router of the runner API: every route of [`RUNNER_ROUTES`] and [`HEALTH_ROUTES`], and a
 /// fallback for a request no route matches.
 pub fn runner_router(state: ApiState) -> Router {
-    serve(runner_routed(), state)
+    serve(runner_bounded(), state)
 }
 
 /// The router of a process that serves only the probes of [`HEALTH_ROUTES`] over `readiness`,
 /// with a fallback for a request no route matches.
 pub fn health_router(readiness: Arc<dyn Readiness>) -> Router {
     health_routed().fallback(no_route).with_state(readiness)
+}
+
+/// The router of `/metrics` over `scrape`, to merge into the router a process serves: it is
+/// outside `/v1`, needs no token and is not itself observed (ADR 0056).
+pub fn metrics_router(scrape: Arc<dyn Scrape>) -> Router {
+    metrics_routed().with_state(scrape)
 }
