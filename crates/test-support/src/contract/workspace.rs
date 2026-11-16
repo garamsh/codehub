@@ -2,16 +2,19 @@
 //! restoring and diffing a draft, listing a changeset's files, and landing with the description.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::contract::access::Admin;
 use crate::contract::{Deployment, Repo, draft};
 use app::domain::address::Address;
 use app::domain::changeset::Change;
 use app::domain::diff::{ContentDiff, KindChange};
-use app::domain::draft::{ChangeStatus, DraftId, Edit};
+use app::domain::draft::{ChangeStatus, Draft, DraftId, Edit, Instance};
 use app::domain::file::{File, FileKind};
 use app::domain::path::{Path, Prefix};
 use app::domain::principal::Caller;
+use app::domain::repository::RepositoryId;
 use app::port::driven::authorisation_decision::Action;
 use app::port::driven::changeset_log::ChangesetLog;
 use app::port::driven::derived_data::DerivedDataError;
@@ -20,8 +23,10 @@ use app::port::driven::membership::{Access, Role};
 use app::port::driven::object_store::{GrantMethod, ObjectStore};
 use app::port::driving::access::AccessError;
 use app::port::driving::source_control::{
-    ListFilesError, ListedFile, SourceControl, SourceControlError, Workspace, WorkspaceError,
+    Landing, ListFilesError, ListedFile, SourceControl, SourceControlError, Workspace,
+    WorkspaceError,
 };
+use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
 
 async fn list<H: Deployment>(
     repo: &Repo<'_, H>,
@@ -955,4 +960,191 @@ pub async fn landing_closes_the_instance_and_reopening_starts_a_new_one_at_versi
     assert_ne!(reopened.instance, other.instance);
     // Control: the other workspace kept its instance.
     assert_eq!(open(&repo, &ada, "other").await.instance, other.instance);
+}
+
+/// A draft store that records `edits` into the draft right after the first read of it, as a
+/// writer that commits between a landing's read and its removal does.
+struct RecordsAfterFirstGet<D> {
+    inner: Arc<D>,
+    edits: BTreeMap<Path, Edit>,
+    fired: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl<D: DraftStore + 'static> DraftStore for RecordsAfterFirstGet<D> {
+    async fn open(
+        &self,
+        repository: RepositoryId,
+        draft: &DraftId,
+        base: Option<Address>,
+    ) -> Result<Draft, DraftStoreError> {
+        self.inner.open(repository, draft, base).await
+    }
+
+    async fn describe(
+        &self,
+        repository: RepositoryId,
+        draft: &DraftId,
+        description: String,
+    ) -> Result<(), DraftStoreError> {
+        self.inner.describe(repository, draft, description).await
+    }
+
+    async fn record(
+        &self,
+        repository: RepositoryId,
+        draft: &DraftId,
+        instance: Instance,
+        expected: u64,
+        edits: BTreeMap<Path, Edit>,
+    ) -> Result<(), DraftStoreError> {
+        self.inner
+            .record(repository, draft, instance, expected, edits)
+            .await
+    }
+
+    async fn get(
+        &self,
+        repository: RepositoryId,
+        draft: &DraftId,
+    ) -> Result<Draft, DraftStoreError> {
+        let read = self.inner.get(repository, draft).await?;
+        if !self.fired.swap(true, Ordering::SeqCst) {
+            self.inner
+                .record(
+                    repository,
+                    draft,
+                    read.instance,
+                    read.version,
+                    self.edits.clone(),
+                )
+                .await?;
+        }
+        Ok(read)
+    }
+
+    async fn remove(
+        &self,
+        repository: RepositoryId,
+        draft: &DraftId,
+        instance: Instance,
+        expected: u64,
+    ) -> Result<(), DraftStoreError> {
+        self.inner
+            .remove(repository, draft, instance, expected)
+            .await
+    }
+}
+
+/// The paths of the files of `changeset`, in path order.
+async fn listed_paths<H: Deployment>(
+    repo: &Repo<'_, H>,
+    caller: &Caller,
+    changeset: Address,
+) -> Vec<String> {
+    list(repo, caller, changeset, Prefix::whole())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|file| file.path.to_string())
+        .collect()
+}
+
+/// A record committed between a landing's read of the draft and its removal is not lost: the
+/// landing lands what it read, the draft keeps the record in the same instance, and the next
+/// landing lands it.
+pub async fn a_record_between_the_landing_read_and_the_removal_is_kept<H: Deployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let id = DraftId {
+        principal: ada.principal().clone(),
+        name: draft("w"),
+    };
+    let opened = open(&repo, &ada, "w").await;
+    snapshot(&repo, &ada, "w", vec![("a", regular(&repo, "a\n").await)])
+        .await
+        .unwrap();
+
+    let assembly = harness.assembly();
+    let racing = SourceControlService::new(
+        SourceControlAdapters {
+            objects: assembly.objects,
+            log: assembly.log,
+            derived: assembly.derived,
+            drafts: Arc::new(RecordsAfterFirstGet {
+                inner: harness.drafts().clone(),
+                edits: BTreeMap::from([(path("late"), regular(&repo, "late\n").await)]),
+                fired: AtomicBool::new(false),
+            }),
+            cache_refs: assembly.cache_refs,
+            directory: assembly.directory,
+            authorisation: assembly.authorisation,
+        },
+        assembly.max_upload_size,
+    );
+    let landing = Landing {
+        message: "a".to_owned(),
+        timestamp: 0,
+    };
+    let landed = racing
+        .land(&ada, repo.id, &draft("w"), landing)
+        .await
+        .unwrap();
+
+    // Setup: the interleaved record reached the draft, in the instance the landing read.
+    let held = harness.drafts().get(repo.id, &id).await.unwrap();
+    assert_eq!((held.instance, held.version), (opened.instance, 2));
+    let held_paths: Vec<_> = held.changes.keys().map(ToString::to_string).collect();
+    assert_eq!(held_paths, ["a", "late"]);
+    // The landing took what it read, and nothing of the record.
+    assert_eq!(listed_paths(&repo, &ada, landed).await, ["a"]);
+
+    // The next landing of the draft lands the record and closes the instance.
+    let next = repo.land(&ada, &draft("w"), "late").await.unwrap();
+    assert_eq!(listed_paths(&repo, &ada, next).await, ["a", "late"]);
+    assert_eq!(
+        harness.drafts().get(repo.id, &id).await,
+        Err(DraftStoreError::NotFound(id))
+    );
+}
+
+/// The draft store removes only the instance and version expected: a removal at a stale version
+/// is refused and the draft stays, and a removal of another instance finds nothing.
+pub async fn a_removal_at_a_stale_version_or_instance_is_refused_and_keeps_the_draft<
+    H: Deployment,
+>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let id = DraftId {
+        principal: ada.principal().clone(),
+        name: draft("w"),
+    };
+    let drafts = harness.drafts();
+    let opened = open(&repo, &ada, "w").await;
+    snapshot(&repo, &ada, "w", vec![("a", regular(&repo, "a\n").await)])
+        .await
+        .unwrap();
+
+    assert_eq!(
+        drafts.remove(repo.id, &id, opened.instance, 0).await,
+        Err(DraftStoreError::Moved { current: 1 })
+    );
+    assert_eq!(
+        drafts
+            .remove(repo.id, &id, Instance::new(opened.instance.get() + 1), 1)
+            .await,
+        Err(DraftStoreError::NotFound(id.clone()))
+    );
+    assert_eq!(drafts.get(repo.id, &id).await.unwrap().version, 1);
+    // Control: the instance and version held remove the draft.
+    drafts
+        .remove(repo.id, &id, opened.instance, 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        drafts.get(repo.id, &id).await,
+        Err(DraftStoreError::NotFound(id))
+    );
 }

@@ -96,10 +96,21 @@ impl DraftStore for MemoryDraftStore {
         &self,
         repository: RepositoryId,
         draft: &DraftId,
+        instance: Instance,
+        expected: u64,
     ) -> Result<(), DraftStoreError> {
-        lock(&self.drafts)
-            .remove(&(repository, draft.clone()))
-            .map(drop)
-            .ok_or_else(|| DraftStoreError::NotFound(draft.clone()))
+        let mut drafts = lock(&self.drafts);
+        let key = (repository, draft.clone());
+        let held = drafts
+            .get(&key)
+            .filter(|held| held.instance == instance)
+            .ok_or_else(|| DraftStoreError::NotFound(draft.clone()))?;
+        if held.version != expected {
+            return Err(DraftStoreError::Moved {
+                current: held.version,
+            });
+        }
+        drafts.remove(&key);
+        Ok(())
     }
 }

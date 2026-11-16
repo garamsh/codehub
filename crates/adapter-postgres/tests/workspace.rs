@@ -88,3 +88,14 @@ async fn a_record_into_a_closed_instance_is_refused_though_the_version_matches()
     workspace::a_record_into_a_closed_instance_is_refused_though_the_version_matches::<Harness>()
         .await;
 }
+
+#[tokio::test]
+async fn a_record_between_the_landing_read_and_the_removal_is_kept() {
+    workspace::a_record_between_the_landing_read_and_the_removal_is_kept::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_removal_at_a_stale_version_or_instance_is_refused_and_keeps_the_draft() {
+    workspace::a_removal_at_a_stale_version_or_instance_is_refused_and_keeps_the_draft::<Harness>()
+        .await;
+}

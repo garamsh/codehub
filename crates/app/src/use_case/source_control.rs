@@ -18,7 +18,7 @@ use crate::port::driven::authorisation_decision::{Action, AuthorisationDecision,
 use crate::port::driven::cache_refs::CacheRefs;
 use crate::port::driven::changeset_log::{ChangesetLog, Ref};
 use crate::port::driven::derived_data::DerivedData;
-use crate::port::driven::draft_store::DraftStore;
+use crate::port::driven::draft_store::{DraftStore, DraftStoreError};
 use crate::port::driven::membership::Access;
 use crate::port::driven::object_store::{Grant, ObjectStore};
 use crate::port::driven::repository_directory::RepositoryDirectory;
@@ -572,6 +572,7 @@ impl<P: AfterLanding> SourceControl for SourceControlService<P> {
         };
         let timestamp = landing.timestamp;
         let instance = staged.instance;
+        let version = staged.version;
         let arrival = self.gates.reach(repository);
         let _one_at_a_time = arrival.pass().await;
         let landed = land(
@@ -585,14 +586,23 @@ impl<P: AfterLanding> SourceControl for SourceControlService<P> {
             self.attempts,
         )
         .await?;
-        self.drafts
-            .remove(repository, &draft)
+        // A record committed after the draft was read moves its version: the draft and its
+        // instance stay open for the next landing, and the landing is answered as it landed.
+        match self
+            .drafts
+            .remove(repository, &draft, instance, version)
             .await
-            .map_err(LandError::from)?;
-        // Before `after_landing`, whose failure returns early: the instance is closed either way.
-        remove_workspace_cache_refs(&*self.cache_refs, repository, instance)
-            .await
-            .map_err(LandError::from)?;
+        {
+            Ok(()) => {
+                // Before `after_landing`, whose failure returns early: the instance is closed
+                // either way.
+                remove_workspace_cache_refs(&*self.cache_refs, repository, instance)
+                    .await
+                    .map_err(LandError::from)?;
+            }
+            Err(DraftStoreError::Moved { .. }) => {}
+            Err(error) => return Err(LandError::from(error).into()),
+        }
         self.after_landing
             .after_landing(repository, landed, timestamp)
             .await
