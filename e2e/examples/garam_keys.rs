@@ -1,6 +1,7 @@
 //! Writes the throwaway key material of the garam stack into the directory given as the argument,
 //! every file readable by the owner alone: garam's token signing key, the key codehub signs its
-//! client assertions with, a second key no service principal holds, the service keys file that
+//! client assertions with, the ES256 key codehub signs registry tokens with and the JWKS that names
+//! its public half for the image registry (ADR 0053), a second key no service principal holds, the service keys file that
 //! registers codehub's public key with garam, the key-encryption key of the machine listener, and a
 //! certificate authority with the certificate both TLS listeners serve. Run by `make e2e-garam`;
 //! nothing here is committed or printed.
@@ -18,7 +19,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, Issuer, KeyPair,
-    KeyUsagePurpose, PKCS_RSA_SHA256, RsaKeySize, SanType,
+    KeyUsagePurpose, PKCS_ECDSA_P256_SHA256, PKCS_RSA_SHA256, RsaKeySize, SanType,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -54,6 +55,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         "n": URL_SAFE_NO_PAD.encode(&modulus), "e": EXPONENT,
     }]}});
     write(dir, "service-keys.json", &format!("{service_keys}\n"))?;
+
+    // The registry's token key: its private half is codehub's, its public half the registry's JWKS.
+    let registry = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    write(dir, "registry.pem", &registry.serialize_pem())?;
+    let point = registry.public_key_raw();
+    // An uncompressed point: 0x04, then the 32-byte x and y.
+    let (_, coordinates) = point
+        .split_first()
+        .ok_or("the registry key has no public point")?;
+    let (x, y) = coordinates
+        .split_at_checked(32)
+        .ok_or("the registry key's public point is short")?;
+    let (x, y) = (URL_SAFE_NO_PAD.encode(x), URL_SAFE_NO_PAD.encode(y));
+    let registry_kid = ec_thumbprint(&x, &y);
+    write(dir, "registry.kid", &registry_kid)?;
+    let jwks = json!({"keys": [{
+        "kty": "EC", "use": "sig", "alg": "ES256", "kid": registry_kid,
+        "crv": "P-256", "x": x, "y": y,
+    }]});
+    write(dir, "registry-jwks.json", &format!("{jwks}\n"))?;
 
     let mut kek = [0u8; 32];
     rand::fill(&mut kek)?;
@@ -116,6 +137,12 @@ fn thumbprint(modulus: &[u8]) -> String {
         r#"{{"e":"{EXPONENT}","kty":"RSA","n":"{}"}}"#,
         URL_SAFE_NO_PAD.encode(modulus)
     );
+    URL_SAFE_NO_PAD.encode(Sha256::digest(jwk))
+}
+
+/// The RFC 7638 thumbprint of the P-256 key with the base64url coordinates `x` and `y`.
+fn ec_thumbprint(x: &str, y: &str) -> String {
+    let jwk = format!(r#"{{"crv":"P-256","kty":"EC","x":"{x}","y":"{y}"}}"#);
     URL_SAFE_NO_PAD.encode(Sha256::digest(jwk))
 }
 

@@ -449,7 +449,7 @@
             "description": "The grant was given."
           },
           "400": {
-            "description": "A name, path, address or body is malformed, or a `run` grant names a non-empty prefix.",
+            "description": "A name, path, address or body is malformed, or a `run`, `image_pull` or `image_push` grant names a non-empty prefix.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -563,7 +563,9 @@
               "enum": [
                 "read",
                 "write",
-                "run"
+                "run",
+                "image_pull",
+                "image_push"
               ]
             }
           }
@@ -3569,6 +3571,107 @@
           }
         ]
       }
+    },
+    "/v1/registry/token": {
+      "get": {
+        "summary": "A token the image registry accepts, carrying what the caller may do on the repositories its scopes name (ADR 0053). The Docker registry token authentication: the registry's 401 names this endpoint as its realm, and the client follows it. The credential is a bearer token or Basic credentials whose password is the token; the user name is ignored. Answers 404 where the server issues no registry tokens. Any other method answers 405 with `Allow: GET`.",
+        "parameters": [
+          {
+            "name": "service",
+            "in": "query",
+            "required": true,
+            "description": "The registry the token is for; it must be the one this server is configured for.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "description": "What the client asks for, as `repository:<org>/<repo>/<name>:<actions>`, repeated up to 16 times. A scope that is malformed, names an unknown repository, or asks for an action other than `pull` and `push` is granted nothing, as a denied one is. `offline_token`, `client_id` and `account` are ignored.",
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 16
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The token. `token` and `access_token` are the same; `issued_at` is RFC 3339 in UTC.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistryToken"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The service is absent or not the one served, or more than 16 scopes were asked for.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid bearer token or Basic credentials were presented. The `WWW-Authenticate` header is `Basic realm=\"codehub\"`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The server is not configured to issue registry tokens.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "The method is not GET; the `Allow` header is `GET`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed; the body names no internals.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "basic": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -3576,6 +3679,11 @@
       "bearer": {
         "type": "http",
         "scheme": "bearer"
+      },
+      "basic": {
+        "type": "http",
+        "scheme": "basic",
+        "description": "The password is a codehub token and the user name is ignored; for a registry client."
       }
     },
     "schemas": {
@@ -3736,9 +3844,11 @@
             "enum": [
               "read",
               "write",
-              "run"
+              "run",
+              "image_pull",
+              "image_push"
             ],
-            "description": "`write` includes `read`. `run` includes neither and is held for the whole repository, so a `run` grant with a non-empty prefix is refused with 400."
+            "description": "`write` includes `read`. `run`, `image_pull` and `image_push` include nothing else and are held for the whole repository, so such a grant with a non-empty prefix is refused with 400. `image_pull` and `image_push` govern the image registry (ADR 0053)."
           }
         }
       },
@@ -5315,6 +5425,33 @@
               "$ref": "#/components/schemas/JobFile"
             },
             "description": "The files of the cache ref's tree, each at its path under the cache path, with a download grant."
+          }
+        }
+      },
+      "RegistryToken": {
+        "type": "object",
+        "required": [
+          "token",
+          "access_token",
+          "expires_in",
+          "issued_at"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "A signed token for the registry."
+          },
+          "access_token": {
+            "type": "string",
+            "description": "The same token, for clients that read this name."
+          },
+          "expires_in": {
+            "type": "integer",
+            "description": "Seconds the token lasts from `issued_at`."
+          },
+          "issued_at": {
+            "type": "string",
+            "description": "When the token was issued, RFC 3339 in UTC."
           }
         }
       }

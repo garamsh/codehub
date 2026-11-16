@@ -131,6 +131,7 @@ async fn bind(stores: Arc<Stores>, identity: Arc<dyn IdentityVerification>) -> S
         jobs: Arc::new(assembly.jobs()),
         checks: Arc::new(assembly.checks()),
         runs: Arc::new(assembly.runs()),
+        registry_token: None,
         settings: RunnerSettings {
             hold: HOLD,
             retry_interval: Duration::from_millis(50),

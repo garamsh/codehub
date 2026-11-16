@@ -11,6 +11,7 @@ name: codehub
 #   dex       18080
 #   keycloak  18081   (second identity provider: introspection, token exchange)
 #   cerbos    18082   (AuthZEN 1.0 decision point, policy in dev/cerbos/policies)
+#   registry  18083   (profile `registry`, below: not part of the services above)
 #
 # The services after the check services are the profile `garam`: garam as codehub's OIDC issuer
 # and AuthZEN decision point, from garam's published images, for `make e2e-garam`. None starts
@@ -22,6 +23,16 @@ name: codehub
 # directory of keys (CODEHUB_GARAM_E2E_DIR, made by the e2e example garam_keys) and the host user
 # (CODEHUB_GARAM_E2E_USER) are set by `make e2e-garam` alone; the directory defaults to `.` so the
 # file validates without it, which compose requires of services whose profile is off.
+#
+# The services registry-bucket and registry are the profile `registry`: Distribution v3, the image
+# registry of ADR 0053, in the same project as the services above and starting after them, for the
+# e2e test e2e/tests/registry.rs (`make e2e`). None starts without the profile, and
+# `docker compose --profile registry up --detach --wait --no-recreate registry` adds the two
+# without recreating any other service. The registry stores in the object store above under the
+# bucket CODEHUB_TEST_REGISTRY_BUCKET and trusts the tokens whose public key is in
+# registry-jwks.json of the directory CODEHUB_REGISTRY_E2E_DIR (made by the e2e example garam_keys;
+# set by `make e2e`, defaulting to `.` so the file validates without it). Its token realm
+# is the codehub the test starts on CODEHUB_TEST_REGISTRY_REALM_PORT.
 #
 # Images are pinned by digest (tag kept for the reader). Mover: Dependabot's
 # docker-compose updates (.github/dependabot.yml), merged by the PM. The s3 image
@@ -187,6 +198,50 @@ services:
       interval: 1s
       timeout: 3s
       retries: 60
+
+  # One-shot: creates the registry's bucket, a bucket of its own, once the store is ready, then
+  # exits 0. The registry waits for it, which also satisfies the compose rule noted at s3-ready.
+  registry-bucket:
+    image: cgr.dev/chainguard/minio:latest@sha256:db3f583fa49121942168bd6383a773b2cde3384c9a99bf7193560b9a0f3a28fd
+    entrypoint: ["mc"]
+    command: ["mb", "--ignore-existing", "local/${CODEHUB_TEST_REGISTRY_BUCKET:?set from dev/test.env}"]
+    environment:
+      MC_HOST_local: http://${CODEHUB_TEST_S3_ACCESS_KEY}:${CODEHUB_TEST_S3_SECRET_KEY}@s3:9000
+    depends_on:
+      s3:
+        condition: service_healthy
+    restart: "no"
+    profiles: [registry]
+
+  # Distribution v3.1.2 (released 2026-09-24, the latest stable; GHSA-685w-q87j-wqw3, the newest
+  # advisory of the project, is patched in it). The configuration is dev/registry/config.yml with
+  # the settings of this environment as REGISTRY_* variables, which override it.
+  registry:
+    image: ghcr.io/distribution/distribution:3.1.2@sha256:d106962e6fe3fa69c178cec77eeeee5edb626b8df6535b7bd6b95e658a0a5ca9
+    environment:
+      REGISTRY_STORAGE_S3_BUCKET: ${CODEHUB_TEST_REGISTRY_BUCKET:?set from dev/test.env}
+      REGISTRY_STORAGE_S3_REGION: ${CODEHUB_TEST_S3_REGION:?set from dev/test.env}
+      REGISTRY_STORAGE_S3_REGIONENDPOINT: http://s3:9000
+      REGISTRY_STORAGE_S3_ACCESSKEY: ${CODEHUB_TEST_S3_ACCESS_KEY:?set from dev/test.env}
+      REGISTRY_STORAGE_S3_SECRETKEY: ${CODEHUB_TEST_S3_SECRET_KEY:?set from dev/test.env}
+      REGISTRY_AUTH_TOKEN_REALM: http://127.0.0.1:${CODEHUB_TEST_REGISTRY_REALM_PORT:?set from dev/test.env}/v1/registry/token
+      REGISTRY_AUTH_TOKEN_SERVICE: ${CODEHUB_TEST_REGISTRY_SERVICE:?set from dev/test.env}
+      REGISTRY_AUTH_TOKEN_ISSUER: ${CODEHUB_TEST_REGISTRY_ISSUER:?set from dev/test.env}
+      REGISTRY_AUTH_TOKEN_JWKS: /keys/registry-jwks.json
+    volumes:
+      - ./dev/registry/config.yml:/etc/distribution/config.yml:ro
+      - ${CODEHUB_REGISTRY_E2E_DIR:-.}/registry-jwks.json:/keys/registry-jwks.json:ro
+    ports:
+      - "127.0.0.1:18083:5000"
+    depends_on:
+      registry-bucket:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5001/debug/health"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    profiles: [registry]
 
   # The profile `garam` starts here.
   garam-postgres:
