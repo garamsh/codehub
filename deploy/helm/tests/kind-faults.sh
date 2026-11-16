@@ -39,6 +39,9 @@ node=$(docker inspect --format '{{ .NetworkSettings.Networks.kind.IPAddress }}' 
 s3_endpoint="http://$node:30900"
 issuer="http://$node:30556/dex"
 server="http://$node:30080"
+# crane refuses a token realm that is an address in a private range, so the realm names the node by
+# a name that resolves to it (nip.io); the pushes themselves go to the address.
+realm="http://${node//./-}.nip.io:30080/v1/registry/token"
 
 say "secrets"
 openssl rand -hex 16 | tr -d '\n' >"$work/minio-password"
@@ -80,7 +83,7 @@ k wait --for=condition=Available deployment/pg-pooler --timeout=120s
 install() { # the chart, with the extra --set arguments given
 	h upgrade --install codehub "$root/deploy/helm/codehub" -f "$here/codehub-values.yaml" \
 		--set "s3.endpoint=$s3_endpoint" --set "registry.storage.endpoint=$s3_endpoint" \
-		--set "registry.realm=$server/v1/registry/token" \
+		--set "registry.realm=$realm" \
 		--set "config.CODEHUB_OIDC_ISSUER=$issuer" "$@" --wait --timeout 10m
 }
 
@@ -135,7 +138,7 @@ fi
 
 if has registry; then
 	say "scenario 4: the registry at 3 replicas, pushes and pulls spread across them"
-	k scale deployment/codehub-registry --replicas=3
+	install --set "postgres.urlSecret.name=pg-url-direct" --set registry.replicas=3
 	k rollout status deployment/codehub-registry --timeout=120s
 	token=$(LOADTEST_CLIENT_SECRET=$CODEHUB_TEST_OIDC_TEST_CLIENT_SECRET LOADTEST_PASSWORD=$CODEHUB_TEST_OIDC_PASSWORD_ALICE \
 		"$loadtest" --server "$server" --token-url "$issuer/token" --client-id "$CODEHUB_TEST_OIDC_TEST_CLIENT_ID" \

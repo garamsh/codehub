@@ -8,6 +8,12 @@ spec:
   instances: 3
   storage:
     size: 1Gi
+  # A commit is acknowledged once one standby has it: with asynchronous replication (the default) a
+  # landing the primary acknowledged and no standby had received is lost with the primary (ADR 0054).
+  postgresql:
+    synchronous:
+      method: any
+      number: 1
   bootstrap:
     initdb:
       database: codehub
