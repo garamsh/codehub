@@ -431,7 +431,10 @@ async fn does_not_start_where_the_private_key_jwt_settings_are_wrong() {
 
 #[test]
 fn lists_every_authorisation_setting_in_help() {
-    let output = Command::new(BINARY).arg("--help").output().unwrap();
+    let output = Command::new(BINARY)
+        .args(["all", "--help"])
+        .output()
+        .unwrap();
     assert!(output.status.success());
     let help = String::from_utf8(output.stdout).unwrap();
     for flag in [

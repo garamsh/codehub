@@ -58,7 +58,27 @@ impl Server {
         database: &TestDatabase,
         variables: &[(&str, &str)],
     ) -> Result<Self, String> {
+        Self::try_start_role(binary, None, database, variables)
+    }
+
+    /// Starts `binary` as [`Server::try_start_with`] does, as the role `role` (`api`, `worker`,
+    /// ...), or with no subcommand where it is `None`.
+    ///
+    /// # Errors
+    ///
+    /// The first line of stderr, where it is not the line that names the address.
+    ///
+    /// # Panics
+    ///
+    /// Panics where [`Server::start`] does.
+    pub fn try_start_role(
+        binary: &Path,
+        role: Option<&str>,
+        database: &TestDatabase,
+        variables: &[(&str, &str)],
+    ) -> Result<Self, String> {
         let mut child = Command::new(binary)
+            .args(role)
             .env("CODEHUB_LISTEN", "127.0.0.1:0")
             .env("CODEHUB_POSTGRES_URL", database.url())
             .env("CODEHUB_S3_ENDPOINT", env("CODEHUB_TEST_S3_ENDPOINT"))

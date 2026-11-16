@@ -100,7 +100,7 @@ pub struct ApiState {
 /// differ.
 macro_rules! routes {
     (
-        $list:ident, $routed:ident;
+        $list:ident, $routed:ident, $state:ty;
         $($path:literal => $first:ident($first_handler:expr) $(, $rest:ident($rest_handler:expr))*;)+
     ) => {
         /// Every route of the router: its path template and the lowercase names of its methods.
@@ -108,7 +108,7 @@ macro_rules! routes {
             $(($path, &[stringify!($first) $(, stringify!($rest))*])),+
         ];
 
-        fn $routed() -> Router<Arc<ApiState>> {
+        fn $routed() -> Router<$state> {
             Router::new()$(
                 .route($path, routing::$first($first_handler)$(.$rest($rest_handler))*)
             )+
@@ -117,7 +117,7 @@ macro_rules! routes {
 }
 
 routes! {
-    ROUTES, routed;
+    ROUTES, routed, Arc<ApiState>;
     "/v1/openapi.json" => get(openapi);
     "/v1/orgs" => post(repositories::create_organisation);
     "/v1/orgs/{org}/repos" => post(repositories::create_repository);
@@ -139,16 +139,8 @@ routes! {
     "/v1/orgs/{org}/repos/{repo}/changesets/{id}/files" => get(workspace::list_files);
     "/v1/orgs/{org}/repos/{repo}/files/{*path}" => get(source_control::read_file);
     "/v1/orgs/{org}/repos/{repo}/history/{*path}" => get(source_control::history);
-}
-
-routes! {
-    RUNNER_ROUTES, runner_routed;
     "/v1/orgs/{org}/runners" => post(runners::register), get(runners::list);
     "/v1/orgs/{org}/runners/{id}" => delete(runners::remove);
-    "/v1/runner/jobs/claim" => post(jobs::claim);
-    "/v1/runner/jobs/{id}/heartbeat" => post(jobs::heartbeat);
-    "/v1/runner/jobs/{id}/result" => post(jobs::report);
-    "/v1/runner/jobs/{id}/uploads" => post(jobs::uploads);
     "/v1/orgs/{org}/repos/{repo}/changesets/{id}/checks" => get(checks::list);
     "/v1/orgs/{org}/repos/{repo}/jobs/{id}/cancel" => post(checks::cancel);
     "/v1/orgs/{org}/repos/{repo}/refs/{name}" => get(checks::reference);
@@ -161,7 +153,15 @@ routes! {
 }
 
 routes! {
-    HEALTH_ROUTES, health_routed;
+    RUNNER_ROUTES, runner_routed, Arc<ApiState>;
+    "/v1/runner/jobs/claim" => post(jobs::claim);
+    "/v1/runner/jobs/{id}/heartbeat" => post(jobs::heartbeat);
+    "/v1/runner/jobs/{id}/result" => post(jobs::report);
+    "/v1/runner/jobs/{id}/uploads" => post(jobs::uploads);
+}
+
+routes! {
+    HEALTH_ROUTES, health_routed, Arc<dyn Readiness>;
     "/healthz" => get(health::live);
     "/readyz" => get(health::ready);
 }
@@ -182,12 +182,36 @@ impl Readiness for () {
     }
 }
 
+/// `routes` over `state`, with the probes over the state's readiness, and a fallback for a request
+/// no route matches.
+fn serve(routes: Router<Arc<ApiState>>, state: ApiState) -> Router {
+    let readiness = Arc::clone(&state.readiness);
+    routes
+        .fallback(no_route)
+        .with_state(Arc::new(state))
+        .merge(health_routed().with_state(readiness))
+}
+
 /// The router serving the whole API over `state`: every route of [`ROUTES`], [`RUNNER_ROUTES`]
 /// and [`HEALTH_ROUTES`], and a fallback for a request no route matches.
 pub fn router(state: ApiState) -> Router {
-    routed()
-        .merge(runner_routed())
-        .merge(health_routed())
-        .fallback(no_route)
-        .with_state(Arc::new(state))
+    serve(routed().merge(runner_routed()), state)
+}
+
+/// The router of the user and agent API: every route of [`ROUTES`] and [`HEALTH_ROUTES`], and a
+/// fallback for a request no route matches, which `/v1/runner/` is.
+pub fn api_router(state: ApiState) -> Router {
+    serve(routed(), state)
+}
+
+/// The router of the runner API: every route of [`RUNNER_ROUTES`] and [`HEALTH_ROUTES`], and a
+/// fallback for a request no route matches.
+pub fn runner_router(state: ApiState) -> Router {
+    serve(runner_routed(), state)
+}
+
+/// The router of a process that serves only the probes of [`HEALTH_ROUTES`] over `readiness`,
+/// with a fallback for a request no route matches.
+pub fn health_router(readiness: Arc<dyn Readiness>) -> Router {
+    health_routed().fallback(no_route).with_state(readiness)
 }

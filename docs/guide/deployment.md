@@ -2,10 +2,11 @@
 
 How to run the codehub server and runner images: what each image holds, what it is configured with, what it needs, and what to probe.
 
-This file is the contract between codehub and whoever declares its deployment. Its two settings tables are compared with `codehub --help` and `codehub-runner --help` by `crates/codehub/tests/deployment.rs` and `crates/codehub-runner/tests/deployment.rs`, so a setting added or removed in code fails the tests until this file says so.
+This file is the contract between codehub and whoever declares its deployment. Its two settings tables are compared with `codehub all --help` and `codehub-runner --help` by `crates/codehub/tests/deployment.rs` and `crates/codehub-runner/tests/deployment.rs`, and the Roles column of the server table with each role's own `--help`, so a setting added or removed in code, or moved between roles, fails the tests until this file says so.
 
 ## Contents
 - Images
+- Server roles
 - Server settings
 - Runner options
 - Checking an executor
@@ -29,52 +30,69 @@ A tag `vX.Y.Z`, `vX.Y.Z-dev.N` or `vX.Y.Z-rc.N` of this repository publishes bot
 - Arguments given to the container are the options below, after the entrypoint.
 - A push that fails between the two images leaves only the server published. The repositories are tag-immutable, so a re-run cannot repair it and the repair is the next version.
 
+## Server roles
+
+The server binary runs as one role, named by its first argument (ADR 0052). The roles talk to each other only through PostgreSQL and the object store, so each can be deployed, scaled and restarted on its own.
+
+| Role | Runs |
+|---|---|
+| `api` | The `/v1` API of users and agents, except `/v1/runner/`. |
+| `runner-api` | The `/v1/runner/` API runners call: claim, heartbeat, result and uploads. |
+| `worker` | The background work: delivering the directory outbox (ADR 0044). |
+| `migrate` | Applies the migrations the database has not had, and exits 0. |
+| `all` | Migrates, then serves every route and delivers the outbox, in one process. |
+
+- With no role, `codehub` runs `all`, so a deployment of one process is unchanged.
+- Only `migrate` and `all` change the schema. Run `migrate` once, before `api`, `runner-api` and `worker` of a new version start.
+- Each role takes only the options its row in the table below lists, and refuses another with exit code 2. An environment variable of an option a role does not take is ignored.
+- `api` and `runner-api` serve the probes below on the listening address, as `worker` does for its own.
+
 ## Server settings
 
 Every setting is an option and a variable of the same name, the option's name upper-cased with the prefix `CODEHUB_`. A variable and the option both given: the option wins. A secret is marked `yes` below, and its value is hidden in the help output and in the server's configuration output.
 
-The server listens on `127.0.0.1:8080` unless `CODEHUB_LISTEN` says otherwise, so in a container set it to an address that is reachable, such as `0.0.0.0:8080`. It stops on SIGTERM or SIGINT after finishing the requests in flight.
+The roles that serve listen on `127.0.0.1:8080` unless `CODEHUB_LISTEN` says otherwise, so in a container set it to an address that is reachable, such as `0.0.0.0:8080`. It stops on SIGTERM or SIGINT after finishing the requests in flight.
 
-| Option | Variable | Secret | Purpose |
-|---|---|---|---|
-| `--listen` | `CODEHUB_LISTEN` | no | The address to listen on. |
-| `--postgres-url` | `CODEHUB_POSTGRES_URL` | yes | The PostgreSQL database holding the metadata. |
-| `--postgres-pool-size` | `CODEHUB_POSTGRES_POOL_SIZE` | no | Connections each server process holds; the sum over processes stays below PostgreSQL's `max_connections` (ADR 0037). |
-| `--landing-attempts` | `CODEHUB_LANDING_ATTEMPTS` | no | How often a landing is tried while `main` moves under it (ADR 0036). |
-| `--runner-claim-hold` | `CODEHUB_RUNNER_CLAIM_HOLD` | no | Seconds a runner's claim waits for a job. |
-| `--runner-heartbeat-interval` | `CODEHUB_RUNNER_HEARTBEAT_INTERVAL` | no | Seconds between the heartbeats runners are told to send. |
-| `--runner-lease` | `CODEHUB_RUNNER_LEASE` | no | Seconds a claim or heartbeat holds a job; it must exceed the heartbeat interval or the server refuses to start. |
-| `--s3-endpoint` | `CODEHUB_S3_ENDPOINT` | no | The URL of the S3-compatible object store. |
-| `--s3-region` | `CODEHUB_S3_REGION` | no | The object store's region. |
-| `--s3-bucket` | `CODEHUB_S3_BUCKET` | no | The bucket holding the objects. |
-| `--s3-access-key` | `CODEHUB_S3_ACCESS_KEY` | no | The access key. |
-| `--s3-secret-key` | `CODEHUB_S3_SECRET_KEY` | yes | The secret key. |
-| `--max-object-size` | `CODEHUB_MAX_OBJECT_SIZE` | no | The largest upload, in bytes. |
-| `--grant-expiry-seconds` | `CODEHUB_GRANT_EXPIRY_SECONDS` | no | How long an upload or download grant lasts. |
-| `--identity` | `CODEHUB_IDENTITY` | no | `oidc` (default) or `introspection`. |
-| `--oidc-issuer` | `CODEHUB_OIDC_ISSUER` | no | The accepted issuer; required with `oidc`. |
-| `--oidc-audience` | `CODEHUB_OIDC_AUDIENCE` | no | The accepted audience; required with `oidc`. |
-| `--jwks-min-refetch-seconds` | `CODEHUB_JWKS_MIN_REFETCH_SECONDS` | no | The shortest time between fetches of the issuer's keys. |
-| `--introspection-endpoint` | `CODEHUB_INTROSPECTION_ENDPOINT` | no | The RFC 7662 endpoint; required with `introspection`. |
-| `--introspection-client-id` | `CODEHUB_INTROSPECTION_CLIENT_ID` | no | The client id at that endpoint; required with `introspection`. |
-| `--introspection-client-secret` | `CODEHUB_INTROSPECTION_CLIENT_SECRET` | yes | The client secret at that endpoint; required with `introspection`. |
-| `--introspection-issuer` | `CODEHUB_INTROSPECTION_ISSUER` | no | The issuer named where a response has no `iss`; required with `introspection`. |
-| `--introspection-audience` | `CODEHUB_INTROSPECTION_AUDIENCE` | no | The accepted audience; required with `introspection`. |
-| `--authorisation` | `CODEHUB_AUTHORISATION` | no | `postgres` (default) or `authzen`. |
-| `--authzen-url` | `CODEHUB_AUTHZEN_URL` | no | The AuthZEN decision point; required with `authzen`. |
-| `--authzen-token-endpoint` | `CODEHUB_AUTHZEN_TOKEN_ENDPOINT` | no | The token endpoint for the decision point's bearer token; required with `authzen`. |
-| `--authzen-client-id` | `CODEHUB_AUTHZEN_CLIENT_ID` | no | The client id there; required with `authzen`. With `private-key-jwt` a template holding `{organisation}`, such as `grn:{organisation}/iam/service/codehub`. |
-| `--authzen-client-secret` | `CODEHUB_AUTHZEN_CLIENT_SECRET` | yes | The client secret there; required with `client-secret`, unused with `private-key-jwt`. |
-| `--authzen-evaluations` | `CODEHUB_AUTHZEN_EVALUATIONS` | no | Send Access Evaluations where the decision point offers them (ADR 0041). |
-| `--authzen-profile` | `CODEHUB_AUTHZEN_PROFILE` | no | The names the adapter sends: `plain` (default) or `grn`, garam's. `grn` needs `authzen` and `private-key-jwt` (ADR 0043). |
-| `--authzen-client-authentication` | `CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION` | no | `client-secret` (default) or `private-key-jwt`, one client and token per organisation (ADR 0042). |
-| `--authzen-key-file` | `CODEHUB_AUTHZEN_KEY_FILE` | no | The path of the PEM PKCS#8 RSA or P-256 private key that signs the assertions; required with `private-key-jwt`. The key is read from the file, never from a setting. |
-| `--authzen-key-id` | `CODEHUB_AUTHZEN_KEY_ID` | no | The `kid` header of the assertions, such as the key's RFC 7638 thumbprint; optional. |
-| `--authzen-issuer` | `CODEHUB_AUTHZEN_ISSUER` | no | The issuer identifier of the token endpoint's authorization server, the assertions' `aud`; required with `private-key-jwt`. |
-| `--authzen-audience` | `CODEHUB_AUTHZEN_AUDIENCE` | no | Sent as the token request's `audience` parameter where given. |
-| `--directory-changes` | `CODEHUB_DIRECTORY_CHANGES` | no | Where repository and organisation changes go: `none` (default) or `garam`, garam's `ApplyEntityChanges` with the organisation's token. `garam` needs `CODEHUB_AUTHZEN_PROFILE=grn`, or the server refuses to start (ADR 0044). `none` accepts and discards every entry the outbox holds, so enable `garam` before creating any repository garam must know: one created under `none` is never sent later. |
-| `--directory-garam-url` | `CODEHUB_DIRECTORY_GARAM_URL` | no | The base URL of garam's policy service, which the entity changes are sent to; required with `garam`. |
-| `--directory-delivery-wait` | `CODEHUB_DIRECTORY_DELIVERY_WAIT` | no | Seconds, at most 3600, creating a repository waits for its change to reach the receiver, 2 by default; the creation is answered either way, and an undelivered change is retried. |
+| Option | Variable | Secret | Roles | Purpose |
+|---|---|---|---|---|
+| `--listen` | `CODEHUB_LISTEN` | no | api, runner-api, worker, all | The address to listen on. |
+| `--postgres-url` | `CODEHUB_POSTGRES_URL` | yes | api, runner-api, worker, migrate, all | The PostgreSQL database holding the metadata. |
+| `--postgres-pool-size` | `CODEHUB_POSTGRES_POOL_SIZE` | no | api, runner-api, worker, migrate, all | Connections each server process holds; the sum over processes stays below PostgreSQL's `max_connections` (ADR 0037). |
+| `--landing-attempts` | `CODEHUB_LANDING_ATTEMPTS` | no | api, runner-api, all | How often a landing is tried while `main` moves under it (ADR 0036). |
+| `--runner-claim-hold` | `CODEHUB_RUNNER_CLAIM_HOLD` | no | runner-api, all | Seconds a runner's claim waits for a job. |
+| `--runner-heartbeat-interval` | `CODEHUB_RUNNER_HEARTBEAT_INTERVAL` | no | runner-api, all | Seconds between the heartbeats runners are told to send. |
+| `--runner-lease` | `CODEHUB_RUNNER_LEASE` | no | runner-api, all | Seconds a claim or heartbeat holds a job; it must exceed the heartbeat interval or the server refuses to start. |
+| `--s3-endpoint` | `CODEHUB_S3_ENDPOINT` | no | api, runner-api, all | The URL of the S3-compatible object store. |
+| `--s3-region` | `CODEHUB_S3_REGION` | no | api, runner-api, all | The object store's region. |
+| `--s3-bucket` | `CODEHUB_S3_BUCKET` | no | api, runner-api, all | The bucket holding the objects. |
+| `--s3-access-key` | `CODEHUB_S3_ACCESS_KEY` | no | api, runner-api, all | The access key. |
+| `--s3-secret-key` | `CODEHUB_S3_SECRET_KEY` | yes | api, runner-api, all | The secret key. |
+| `--max-object-size` | `CODEHUB_MAX_OBJECT_SIZE` | no | api, runner-api, all | The largest upload, in bytes. |
+| `--grant-expiry-seconds` | `CODEHUB_GRANT_EXPIRY_SECONDS` | no | api, runner-api, all | How long an upload or download grant lasts. |
+| `--identity` | `CODEHUB_IDENTITY` | no | api, runner-api, all | `oidc` (default) or `introspection`. |
+| `--oidc-issuer` | `CODEHUB_OIDC_ISSUER` | no | api, runner-api, all | The accepted issuer; required with `oidc`. |
+| `--oidc-audience` | `CODEHUB_OIDC_AUDIENCE` | no | api, runner-api, all | The accepted audience; required with `oidc`. |
+| `--jwks-min-refetch-seconds` | `CODEHUB_JWKS_MIN_REFETCH_SECONDS` | no | api, runner-api, all | The shortest time between fetches of the issuer's keys. |
+| `--introspection-endpoint` | `CODEHUB_INTROSPECTION_ENDPOINT` | no | api, runner-api, all | The RFC 7662 endpoint; required with `introspection`. |
+| `--introspection-client-id` | `CODEHUB_INTROSPECTION_CLIENT_ID` | no | api, runner-api, all | The client id at that endpoint; required with `introspection`. |
+| `--introspection-client-secret` | `CODEHUB_INTROSPECTION_CLIENT_SECRET` | yes | api, runner-api, all | The client secret at that endpoint; required with `introspection`. |
+| `--introspection-issuer` | `CODEHUB_INTROSPECTION_ISSUER` | no | api, runner-api, all | The issuer named where a response has no `iss`; required with `introspection`. |
+| `--introspection-audience` | `CODEHUB_INTROSPECTION_AUDIENCE` | no | api, runner-api, all | The accepted audience; required with `introspection`. |
+| `--authorisation` | `CODEHUB_AUTHORISATION` | no | api, runner-api, all | `postgres` (default) or `authzen`. |
+| `--authzen-url` | `CODEHUB_AUTHZEN_URL` | no | api, runner-api, all | The AuthZEN decision point; required with `authzen`. |
+| `--authzen-token-endpoint` | `CODEHUB_AUTHZEN_TOKEN_ENDPOINT` | no | api, runner-api, worker, all | The token endpoint for the decision point's bearer token; required with `authzen`. |
+| `--authzen-client-id` | `CODEHUB_AUTHZEN_CLIENT_ID` | no | api, runner-api, worker, all | The client id there; required with `authzen`. With `private-key-jwt` a template holding `{organisation}`, such as `grn:{organisation}/iam/service/codehub`. |
+| `--authzen-client-secret` | `CODEHUB_AUTHZEN_CLIENT_SECRET` | yes | api, runner-api, worker, all | The client secret there; required with `client-secret`, unused with `private-key-jwt`. |
+| `--authzen-evaluations` | `CODEHUB_AUTHZEN_EVALUATIONS` | no | api, runner-api, all | Send Access Evaluations where the decision point offers them (ADR 0041). |
+| `--authzen-profile` | `CODEHUB_AUTHZEN_PROFILE` | no | api, runner-api, worker, all | The names the adapter sends: `plain` (default) or `grn`, garam's. `grn` needs `authzen` and `private-key-jwt` (ADR 0043). |
+| `--authzen-client-authentication` | `CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION` | no | api, runner-api, worker, all | `client-secret` (default) or `private-key-jwt`, one client and token per organisation (ADR 0042). |
+| `--authzen-key-file` | `CODEHUB_AUTHZEN_KEY_FILE` | no | api, runner-api, worker, all | The path of the PEM PKCS#8 RSA or P-256 private key that signs the assertions; required with `private-key-jwt`. The key is read from the file, never from a setting. |
+| `--authzen-key-id` | `CODEHUB_AUTHZEN_KEY_ID` | no | api, runner-api, worker, all | The `kid` header of the assertions, such as the key's RFC 7638 thumbprint; optional. |
+| `--authzen-issuer` | `CODEHUB_AUTHZEN_ISSUER` | no | api, runner-api, worker, all | The issuer identifier of the token endpoint's authorization server, the assertions' `aud`; required with `private-key-jwt`. |
+| `--authzen-audience` | `CODEHUB_AUTHZEN_AUDIENCE` | no | api, runner-api, worker, all | Sent as the token request's `audience` parameter where given. |
+| `--directory-changes` | `CODEHUB_DIRECTORY_CHANGES` | no | api, worker, all | Where repository and organisation changes go: `none` (default) or `garam`, garam's `ApplyEntityChanges` with the organisation's token. `garam` needs `CODEHUB_AUTHZEN_PROFILE=grn`, or the server refuses to start (ADR 0044). `none` accepts and discards every entry the outbox holds, so enable `garam` before creating any repository garam must know: one created under `none` is never sent later. |
+| `--directory-garam-url` | `CODEHUB_DIRECTORY_GARAM_URL` | no | api, worker, all | The base URL of garam's policy service, which the entity changes are sent to; required with `garam`. |
+| `--directory-delivery-wait` | `CODEHUB_DIRECTORY_DELIVERY_WAIT` | no | api, all | Seconds, at most 3600, creating a repository waits for its change to reach the receiver, 2 by default; the creation is answered either way, and an undelivered change is retried. |
 
 ## Runner options
 
@@ -114,19 +132,19 @@ Egress and ingress are the cluster's. A job's MicroVM must reach the object stor
 
 ## What the server needs
 
-- **PostgreSQL** reachable at `CODEHUB_POSTGRES_URL`. The server migrates the schema forward at start (ADR 0022), so the user needs the right to create and alter tables in its database.
+- **PostgreSQL** reachable at `CODEHUB_POSTGRES_URL`. `migrate` and `all` migrate the schema forward (ADR 0022), so the user they connect as needs the right to create and alter tables in its database; the other roles need only the rights to use it.
 - **An S3-compatible object store** at `CODEHUB_S3_ENDPOINT`, with the bucket `CODEHUB_S3_BUCKET` already made: the server does not create it. Clients and runners move object bytes to and from the store by presigned URL, so the endpoint must be reachable by them as well as by the server (ADR 0015).
   The identity needs `s3:ListBucket` on the bucket as well as object access: without it, S3 answers a missing key with 403, and `/readyz` stays 503.
 - **An identity issuer** the server verifies tokens against, as `CODEHUB_IDENTITY` selects (`docs/architecture/access.md`), and, in the external mode, an AuthZEN decision point.
 
 ## Health
 
-Both probes are unauthenticated and sit outside `/v1`.
+Every role that serves (`api`, `runner-api`, `worker` and `all`) answers both probes on its listening address. They are unauthenticated and sit outside `/v1`.
 
 | Probe | Path | Answers |
 |---|---|---|
 | Liveness | `GET /healthz` | 200 while the process serves requests; depends on nothing. |
-| Readiness | `GET /readyz` | 200 where PostgreSQL and the object store each answer within 2 seconds; otherwise 503, with a problem detail naming the one that did not. A missing bucket is not detected: the probe asks for an object, and a 404 for it is an answer whether the object or the bucket is missing. |
+| Readiness | `GET /readyz` | 200 where PostgreSQL answers within 2 seconds with a schema at least as new as the binary's latest migration, and, for `api`, `runner-api` and `all`, the object store answers within 2 seconds; otherwise 503, with a problem detail naming the one that did not. `api`, `runner-api` and `worker` do not migrate, so on a database that `migrate` has not brought forward they stay not ready; a newer schema is accepted, so a rolling upgrade can run the old binary beside the new one. A missing bucket is not detected: the probe asks for an object, and a 404 for it is an answer whether the object or the bucket is missing. |
 
 With the host driver the runner serves no port; with the gaon driver it serves only the result listener, which is not a probe. Either way it has no probe.
 

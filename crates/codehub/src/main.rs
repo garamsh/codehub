@@ -3,12 +3,11 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use clap::Parser;
-use codehub::Config;
+use codehub::Cli;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match codehub::run(Config::parse()).await {
+    match codehub::run(Cli::from_args()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             // Nowhere left to report a failed stderr write.
