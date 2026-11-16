@@ -134,6 +134,62 @@ mod tests {
         assert!(prepared_after_the_adapters_ran(100).await >= 4);
     }
 
+    /// The functions of `sqlx` that make a statement without asking [`Statements`].
+    const BYPASSES: [&str; 4] = ["query", "query_as", "query_scalar", "raw_sql"];
+
+    /// The line numbers of `text` that make a statement without `Statements`: a call through the
+    /// path of `sqlx`, or a `use` item that imports one of [`BYPASSES`], after which a bare
+    /// `query(` would escape a search for the path.
+    fn bypasses(text: &str) -> Vec<usize> {
+        let mut found = Vec::new();
+        let mut item = String::new();
+        let mut item_from = 0;
+        for (number, line) in text.lines().enumerate() {
+            if BYPASSES.iter().any(|name| {
+                line.contains(&format!("sqlx::{name}("))
+                    || line.contains(&format!("sqlx::{name}::"))
+            }) {
+                found.push(number + 1);
+            }
+            let trimmed = line.trim_start();
+            if item.is_empty() && !(trimmed.starts_with("use ") || trimmed.starts_with("pub use "))
+            {
+                continue;
+            }
+            if item.is_empty() {
+                item_from = number + 1;
+            }
+            item.push(' ');
+            item.push_str(line.trim());
+            if line.trim_end().ends_with(';') {
+                if imports_a_bypass(&item) {
+                    found.push(item_from);
+                }
+                item.clear();
+            }
+        }
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
+    /// Whether `item`, a `use` item on one line, imports a function of
+    /// [`BYPASSES`] from `sqlx` by name, in a group, renamed or by a glob.
+    fn imports_a_bypass(item: &str) -> bool {
+        let Some(path) = item.split_once("sqlx::").map(|(_, rest)| rest) else {
+            return false;
+        };
+        let path = path.trim_end_matches(';').trim();
+        let names = path
+            .strip_prefix('{')
+            .map_or(path, |group| group.trim_end_matches('}'));
+        names.split(',').any(|name| {
+            name.split_whitespace()
+                .next()
+                .is_some_and(|name| name == "*" || BYPASSES.contains(&name))
+        })
+    }
+
     #[test]
     fn no_statement_is_made_but_through_statements() {
         let sources = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -144,18 +200,37 @@ mod tests {
                 continue;
             }
             let text = fs::read_to_string(&path).unwrap();
-            for (number, line) in text.lines().enumerate() {
-                if ["sqlx::query(", "sqlx::query_as", "sqlx::query_scalar"]
-                    .iter()
-                    .any(|call| line.contains(call))
-                {
-                    strays.push(format!("{}:{}", path.display(), number + 1));
-                }
+            for number in bypasses(&text) {
+                strays.push(format!("{}:{number}", path.display()));
             }
         }
         assert!(
             strays.is_empty(),
             "statements made without Statements, which sets whether they are persistent: {strays:?}"
         );
+    }
+
+    #[test]
+    fn the_guard_sees_a_call_by_its_path_and_an_import_in_every_form() {
+        for source in [
+            "let _ = sqlx::query(\"select 1\");",
+            "let _ = sqlx::query_as::<_, (i64,)>(\"select 1\");",
+            "let _ = sqlx::raw_sql(\"select 1\");",
+            "use sqlx::query;",
+            "use sqlx::query_scalar as scalar;",
+            "use sqlx::{PgPool, query};",
+            "use sqlx::{\n    PgPool,\n    query_as,\n};",
+            "use sqlx::*;",
+            "pub use sqlx::raw_sql;",
+        ] {
+            assert_eq!(bypasses(source).len(), 1, "{source}");
+        }
+        for source in [
+            "use sqlx::PgPool;",
+            "use sqlx::postgres::{PgConnectOptions, PgPoolOptions};",
+            "let _ = self.statements.query(\"select 1\");",
+        ] {
+            assert!(bypasses(source).is_empty(), "{source}");
+        }
     }
 }
