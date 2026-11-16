@@ -4,9 +4,12 @@
 # crates/loadtest. Each scenario passes where no acknowledged landing is lost and landings succeed
 # again within its stated time. The steps are straight-line; every wait is a `kubectl wait`.
 #
-# Needs kind, kubectl, helm, docker, openssl, aws and crane, and the images codehub/server:dev
-# (`make images`) and the loadtest binary (`cargo build -p loadtest`). KEEP_CLUSTER=1 leaves the
-# cluster up. SCENARIOS lists the ones to run, all five by default.
+# Needs kind, kubectl, helm, docker, openssl, aws, crane and cargo, and the images codehub/server:dev
+# (`make images`) and the loadtest binary (`cargo build -p loadtest`); a run also reaches the
+# network (ADR 0057). It refuses to start where a cluster of its name exists, and deletes only the
+# one it made. KEEP_CLUSTER=1 leaves the cluster up. SCENARIOS lists the ones to run, all five by
+# default. BREAK_RESTORED=1 deletes an object from the restored bucket and expects the restore
+# drill to fail on it, which is how the drill's own verdict is checked. Where a run fails, the pods' logs and the events are printed before the cluster goes.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -18,8 +21,28 @@ scenarios=${SCENARIOS:-"api-kill failover pooler registry restore"}
 cnpg_version=1.30.0
 ns=codehub
 
+if kind get clusters 2>/dev/null | grep -qx "$cluster"; then
+	echo "a kind cluster named $cluster exists; delete it, or set CLUSTER to another name" >&2
+	exit 1
+fi
+created=
+evidence() { # what a failed run leaves to be read: events, pods, and the logs of every pod
+	local namespace pod
+	kubectl --context "kind-$cluster" get events -A --sort-by=.lastTimestamp || true
+	kubectl --context "kind-$cluster" get pods -A -o wide || true
+	for namespace in "$ns" cnpg-system; do
+		for pod in $(kubectl --context "kind-$cluster" -n "$namespace" get pods -o name 2>/dev/null); do
+			printf '\n--- logs of %s/%s\n' "$namespace" "$pod"
+			kubectl --context "kind-$cluster" -n "$namespace" logs "$pod" --all-containers --tail=200 || true
+		done
+	done
+}
 cleanup() {
-	if [ "${KEEP_CLUSTER:-}" != 1 ]; then kind delete cluster --name "$cluster" || true; fi
+	local status=$?
+	if [ -n "$created" ]; then
+		if [ "$status" != 0 ]; then evidence; fi
+		if [ "${KEEP_CLUSTER:-}" != 1 ]; then kind delete cluster --name "$cluster" || true; fi
+	fi
 	rm -rf "$work"
 }
 trap cleanup EXIT
@@ -32,6 +55,7 @@ say() { printf '\n== %s\n' "$*"; }
 . "$root/dev/test.env"
 
 say "cluster"
+created=1
 kind create cluster --name "$cluster" --config "$here/kind.yaml" --wait 120s
 kubectl --context "kind-$cluster" create namespace "$ns"
 kind load docker-image codehub/server:dev --name "$cluster"
@@ -57,14 +81,12 @@ printf 'postgres://codehub:%s@pg-restored-rw:5432/codehub' "$pg_password" >"$wor
 k create secret generic pg-url-direct --from-file=url="$work/url-direct"
 k create secret generic pg-url-pooler --from-file=url="$work/url-pooler"
 k create secret generic pg-url-restored --from-file=url="$work/url-restored"
-# The registry's signing key (ES256, PKCS#8) and the JWKS it is trusted by. #284's key writer
-# replaces these steps.
-openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$work/signing.pem"
-openssl pkey -in "$work/signing.pem" -pubout -outform DER | tail -c 64 >"$work/xy"
-x=$(head -c 32 "$work/xy" | basenc --base64url | tr -d '=')
-y=$(tail -c 32 "$work/xy" | basenc --base64url | tr -d '=')
-printf '{"keys":[{"kty":"EC","crv":"P-256","alg":"ES256","use":"sig","kid":"kind-key","x":"%s","y":"%s"}]}' "$x" "$y" >"$work/jwks.json"
-k create secret generic registry-key --from-file=signing.pem="$work/signing.pem" --from-file=jwks.json="$work/jwks.json"
+# The registry's signing key (ES256, PKCS#8), its id and the JWKS the registry trusts it by are the
+# check environment's own (the e2e example garam_keys, which `make e2e` uses).
+mkdir "$work/keys"
+(cd "$root" && cargo run --locked -q -p e2e --example garam_keys -- "$work/keys")
+registry_kid=$(cat "$work/keys/registry.kid")
+k create secret generic registry-key --from-file=signing.pem="$work/keys/registry.pem" --from-file=jwks.json="$work/keys/registry-jwks.json"
 
 say "operators and services"
 kubectl --context "kind-$cluster" apply --server-side -f "https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v$cnpg_version/cnpg-$cnpg_version.yaml"
@@ -83,13 +105,13 @@ k wait --for=condition=Available deployment/pg-pooler --timeout=120s
 install() { # the chart, with the extra --set arguments given
 	h upgrade --install codehub "$root/deploy/helm/codehub" -f "$here/codehub-values.yaml" \
 		--set "s3.endpoint=$s3_endpoint" --set "registry.storage.endpoint=$s3_endpoint" \
-		--set "registry.realm=$realm" \
+		--set "registry.realm=$realm" --set "registry.keyId=$registry_kid" \
 		--set "config.CODEHUB_OIDC_ISSUER=$issuer" "$@" --wait --timeout 10m
 }
 
 # load LABEL SECONDS [loadtest arguments]: lands under LABEL for SECONDS, reads every landing back.
 load() {
-	label=$1 seconds=$2
+	local label=$1 seconds=$2
 	shift 2
 	LOADTEST_CLIENT_SECRET=$CODEHUB_TEST_OIDC_TEST_CLIENT_SECRET LOADTEST_PASSWORD=$CODEHUB_TEST_OIDC_PASSWORD_ALICE \
 		"$loadtest" --server "$server" --token-url "$issuer/token" --client-id "$CODEHUB_TEST_OIDC_TEST_CLIENT_ID" \
@@ -146,14 +168,27 @@ if has registry; then
 	export DOCKER_CONFIG="$work/docker"
 	mkdir -p "$DOCKER_CONFIG"
 	printf '%s' "$token" | crane auth login "$node:30500" -u alice --password-stdin --insecure
+	base=gcr.io/distroless/static:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931
+	# Each image has a layer of its own, so each push uploads a blob no other has and a pull reads
+	# it back from the bucket through whichever replica the connection reaches.
 	for n in $(seq 1 30); do
-		crane copy --insecure gcr.io/distroless/static:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931 "$node:30500/acme/app/spread-$n:latest" >/dev/null
-		crane digest --insecure "$node:30500/acme/app/spread-$n:latest" >/dev/null
+		mkdir "$work/layer-$n"
+		head -c 65536 /dev/urandom >"$work/layer-$n/blob"
+		tar -cf "$work/layer-$n.tar" -C "$work/layer-$n" blob
+		crane append --insecure -b "$base" -f "$work/layer-$n.tar" -t "$node:30500/acme/app/spread-$n:latest" >/dev/null
 	done
+	for n in $(seq 1 30); do
+		crane pull --insecure "$node:30500/acme/app/spread-$n:latest" "$work/pulled-$n.tar"
+	done
+	# Requests are counted from the access log by what they are and that they succeeded: a blob
+	# upload that completed (a PUT answered 201) and a blob read (a GET answered 307, the redirect to the bucket that serves the bytes). The probes,
+	# the challenges (401) and the manifests are not counted.
 	for pod in $(k get pods -l app.kubernetes.io/component=registry -o name); do
-		served=$(k logs "$pod" | grep -c '/v2/' || true)
-		echo "$pod served $served registry requests"
-		test "$served" -gt 0
+		uploads=$(k logs "$pod" | grep -cE '"PUT /v2/[^ ]*/blobs/uploads/[^ ]* HTTP/1.1" 201' || true)
+		reads=$(k logs "$pod" | grep -cE '"GET /v2/[^ ]*/blobs/sha256:[^ ]* HTTP/1.1" 307' || true)
+		echo "$pod completed $uploads blob uploads and redirected $reads blob reads to the bucket"
+		test "$uploads" -gt 0
+		test "$reads" -gt 0
 	done
 fi
 
@@ -172,12 +207,27 @@ if has restore; then
 	aws --endpoint-url "$s3_endpoint" s3 sync s3://codehub-backup s3://codehub-restored --only-show-errors
 	install --set "postgres.urlSecret.name=pg-url-restored" --set "postgres.migrateUrlSecret.name=pg-url-restored" \
 		--set "s3.bucket=codehub-restored"
-	say "restored: what landed before the backup must be there and intact"
 	verify() {
 		LOADTEST_CLIENT_SECRET=$CODEHUB_TEST_OIDC_TEST_CLIENT_SECRET LOADTEST_PASSWORD=$CODEHUB_TEST_OIDC_PASSWORD_ALICE \
 			"$loadtest" --server "$server" --token-url "$issuer/token" --client-id "$CODEHUB_TEST_OIDC_TEST_CLIENT_ID" \
 			--scope "openid audience:server:client_id:codehub" "$@"
 	}
+	if [ "${BREAK_RESTORED:-}" = 1 ]; then
+		# A check of the drill: one object of a landing the backup holds is deleted from the restored
+		# bucket, and the drill must fail on it even where a missing landing is tolerated.
+		say "restored, with one object deleted: the drill must fail"
+		digest=$(head -n 1 "$work/before-backup.jsonl" | jq -j .content | sha256sum | cut -d' ' -f1)
+		key=$(aws --endpoint-url "$s3_endpoint" s3 ls s3://codehub-restored --recursive | awk -v d="$digest" '$4 ~ d "$" {print $4; exit}')
+		test -n "$key"
+		aws --endpoint-url "$s3_endpoint" s3 rm "s3://codehub-restored/$key"
+		if verify --verify "$work/before-backup.jsonl" --tolerate-missing; then
+			echo "the drill passed with an object deleted from the restored bucket" >&2
+			exit 1
+		fi
+		echo "the drill failed on the deleted object, as it must"
+		exit 0
+	fi
+	say "restored: what landed before the backup must be there and intact"
 	verify --verify "$work/before-backup.jsonl"
 	say "restored: what landed after it may be absent, but no landing refers to a missing object"
 	verify --verify "$work/after-backup.jsonl" --tolerate-missing

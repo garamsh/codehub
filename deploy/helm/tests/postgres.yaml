@@ -10,6 +10,10 @@ spec:
     size: 1Gi
   # A commit is acknowledged once one standby has it: with asynchronous replication (the default) a
   # landing the primary acknowledged and no standby had received is lost with the primary (ADR 0054).
+  # The fixture relies on CloudNativePG keeping synchronous_standby_names right across a promotion:
+  # that the new primary again waits for a standby is ADR 0054's duty of the operator, and here it
+  # is observed (no acknowledged landing was lost in the failovers of the runs), not read from
+  # CloudNativePG's documentation, which describes this setting and not that behaviour.
   postgresql:
     synchronous:
       method: any

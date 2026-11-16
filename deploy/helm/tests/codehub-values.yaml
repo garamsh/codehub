@@ -30,7 +30,6 @@ worker:
   replicas: 1
 registry:
   enabled: true
-  keyId: kind-key
   storage:
     region: us-east-1
     bucket: registry
