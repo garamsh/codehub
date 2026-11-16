@@ -78,3 +78,5 @@ Current architecture of the system and the decisions behind it. This file is the
 - `adr/0049-folder-checks-inputs-needs-outputs-and-caches.md` — ADR 0049, checks are declared per folder with file inputs, run in `needs` order, hand on their outputs, start from cache refs and are skipped when their result is cached; extends ADR 0035
 - `adr/0050-ports-dispatched-dynamically.md` — ADR 0050, ports are held as shared trait objects through async-trait; supersedes ADR 0018's dispatch
 - `adr/0051-runs-in-the-server-workspace.md` — ADR 0051, a run executes a command against the caller's workspace on a runner, writes changed files back by compare-and-swap, and the runner caches objects by address; adds `run` to ADR 0048's snapshotting commands, and refines ADR 0049's dropped cache changes for a workspace's own cache refs
+- `registry.md` — the container image registry: Distribution on the object store, codehub's token service, image names and actions
+- `adr/0053-image-registry-with-codehub-tokens.md` — ADR 0053, container images are held by CNCF Distribution on the object store, and codehub issues its registry tokens
