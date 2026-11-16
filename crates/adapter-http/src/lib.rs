@@ -205,10 +205,21 @@ fn serve(routes: Router<Arc<ApiState>>, state: ApiState) -> Router {
         .merge(health_routed().with_state(readiness))
 }
 
+/// The largest body a runner route reads, in bytes, where the limit of the settings is lower: a
+/// runner's result and uploads list every file the job produced, and a refused one loses the job
+/// (ADR 0055).
+const RUNNER_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+/// The routes of [`RUNNER_ROUTES`], reading bodies up to [`RUNNER_BODY_BYTES`]. The layer is inner
+/// to the limit of the settings and so overrides it.
+fn runner_bounded() -> Router<Arc<ApiState>> {
+    runner_routed().layer(DefaultBodyLimit::max(RUNNER_BODY_BYTES))
+}
+
 /// The router serving the whole API over `state`: every route of [`ROUTES`], [`RUNNER_ROUTES`]
 /// and [`HEALTH_ROUTES`], and a fallback for a request no route matches.
 pub fn router(state: ApiState) -> Router {
-    serve(routed().merge(runner_routed()), state)
+    serve(routed().merge(runner_bounded()), state)
 }
 
 /// The router of the user and agent API: every route of [`ROUTES`] and [`HEALTH_ROUTES`], and a
@@ -220,7 +231,7 @@ pub fn api_router(state: ApiState) -> Router {
 /// The router of the runner API: every route of [`RUNNER_ROUTES`] and [`HEALTH_ROUTES`], and a
 /// fallback for a request no route matches.
 pub fn runner_router(state: ApiState) -> Router {
-    serve(runner_routed(), state)
+    serve(runner_bounded(), state)
 }
 
 /// The router of a process that serves only the probes of [`HEALTH_ROUTES`] over `readiness`,

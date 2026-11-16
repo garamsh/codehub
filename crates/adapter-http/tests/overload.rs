@@ -75,6 +75,15 @@ fn stalling(api: &Api, limits: Limits) -> (Router, Arc<Notify>) {
     (router_limited(&api.stores, authentication, limits), entered)
 }
 
+/// `reply`, failing the test where it does not come within ten seconds, so that a limit that is
+/// not applied fails the test and does not hang it.
+#[cfg(test)]
+async fn bounded(reply: impl std::future::Future<Output = Reply>) -> Reply {
+    tokio::time::timeout(Duration::from_secs(10), reply)
+        .await
+        .expect("the request was not bounded")
+}
+
 /// A list of the runners of `acme`: authenticated, and answered quickly.
 #[cfg(test)]
 async fn read(router: &Router, token: &str) -> Reply {
@@ -92,11 +101,12 @@ async fn read(router: &Router, token: &str) -> Reply {
 async fn answers_too_many_requests_past_the_burst_while_another_principal_is_served() {
     let api = Api::new();
     let (ada, grace) = (api.token("ada"), api.token("grace"));
+    api.repository(&ada, "acme").await;
     let (router, _) = stalling(&api, limits((1, 3), 1 << 20, Duration::from_secs(60), 100));
 
     for attempt in 1..=3 {
         let within = read(&router, &ada).await;
-        assert_ne!(within.status, StatusCode::TOO_MANY_REQUESTS, "{attempt}");
+        assert_eq!(within.status, StatusCode::OK, "{attempt}");
     }
     let refused = read(&router, &ada).await;
 
@@ -181,6 +191,38 @@ async fn answers_payload_too_large_for_a_body_over_the_limit() {
 }
 
 #[tokio::test]
+async fn reads_a_runner_body_over_the_limit_of_the_user_routes() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    api.repository(&ada, "acme").await;
+    let created = api
+        .post(
+            "/v1/orgs/acme/runners",
+            &ada,
+            json!({"issuer": "https://id.test", "subject": "r1", "labels": ["linux"]}),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let runner = api.token("r1");
+    let (router, _) = stalling(&api, limits((100, 100), 64, Duration::from_secs(60), 100));
+    let padding = json!({ "padding": "a".repeat(1000) });
+
+    let reported = send(
+        router.clone(),
+        Method::POST,
+        "/v1/runner/jobs/1/result",
+        Some(&runner),
+        Some(padding.clone()),
+    )
+    .await;
+
+    assert_ne!(reported.status, StatusCode::PAYLOAD_TOO_LARGE);
+    // The control: the same body to a user route is over the limit.
+    let refused = send(router, Method::POST, "/v1/orgs", Some(&ada), Some(padding)).await;
+    assert_eq!(refused.status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
 async fn answers_service_unavailable_for_a_request_that_takes_longer_than_the_timeout() {
     let api = Api::new();
     let ada = api.token("ada");
@@ -191,7 +233,7 @@ async fn answers_service_unavailable_for_a_request_that_takes_longer_than_the_ti
     );
 
     let started = Instant::now();
-    let timed_out = read(&router, STALLED).await;
+    let timed_out = bounded(read(&router, STALLED)).await;
 
     assert_eq!(timed_out.status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(timed_out.content_type, PROBLEM);
@@ -231,7 +273,7 @@ async fn leaves_a_held_claim_to_its_own_bound_rather_than_the_request_timeout() 
 
     assert_eq!(claimed.status, StatusCode::NO_CONTENT);
     // The control: a request of the same duration elsewhere is timed out.
-    let stalled = read(&router, STALLED).await;
+    let stalled = bounded(read(&router, STALLED)).await;
     assert_eq!(stalled.status, StatusCode::SERVICE_UNAVAILABLE);
 }
 

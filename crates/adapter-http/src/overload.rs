@@ -20,11 +20,14 @@ use crate::problem::Problem;
 /// The seconds a refused request is told to wait where the process has no better estimate.
 const RETRY_AFTER_SECONDS: u64 = 1;
 
-/// The routes that bound their own duration and so are exempt from the request timeout: the
-/// runner's claim, which holds for `RunnerSettings::hold`, and the landing, whose retries are
-/// bounded by `CODEHUB_LANDING_ATTEMPTS` (ADR 0036).
+/// The routes the request timeout does not apply to: the runner's claim, which holds for
+/// `RunnerSettings::hold`; the landing, whose attempts are bounded by `CODEHUB_LANDING_ATTEMPTS`
+/// (ADR 0036) and whose wait for the gate by nothing but the cap on requests in flight (ADR 0039);
+/// and the runner's result, whose settling may revert a landed changeset in steps that dropping the
+/// request half-way would leave unfinished. They still count toward that cap (ADR 0055).
 const OWN_BOUND: &[&str] = &[
     "/v1/runner/jobs/claim",
+    "/v1/runner/jobs/{id}/result",
     "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/land",
 ];
 
@@ -292,5 +295,17 @@ mod tests {
         for exempt in OWN_BOUND {
             assert!(routed.contains(exempt), "{exempt} is not a route");
         }
+    }
+
+    #[test]
+    fn exempts_the_claim_the_landing_and_the_result_from_the_timeout() {
+        assert_eq!(
+            OWN_BOUND,
+            [
+                "/v1/runner/jobs/claim",
+                "/v1/runner/jobs/{id}/result",
+                "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/land",
+            ]
+        );
     }
 }
