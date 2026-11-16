@@ -82,3 +82,9 @@ async fn a_record_at_a_stale_version_is_refused_and_records_nothing() {
 async fn landing_closes_the_instance_and_reopening_starts_a_new_one_at_version_zero() {
     workspace::landing_closes_the_instance_and_reopening_starts_a_new_one_at_version_zero::<Harness>().await;
 }
+
+#[tokio::test]
+async fn a_record_into_a_closed_instance_is_refused_though_the_version_matches() {
+    workspace::a_record_into_a_closed_instance_is_refused_though_the_version_matches::<Harness>()
+        .await;
+}

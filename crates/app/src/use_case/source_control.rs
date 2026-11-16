@@ -15,6 +15,7 @@ use crate::domain::path::{Path, Prefix};
 use crate::domain::principal::Caller;
 use crate::domain::repository::RepositoryId;
 use crate::port::driven::authorisation_decision::{Action, AuthorisationDecision, Resource};
+use crate::port::driven::cache_refs::CacheRefs;
 use crate::port::driven::changeset_log::{ChangesetLog, Ref};
 use crate::port::driven::derived_data::DerivedData;
 use crate::port::driven::draft_store::DraftStore;
@@ -28,6 +29,7 @@ use crate::port::driving::source_control::{
     SourceControlError, Version, Workspace, WorkspaceError,
 };
 use crate::use_case::access::{readable_repository, require, require_paths};
+use crate::use_case::cache_refs::remove_workspace_cache_refs;
 use crate::use_case::history::history;
 use crate::use_case::land::land;
 use crate::use_case::landing_attempts::LandingAttempts;
@@ -47,6 +49,8 @@ pub struct SourceControlAdapters {
     pub derived: Arc<dyn DerivedData>,
     /// Stores drafts.
     pub drafts: Arc<dyn DraftStore>,
+    /// Holds the cache refs, whose workspace refs a landing removes.
+    pub cache_refs: Arc<dyn CacheRefs>,
     /// Finds a repository's organisation.
     pub directory: Arc<dyn RepositoryDirectory>,
     /// Says what callers may do.
@@ -130,6 +134,7 @@ pub struct SourceControlService<P = NoAfterLanding> {
     log: Arc<dyn ChangesetLog>,
     derived: Arc<dyn DerivedData>,
     drafts: Arc<dyn DraftStore>,
+    cache_refs: Arc<dyn CacheRefs>,
     directory: Arc<dyn RepositoryDirectory>,
     authorisation: Arc<dyn AuthorisationDecision>,
     max_upload_size: u64,
@@ -150,6 +155,7 @@ impl SourceControlService {
             log,
             derived,
             drafts,
+            cache_refs,
             directory,
             authorisation,
         } = adapters;
@@ -158,6 +164,7 @@ impl SourceControlService {
             log,
             derived,
             drafts,
+            cache_refs,
             directory,
             authorisation,
             max_upload_size,
@@ -184,6 +191,7 @@ impl<P> SourceControlService<P> {
             log,
             derived,
             drafts,
+            cache_refs,
             directory,
             authorisation,
             max_upload_size,
@@ -196,6 +204,7 @@ impl<P> SourceControlService<P> {
             log,
             derived,
             drafts,
+            cache_refs,
             directory,
             authorisation,
             max_upload_size,
@@ -562,6 +571,7 @@ impl<P: AfterLanding> SourceControl for SourceControlService<P> {
             landing
         };
         let timestamp = landing.timestamp;
+        let instance = staged.instance;
         let arrival = self.gates.reach(repository);
         let _one_at_a_time = arrival.pass().await;
         let landed = land(
@@ -577,6 +587,10 @@ impl<P: AfterLanding> SourceControl for SourceControlService<P> {
         .await?;
         self.drafts
             .remove(repository, &draft)
+            .await
+            .map_err(LandError::from)?;
+        // Before `after_landing`, whose failure returns early: the instance is closed either way.
+        remove_workspace_cache_refs(&*self.cache_refs, repository, instance)
             .await
             .map_err(LandError::from)?;
         self.after_landing

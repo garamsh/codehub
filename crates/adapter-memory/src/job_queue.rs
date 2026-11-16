@@ -11,7 +11,7 @@ use app::domain::name::{DraftName, OrganisationName};
 use app::domain::principal::Principal;
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
-use app::domain::run::{NewRun, Run, RunId, RunState};
+use app::domain::run::{NewRun, NotWritten, Run, RunId, RunOutcome, RunResult, RunState};
 use app::domain::runner::{Registration, RegistrationId};
 use app::port::driven::job_queue::{JobQueue, JobQueueError};
 
@@ -51,6 +51,14 @@ impl Jobs {
 #[derive(Default)]
 pub struct MemoryJobQueue {
     jobs: Mutex<Jobs>,
+}
+
+fn held_by(run: &Run, runners: &[RegistrationId]) -> bool {
+    run.runner.is_some_and(|runner| runners.contains(&runner))
+}
+
+fn not_found(run: RunId) -> JobQueueError {
+    JobQueueError::NotFound(JobId::new(run.value()))
 }
 
 fn seconds(timeout: u64) -> i64 {
@@ -124,7 +132,8 @@ impl JobQueue for MemoryJobQueue {
             }
             let Some(registration) = registrations
                 .iter()
-                .find(|registration| registration.matches(job))
+                .filter(|registration| registration.matches(job))
+                .min_by_key(|registration| registration.id)
             else {
                 continue;
             };
@@ -263,6 +272,8 @@ impl JobQueue for MemoryJobQueue {
             id: RunId::new(held.issued),
             state: RunState::Queued,
             request: run,
+            runner: None,
+            result: None,
         };
         held.runs.insert(run.id, run.clone());
         Ok(run)
@@ -273,16 +284,13 @@ impl JobQueue for MemoryJobQueue {
             .runs
             .get(&run)
             .cloned()
-            .ok_or_else(|| JobQueueError::NotFound(JobId::new(run.value())))
+            .ok_or_else(|| not_found(run))
     }
 
     async fn cancel_run(&self, run: RunId) -> Result<Run, JobQueueError> {
         let mut held = lock(&self.jobs);
-        let found = held
-            .runs
-            .get_mut(&run)
-            .ok_or_else(|| JobQueueError::NotFound(JobId::new(run.value())))?;
-        if found.state.ended() {
+        let found = held.runs.get_mut(&run).ok_or_else(|| not_found(run))?;
+        if found.state.ended() || matches!(found.state, RunState::Reporting { .. }) {
             return Err(JobQueueError::Finished(JobId::new(run.value())));
         }
         found.state = RunState::Cancelled;
@@ -308,6 +316,159 @@ impl JobQueue for MemoryJobQueue {
                     && run.request.instance == instance
             })
             .cloned())
+    }
+
+    async fn claim_run(
+        &self,
+        registrations: &[Registration],
+        now: i64,
+        lease: i64,
+    ) -> Result<Option<Run>, JobQueueError> {
+        let mut held = lock(&self.jobs);
+        for run in held.runs.values_mut() {
+            if run.state != RunState::Queued {
+                continue;
+            }
+            let Some(registration) = registrations
+                .iter()
+                .filter(|registration| registration.takes_run(&run.request))
+                .min_by_key(|registration| registration.id)
+            else {
+                continue;
+            };
+            run.state = RunState::Running {
+                lease_expires_at: now.saturating_add(lease),
+                deadline: now.saturating_add(seconds(run.request.timeout.seconds())),
+            };
+            run.runner = Some(registration.id);
+            return Ok(Some(run.clone()));
+        }
+        Ok(None)
+    }
+
+    async fn heartbeat_run(
+        &self,
+        run: RunId,
+        runners: &[RegistrationId],
+        now: i64,
+        lease: i64,
+    ) -> Result<Heartbeat, JobQueueError> {
+        let mut held = lock(&self.jobs);
+        let found = held
+            .runs
+            .get_mut(&run)
+            .filter(|found| found.runner.is_some_and(|runner| runners.contains(&runner)))
+            .ok_or_else(|| not_found(run))?;
+        match found.state {
+            RunState::Running { deadline, .. } if deadline <= now => {
+                Ok(Heartbeat::Stop(StopReason::TimedOut))
+            }
+            RunState::Running { deadline, .. } => {
+                found.state = RunState::Running {
+                    lease_expires_at: now.saturating_add(lease),
+                    deadline,
+                };
+                Ok(Heartbeat::Continue)
+            }
+            RunState::Reporting { .. } => Ok(Heartbeat::Continue),
+            RunState::Cancelled => Ok(Heartbeat::Stop(StopReason::Cancelled)),
+            RunState::TimedOut => Ok(Heartbeat::Stop(StopReason::TimedOut)),
+            RunState::Queued | RunState::Finished => Err(not_found(run)),
+        }
+    }
+
+    async fn held_run(&self, run: RunId, runners: &[RegistrationId]) -> Result<Run, JobQueueError> {
+        lock(&self.jobs)
+            .runs
+            .get(&run)
+            .filter(|found| {
+                held_by(found, runners)
+                    && match found.state {
+                        RunState::Running { .. } => true,
+                        RunState::Cancelled | RunState::TimedOut => found.result.is_none(),
+                        RunState::Queued | RunState::Reporting { .. } | RunState::Finished => false,
+                    }
+            })
+            .cloned()
+            .ok_or_else(|| not_found(run))
+    }
+
+    async fn begin_report(
+        &self,
+        run: RunId,
+        runners: &[RegistrationId],
+        now: i64,
+        lease: i64,
+    ) -> Result<Run, JobQueueError> {
+        let mut held = lock(&self.jobs);
+        let found = held
+            .runs
+            .get_mut(&run)
+            .filter(|found| {
+                held_by(found, runners) && matches!(found.state, RunState::Running { .. })
+            })
+            .ok_or_else(|| not_found(run))?;
+        found.state = RunState::Reporting {
+            deadline: now.saturating_add(lease),
+        };
+        Ok(found.clone())
+    }
+
+    async fn complete_run(
+        &self,
+        run: RunId,
+        runners: &[RegistrationId],
+        result: RunResult,
+    ) -> Result<Run, JobQueueError> {
+        let mut held = lock(&self.jobs);
+        let found = held
+            .runs
+            .get_mut(&run)
+            .filter(|found| {
+                held_by(found, runners)
+                    && match found.state {
+                        RunState::Reporting { .. } => true,
+                        RunState::Cancelled | RunState::TimedOut => found.result.is_none(),
+                        RunState::Queued | RunState::Running { .. } | RunState::Finished => false,
+                    }
+            })
+            .ok_or_else(|| not_found(run))?;
+        if matches!(found.state, RunState::Reporting { .. }) {
+            found.state = RunState::Finished;
+        }
+        found.result = Some(result);
+        Ok(found.clone())
+    }
+
+    async fn expire_runs(&self, now: i64) -> Result<(), JobQueueError> {
+        for run in lock(&self.jobs).runs.values_mut() {
+            match run.state {
+                RunState::Running {
+                    lease_expires_at,
+                    deadline,
+                } => {
+                    if deadline <= now {
+                        run.state = RunState::TimedOut;
+                    } else if lease_expires_at <= now {
+                        run.state = RunState::Queued;
+                        run.runner = None;
+                    }
+                }
+                RunState::Reporting { deadline } if deadline <= now => {
+                    run.state = RunState::Finished;
+                    run.result = Some(RunResult::unreported(
+                        RunOutcome::ExecutorFailed,
+                        NotWritten::ExecutorFailed,
+                    ));
+                }
+                RunState::Queued
+                | RunState::Reporting { .. }
+                | RunState::Cancelled
+                | RunState::TimedOut
+                | RunState::Finished => {}
+            }
+        }
+        Ok(())
     }
 
     async fn expire(&self, now: i64) -> Result<Vec<Job>, JobQueueError> {

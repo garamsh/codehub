@@ -5,10 +5,14 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use app::domain::changeset::Change;
 use app::domain::check::Command;
+use app::domain::file::FileKind;
 use app::domain::name::DraftName;
 use app::domain::path::{Path, Prefix};
-use app::domain::run::{Run, RunId, RunState};
+use app::domain::run::{
+    NotWritten, Run, RunId, RunOutcome, RunResult, RunState, RunStream, WriteBack,
+};
 use app::port::driving::runs::{OutputFile, StartRun};
 use axum::Json;
 use axum::extract::State;
@@ -98,25 +102,85 @@ pub struct ResultBody {
     write_back: WriteBackBody,
 }
 
-/// The result of a run cancelled before a runner reported one: only the outcome is known.
-fn cancelled() -> ResultBody {
-    ResultBody {
-        outcome: "cancelled",
-        exit_code: None,
-        stdout: None,
-        stderr: None,
-        objects: ObjectsBody {
-            downloaded: 0,
-            from_cache: 0,
-        },
-        output_tree: None,
-        changes: Vec::new(),
-        refused: Vec::new(),
-        write_back: WriteBackBody {
-            outcome: "not_written",
-            reason: Some("cancelled"),
-            paths: Vec::new(),
-        },
+const fn outcome(outcome: RunOutcome) -> &'static str {
+    match outcome {
+        RunOutcome::Exited => "exited",
+        RunOutcome::TimedOut => "timed_out",
+        RunOutcome::Cancelled => "cancelled",
+        RunOutcome::ExecutorFailed => "executor_failed",
+    }
+}
+
+impl From<RunStream> for StreamBody {
+    fn from(stream: RunStream) -> Self {
+        Self {
+            address: stream.address.to_string(),
+            cut: stream.cut,
+        }
+    }
+}
+
+impl From<(Path, Change)> for ChangeBody {
+    fn from((path, change): (Path, Change)) -> Self {
+        let (kind, address) = match change {
+            Change::File(file) => (
+                match file.kind {
+                    FileKind::Regular => "regular",
+                    FileKind::Executable => "executable",
+                },
+                Some(file.content.to_string()),
+            ),
+            Change::Deletion => ("deleted", None),
+        };
+        Self {
+            path: path.to_string(),
+            kind,
+            address,
+        }
+    }
+}
+
+impl From<WriteBack> for WriteBackBody {
+    fn from(write_back: WriteBack) -> Self {
+        let (written, reason, paths) = match write_back {
+            WriteBack::Written { paths } => (true, None, paths),
+            WriteBack::NotWritten { reason, paths } => (
+                false,
+                Some(match reason {
+                    NotWritten::InstanceClosed => "instance_closed",
+                    NotWritten::WorkspaceMoved => "workspace_moved",
+                    NotWritten::WriteDenied => "write_denied",
+                    NotWritten::TimedOut => "timed_out",
+                    NotWritten::Cancelled => "cancelled",
+                    NotWritten::ExecutorFailed => "executor_failed",
+                }),
+                paths,
+            ),
+        };
+        Self {
+            outcome: if written { "written" } else { "not_written" },
+            reason,
+            paths: paths.iter().map(ToString::to_string).collect(),
+        }
+    }
+}
+
+impl From<RunResult> for ResultBody {
+    fn from(result: RunResult) -> Self {
+        Self {
+            outcome: outcome(result.outcome),
+            exit_code: result.exit_code,
+            stdout: result.stdout.map(Into::into),
+            stderr: result.stderr.map(Into::into),
+            objects: ObjectsBody {
+                downloaded: result.objects.downloaded,
+                from_cache: result.objects.from_cache,
+            },
+            output_tree: result.output_tree.map(|tree| tree.to_string()),
+            changes: result.changes.into_iter().map(Into::into).collect(),
+            refused: result.refused,
+            write_back: result.write_back.into(),
+        }
     }
 }
 
@@ -136,18 +200,17 @@ pub struct RunBody {
 
 impl From<Run> for RunBody {
     fn from(run: Run) -> Self {
-        let (state, lease_expires_at, deadline, result) = match run.state {
-            RunState::Queued => (StateBody::Queued, None, None, None),
+        let result = run.ended().map(ResultBody::from);
+        let (state, lease_expires_at, deadline) = match run.state {
+            RunState::Queued => (StateBody::Queued, None, None),
             RunState::Running {
                 lease_expires_at,
                 deadline,
-            } => (
-                StateBody::Running,
-                Some(lease_expires_at),
-                Some(deadline),
-                None,
-            ),
-            RunState::Cancelled => (StateBody::Ended, None, None, Some(cancelled())),
+            } => (StateBody::Running, Some(lease_expires_at), Some(deadline)),
+            RunState::Reporting { deadline } => (StateBody::Running, None, Some(deadline)),
+            RunState::Cancelled | RunState::TimedOut | RunState::Finished => {
+                (StateBody::Ended, None, None)
+            }
         };
         let request = run.request;
         Self {

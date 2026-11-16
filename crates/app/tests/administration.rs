@@ -549,6 +549,7 @@ async fn names_the_repository_in_each_resource_it_asks_the_decision_about() {
                 log: harness.log.clone(),
                 derived: harness.derived.clone(),
                 drafts: harness.drafts.clone(),
+                cache_refs: harness.cache_refs.clone(),
                 directory: harness.directory.clone(),
                 authorisation: recording.clone(),
             },

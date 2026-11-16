@@ -130,6 +130,7 @@ impl DraftStore for PostgresDraftStore {
         &self,
         repository: RepositoryId,
         draft: &DraftId,
+        instance: Instance,
         expected: u64,
         edits: BTreeMap<Path, Edit>,
     ) -> Result<(), DraftStoreError> {
@@ -146,6 +147,7 @@ impl DraftStore for PostgresDraftStore {
         .fetch_optional(&mut *transaction)
         .await
         .map_err(backend)?
+        .filter(|(id, _)| u64::try_from(*id).is_ok_and(|id| id == instance.get()))
         .ok_or_else(|| DraftStoreError::NotFound(draft.clone()))?;
         let version = u64::try_from(version).map_err(backend)?;
         if version != expected {

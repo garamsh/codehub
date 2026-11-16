@@ -189,6 +189,7 @@ pub trait Deployment: Sized + Send + Sync {
                 log: assembly.log,
                 derived: assembly.derived,
                 drafts: assembly.drafts,
+                cache_refs: assembly.cache_refs,
                 directory: assembly.directory,
                 authorisation: assembly.authorisation,
             },

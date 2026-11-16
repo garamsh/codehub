@@ -8,6 +8,7 @@ use crate::domain::job::Job;
 use crate::domain::name::{Label, OrganisationName};
 use crate::domain::principal::Principal;
 use crate::domain::repository::RepositoryId;
+use crate::domain::run::NewRun;
 
 /// A registration: opaque, assigned by the runner registry.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -69,6 +70,19 @@ impl Registration {
                 .repository
                 .is_none_or(|repository| repository == job.repository)
             && job.check.labels.is_subset(&registered.labels)
+    }
+
+    /// Whether this registration may take `run`, by the rule of [`Registration::matches`]: the
+    /// run is of its organisation and repository, and the runner offers every label the run
+    /// requires.
+    #[must_use]
+    pub fn takes_run(&self, run: &NewRun) -> bool {
+        let registered = &self.registered;
+        registered.organisation == run.organisation
+            && registered
+                .repository
+                .is_none_or(|repository| repository == run.repository)
+            && run.labels.is_subset(&registered.labels)
     }
 }
 

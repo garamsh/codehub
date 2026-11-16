@@ -8,7 +8,7 @@ use app::domain::name::{DraftName, OrganisationName};
 use app::domain::principal::Principal;
 use app::domain::repository::RepositoryId;
 use app::domain::revert::Revert;
-use app::domain::run::{NewRun, Run, RunId};
+use app::domain::run::{NewRun, Run, RunId, RunResult};
 use app::domain::runner::{Registration, RegistrationId};
 use app::port::driven::job_queue::{JobQueue, JobQueueError};
 use sqlx::{FromRow, PgConnection, PgPool};
@@ -539,6 +539,52 @@ impl JobQueue for PostgresJobQueue {
 
     async fn cancel_run(&self, run: RunId) -> Result<Run, JobQueueError> {
         runs::cancel(&self.pool, run).await
+    }
+
+    async fn claim_run(
+        &self,
+        registrations: &[Registration],
+        now: i64,
+        lease: i64,
+    ) -> Result<Option<Run>, JobQueueError> {
+        runs::claim(&self.pool, registrations, now, lease).await
+    }
+
+    async fn heartbeat_run(
+        &self,
+        run: RunId,
+        runners: &[RegistrationId],
+        now: i64,
+        lease: i64,
+    ) -> Result<Heartbeat, JobQueueError> {
+        runs::heartbeat(&self.pool, run, runners, now, lease).await
+    }
+
+    async fn held_run(&self, run: RunId, runners: &[RegistrationId]) -> Result<Run, JobQueueError> {
+        runs::held(&self.pool, run, runners).await
+    }
+
+    async fn begin_report(
+        &self,
+        run: RunId,
+        runners: &[RegistrationId],
+        now: i64,
+        lease: i64,
+    ) -> Result<Run, JobQueueError> {
+        runs::begin_report(&self.pool, run, runners, now, lease).await
+    }
+
+    async fn complete_run(
+        &self,
+        run: RunId,
+        runners: &[RegistrationId],
+        result: RunResult,
+    ) -> Result<Run, JobQueueError> {
+        runs::complete(&self.pool, run, runners, result).await
+    }
+
+    async fn expire_runs(&self, now: i64) -> Result<(), JobQueueError> {
+        runs::expire(&self.pool, now).await
     }
 
     async fn latest_run(

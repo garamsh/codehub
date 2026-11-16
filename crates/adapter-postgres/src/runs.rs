@@ -1,11 +1,19 @@
 //! The runs of the job queue: the `runs` table (ADR 0051).
 
+use std::collections::BTreeMap;
+
+use app::domain::changeset::Change;
 use app::domain::draft::Instance;
 use app::domain::file::{File, FileKind};
+use app::domain::job::{Heartbeat, JobId, StopReason};
 use app::domain::name::DraftName;
 use app::domain::principal::Principal;
 use app::domain::repository::RepositoryId;
-use app::domain::run::{NewRun, Run, RunId, RunState};
+use app::domain::run::{
+    NewRun, NotWritten, ObjectCounts, Run, RunId, RunOutcome, RunResult, RunState, RunStream,
+    WriteBack,
+};
+use app::domain::runner::{Registration, RegistrationId};
 use app::port::driven::job_queue::JobQueueError;
 use sqlx::{FromRow, PgPool};
 
@@ -16,7 +24,10 @@ macro_rules! columns {
     () => {
         "id, organisation, repository, issuer, subject, draft, instance, version, base, command, \
          prefix, add_paths, outputs, labels, timeout_seconds, cache_paths, cache_trees, \
-         file_paths, file_kinds, file_contents, state, lease_expires_at, deadline"
+         file_paths, file_kinds, file_contents, state, lease_expires_at, deadline, runner, \
+         result_outcome, exit_code, stdout_address, stdout_cut, stderr_address, stderr_cut, \
+         objects_downloaded, objects_from_cache, output_tree, change_paths, change_kinds, \
+         change_contents, refused, write_reason, write_paths"
     };
 }
 
@@ -53,7 +64,10 @@ const fn state_column(state: &RunState) -> &'static str {
     match state {
         RunState::Queued => "queued",
         RunState::Running { .. } => "running",
+        RunState::Reporting { .. } => "reporting",
         RunState::Cancelled => "cancelled",
+        RunState::TimedOut => "timed_out",
+        RunState::Finished => "finished",
     }
 }
 
@@ -65,7 +79,10 @@ fn ended_columns() -> Vec<&'static str> {
             lease_expires_at: 0,
             deadline: 0,
         },
+        RunState::Reporting { deadline: 0 },
         RunState::Cancelled,
+        RunState::TimedOut,
+        RunState::Finished,
     ]
     .iter()
     .filter(|state| state.ended())
@@ -98,6 +115,146 @@ struct RunRow {
     state: String,
     lease_expires_at: Option<i64>,
     deadline: Option<i64>,
+    runner: Option<i64>,
+    result_outcome: Option<String>,
+    exit_code: Option<i32>,
+    stdout_address: Option<Vec<u8>>,
+    stdout_cut: Option<bool>,
+    stderr_address: Option<Vec<u8>>,
+    stderr_cut: Option<bool>,
+    objects_downloaded: Option<i64>,
+    objects_from_cache: Option<i64>,
+    output_tree: Option<Vec<u8>>,
+    change_paths: Option<Vec<Vec<u8>>>,
+    change_kinds: Option<Vec<String>>,
+    change_contents: Option<Vec<Vec<u8>>>,
+    refused: Option<Vec<String>>,
+    write_reason: Option<String>,
+    write_paths: Option<Vec<Vec<u8>>>,
+}
+
+const fn outcome_column(outcome: RunOutcome) -> &'static str {
+    match outcome {
+        RunOutcome::Exited => "exited",
+        RunOutcome::TimedOut => "timed_out",
+        RunOutcome::Cancelled => "cancelled",
+        RunOutcome::ExecutorFailed => "executor_failed",
+    }
+}
+
+fn outcome(text: &str) -> Result<RunOutcome, String> {
+    match text {
+        "exited" => Ok(RunOutcome::Exited),
+        "timed_out" => Ok(RunOutcome::TimedOut),
+        "cancelled" => Ok(RunOutcome::Cancelled),
+        "executor_failed" => Ok(RunOutcome::ExecutorFailed),
+        other => Err(format!("a stored run has the outcome {other:?}")),
+    }
+}
+
+const fn reason_column(reason: NotWritten) -> &'static str {
+    match reason {
+        NotWritten::InstanceClosed => "instance_closed",
+        NotWritten::WorkspaceMoved => "workspace_moved",
+        NotWritten::WriteDenied => "write_denied",
+        NotWritten::TimedOut => "timed_out",
+        NotWritten::Cancelled => "cancelled",
+        NotWritten::ExecutorFailed => "executor_failed",
+    }
+}
+
+fn reason(text: &str) -> Result<NotWritten, String> {
+    match text {
+        "instance_closed" => Ok(NotWritten::InstanceClosed),
+        "workspace_moved" => Ok(NotWritten::WorkspaceMoved),
+        "write_denied" => Ok(NotWritten::WriteDenied),
+        "timed_out" => Ok(NotWritten::TimedOut),
+        "cancelled" => Ok(NotWritten::Cancelled),
+        "executor_failed" => Ok(NotWritten::ExecutorFailed),
+        other => Err(format!("a stored run has the write-back reason {other:?}")),
+    }
+}
+
+/// The stream a run stored, where it stored one.
+fn stream(address: Option<Vec<u8>>, cut: Option<bool>) -> Result<Option<RunStream>, String> {
+    match (address, cut) {
+        (Some(address), Some(cut)) => Ok(Some(RunStream {
+            address: conversion::address(address)?,
+            cut,
+        })),
+        (None, None) => Ok(None),
+        _ => Err("a stored run has half a stream".to_owned()),
+    }
+}
+
+/// The result a finished run stored.
+fn result(row: &mut RunRow, outcome_text: &str) -> Result<RunResult, String> {
+    let missing = |column: &str| format!("a finished run has no {column}");
+    let kinds = row
+        .change_kinds
+        .take()
+        .ok_or_else(|| missing("change kinds"))?;
+    let contents = row
+        .change_contents
+        .take()
+        .ok_or_else(|| missing("change contents"))?;
+    let change_paths = paths(
+        &row.change_paths
+            .take()
+            .ok_or_else(|| missing("change paths"))?,
+    )?;
+    let changes = change_paths
+        .into_iter()
+        .zip(kinds)
+        .zip(contents)
+        .map(|((path, kind_text), content)| {
+            let change = if kind_text == "deleted" {
+                Change::Deletion
+            } else {
+                Change::File(File {
+                    kind: kind(&kind_text)?,
+                    content: conversion::address(content)?,
+                })
+            };
+            Ok((path, change))
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    let write_paths = paths(
+        &row.write_paths
+            .take()
+            .ok_or_else(|| missing("write paths"))?,
+    )?;
+    let write_back = match row.write_reason.take() {
+        None => WriteBack::Written { paths: write_paths },
+        Some(text) => WriteBack::NotWritten {
+            reason: reason(&text)?,
+            paths: write_paths,
+        },
+    };
+    let downloaded = row
+        .objects_downloaded
+        .ok_or_else(|| missing("object count"))?;
+    let from_cache = row
+        .objects_from_cache
+        .ok_or_else(|| missing("object count"))?;
+    Ok(RunResult {
+        outcome: outcome(outcome_text)?,
+        exit_code: row.exit_code,
+        stdout: stream(row.stdout_address.take(), row.stdout_cut)?,
+        stderr: stream(row.stderr_address.take(), row.stderr_cut)?,
+        objects: ObjectCounts {
+            downloaded: unsigned(downloaded, "object count")?,
+            from_cache: unsigned(from_cache, "object count")?,
+        },
+        output_tree: row
+            .output_tree
+            .take()
+            .map(conversion::address)
+            .transpose()?,
+        changes,
+        refused: row.refused.take().ok_or_else(|| missing("refused paths"))?,
+        write_back,
+    })
 }
 
 fn paths(columns: &[Vec<u8>]) -> Result<Vec<app::domain::path::Path>, String> {
@@ -105,16 +262,24 @@ fn paths(columns: &[Vec<u8>]) -> Result<Vec<app::domain::path::Path>, String> {
 }
 
 impl RunRow {
-    fn run(self) -> Result<Run, String> {
+    fn run(mut self) -> Result<Run, String> {
         let state = match (self.state.as_str(), self.lease_expires_at, self.deadline) {
             ("queued", _, _) => RunState::Queued,
             ("running", Some(lease_expires_at), Some(deadline)) => RunState::Running {
                 lease_expires_at,
                 deadline,
             },
+            ("reporting", _, Some(deadline)) => RunState::Reporting { deadline },
             ("cancelled", _, _) => RunState::Cancelled,
+            ("timed_out", _, _) => RunState::TimedOut,
+            ("finished", _, _) => RunState::Finished,
             (other, _, _) => return Err(format!("a stored run has the state {other:?}")),
         };
+        let finished = match self.result_outcome.take() {
+            Some(text) => Some(result(&mut self, &text)?),
+            None => None,
+        };
+        let runner = self.runner.map(conversion::registration).transpose()?;
         let kinds = self.file_kinds.iter().map(|text| kind(text));
         let files = paths(&self.file_paths)?
             .into_iter()
@@ -140,6 +305,8 @@ impl RunRow {
         Ok(Run {
             id: RunId::new(unsigned(self.id, "identifier")?),
             state,
+            runner,
+            result: finished,
             request: NewRun {
                 organisation: self
                     .organisation
@@ -254,8 +421,9 @@ pub(crate) async fn find(pool: &PgPool, id: RunId) -> Result<Run, JobQueueError>
 /// Ends the run `id` as cancelled.
 pub(crate) async fn cancel(pool: &PgPool, id: RunId) -> Result<Run, JobQueueError> {
     let row = sqlx::query_as::<_, RunRow>(concat!(
-        "update runs set state = 'cancelled', updated_at = now() \
-         where id = $1 and state <> 'cancelled' returning ",
+        "update runs set state = 'cancelled', lease_expires_at = null, deadline = null, \
+         updated_at = now() \
+         where id = $1 and state in ('queued', 'running') returning ",
         columns!()
     ))
     .bind(number(id.value(), "run")?)
@@ -298,4 +466,253 @@ pub(crate) async fn latest(
     .map_err(backend)?
     .map(run)
     .transpose()
+}
+
+fn runners(held: &[RegistrationId]) -> Result<Vec<i64>, JobQueueError> {
+    held.iter()
+        .map(|runner| number(runner.value(), "registration"))
+        .collect()
+}
+
+fn not_found(id: RunId) -> JobQueueError {
+    JobQueueError::NotFound(JobId::new(id.value()))
+}
+
+/// Takes the oldest queued run one of `registrations` may take, with `for update skip locked`, so
+/// that concurrent claims never take one run.
+pub(crate) async fn claim(
+    pool: &PgPool,
+    registrations: &[Registration],
+    now: i64,
+    lease: i64,
+) -> Result<Option<Run>, JobQueueError> {
+    let ids = registrations
+        .iter()
+        .map(|registration| number(registration.id.value(), "registration"))
+        .collect::<Result<Vec<_>, _>>()?;
+    sqlx::query_as::<_, RunRow>(concat!(
+        "with next as ( \
+             select u.id as run, r.id as registration \
+             from runs u \
+             join runner_registrations r \
+                 on r.id = any($1) \
+                 and r.organisation = u.organisation \
+                 and (r.repository is null or r.repository = u.repository) \
+                 and u.labels <@ r.labels \
+             where u.state = 'queued' \
+             order by u.id, r.id \
+             limit 1 \
+             for update of u skip locked) \
+         update runs set state = 'running', runner = next.registration, \
+             lease_expires_at = $2 + $3, deadline = $2 + runs.timeout_seconds, \
+             updated_at = now() \
+         from next where runs.id = next.run \
+         returning ",
+        columns!()
+    ))
+    .bind(ids)
+    .bind(now)
+    .bind(lease)
+    .fetch_optional(pool)
+    .await
+    .map_err(backend)?
+    .map(run)
+    .transpose()
+}
+
+/// Extends the lease on the run `id`, or says why the runner is to stop.
+pub(crate) async fn heartbeat(
+    pool: &PgPool,
+    id: RunId,
+    held: &[RegistrationId],
+    now: i64,
+    lease: i64,
+) -> Result<Heartbeat, JobQueueError> {
+    let number_of = number(id.value(), "run")?;
+    let held = runners(held)?;
+    let mut transaction = pool.begin().await.map_err(backend)?;
+    let extended = sqlx::query(
+        "update runs set lease_expires_at = $3 + $4, updated_at = now() \
+         where id = $1 and state = 'running' and runner = any($2) and deadline > $3",
+    )
+    .bind(number_of)
+    .bind(&held)
+    .bind(now)
+    .bind(lease)
+    .execute(&mut *transaction)
+    .await
+    .map_err(backend)?
+    .rows_affected();
+    let stopped = if extended == 1 {
+        None
+    } else {
+        sqlx::query_scalar::<_, String>(
+            "select case when state = 'running' and deadline <= $3 then 'timed_out' \
+             else state end from runs where id = $1 and runner = any($2)",
+        )
+        .bind(number_of)
+        .bind(&held)
+        .bind(now)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(backend)?
+    };
+    transaction.commit().await.map_err(backend)?;
+    match (extended, stopped.as_deref()) {
+        (1, _) => Ok(Heartbeat::Continue),
+        (_, Some("reporting")) => Ok(Heartbeat::Continue),
+        (_, Some("cancelled")) => Ok(Heartbeat::Stop(StopReason::Cancelled)),
+        (_, Some("timed_out")) => Ok(Heartbeat::Stop(StopReason::TimedOut)),
+        _ => Err(not_found(id)),
+    }
+}
+
+/// The run `id`, where one of `held` holds it and may still upload and report.
+pub(crate) async fn held(
+    pool: &PgPool,
+    id: RunId,
+    held: &[RegistrationId],
+) -> Result<Run, JobQueueError> {
+    let row = sqlx::query_as::<_, RunRow>(concat!(
+        "select ",
+        columns!(),
+        " from runs where id = $1 and runner = any($2) and (state = 'running' \
+         or (state in ('cancelled', 'timed_out') and result_outcome is null))"
+    ))
+    .bind(number(id.value(), "run")?)
+    .bind(runners(held)?)
+    .fetch_optional(pool)
+    .await
+    .map_err(backend)?
+    .ok_or_else(|| not_found(id))?;
+    run(row)
+}
+
+/// Moves the run `id` from running to reporting, with a deadline `lease` seconds from `now`.
+pub(crate) async fn begin_report(
+    pool: &PgPool,
+    id: RunId,
+    held: &[RegistrationId],
+    now: i64,
+    lease: i64,
+) -> Result<Run, JobQueueError> {
+    let row = sqlx::query_as::<_, RunRow>(concat!(
+        "update runs set state = 'reporting', lease_expires_at = null, deadline = $3 + $4, \
+         updated_at = now() \
+         where id = $1 and state = 'running' and runner = any($2) returning ",
+        columns!()
+    ))
+    .bind(number(id.value(), "run")?)
+    .bind(runners(held)?)
+    .bind(now)
+    .bind(lease)
+    .fetch_optional(pool)
+    .await
+    .map_err(backend)?
+    .ok_or_else(|| not_found(id))?;
+    run(row)
+}
+
+/// Ends the run `id` with `result`, where one of `held` holds it: a reporting run finishes, and a
+/// cancelled or timed-out one that has no result keeps its state and takes `result`.
+pub(crate) async fn complete(
+    pool: &PgPool,
+    id: RunId,
+    held: &[RegistrationId],
+    result: RunResult,
+) -> Result<Run, JobQueueError> {
+    let (kinds, contents): (Vec<String>, Vec<Vec<u8>>) = result
+        .changes
+        .values()
+        .map(|change| match change {
+            Change::Deletion => ("deleted".to_owned(), Vec::new()),
+            Change::File(file) => (
+                kind_column(file.kind).to_owned(),
+                file.content.digest().to_vec(),
+            ),
+        })
+        .unzip();
+    let change_paths: Vec<_> = result.changes.keys().cloned().collect();
+    let (not_written, written) = match &result.write_back {
+        WriteBack::Written { paths } => (None, paths),
+        WriteBack::NotWritten { reason, paths } => (Some(reason_column(*reason)), paths),
+    };
+    let row = sqlx::query_as::<_, RunRow>(concat!(
+        "update runs set state = case when state = 'reporting' then 'finished' else state end, \
+         lease_expires_at = null, deadline = null, result_outcome = $3, exit_code = $4, stdout_address = $5, stdout_cut = $6, \
+         stderr_address = $7, stderr_cut = $8, objects_downloaded = $9, \
+         objects_from_cache = $10, output_tree = $11, change_paths = $12, change_kinds = $13, \
+         change_contents = $14, refused = $15, write_reason = $16, write_paths = $17, \
+         updated_at = now() \
+         where id = $1 and runner = any($2) and (state = 'reporting' \
+         or (state in ('cancelled', 'timed_out') and result_outcome is null)) \
+         returning ",
+        columns!()
+    ))
+    .bind(number(id.value(), "run")?)
+    .bind(runners(held)?)
+    .bind(outcome_column(result.outcome))
+    .bind(result.exit_code)
+    .bind(result.stdout.map(|stream| stream.address.digest().to_vec()))
+    .bind(result.stdout.map(|stream| stream.cut))
+    .bind(result.stderr.map(|stream| stream.address.digest().to_vec()))
+    .bind(result.stderr.map(|stream| stream.cut))
+    .bind(number(result.objects.downloaded, "object count")?)
+    .bind(number(result.objects.from_cache, "object count")?)
+    .bind(result.output_tree.map(|tree| tree.digest().to_vec()))
+    .bind(conversion::path_columns(&change_paths))
+    .bind(kinds)
+    .bind(contents)
+    .bind(&result.refused)
+    .bind(not_written)
+    .bind(conversion::path_columns(written))
+    .fetch_optional(pool)
+    .await
+    .map_err(backend)?
+    .ok_or_else(|| not_found(id))?;
+    run(row)
+}
+
+/// Times out the running runs whose deadline is `now` or before, queues again those whose lease
+/// lapsed before their deadline, and ends the reporting runs whose deadline is `now` or
+/// before as failed in the executor, with nothing written. Rows are locked in identifier order.
+pub(crate) async fn expire(pool: &PgPool, now: i64) -> Result<(), JobQueueError> {
+    let mut transaction = pool.begin().await.map_err(backend)?;
+    sqlx::query(
+        "update runs set state = 'timed_out', lease_expires_at = null, deadline = null, \
+         updated_at = now() \
+         where id in ( \
+             select id from runs where state = 'running' and deadline <= $1 \
+             order by id for update)",
+    )
+    .bind(now)
+    .execute(&mut *transaction)
+    .await
+    .map_err(backend)?;
+    sqlx::query(
+        "update runs set state = 'queued', runner = null, lease_expires_at = null, \
+         deadline = null, updated_at = now() \
+         where id in ( \
+             select id from runs where state = 'running' and lease_expires_at <= $1 \
+             order by id for update)",
+    )
+    .bind(now)
+    .execute(&mut *transaction)
+    .await
+    .map_err(backend)?;
+    sqlx::query(
+        "update runs set state = 'finished', deadline = null, result_outcome = 'executor_failed', \
+         objects_downloaded = 0, objects_from_cache = 0, change_paths = array[]::bytea[], \
+         change_kinds = array[]::text[], change_contents = array[]::bytea[], \
+         refused = array[]::text[], write_reason = 'executor_failed', \
+         write_paths = array[]::bytea[], updated_at = now() \
+         where id in ( \
+             select id from runs where state = 'reporting' and deadline <= $1 \
+             order by id for update)",
+    )
+    .bind(now)
+    .execute(&mut *transaction)
+    .await
+    .map_err(backend)?;
+    transaction.commit().await.map_err(backend)
 }

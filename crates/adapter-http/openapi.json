@@ -1893,7 +1893,7 @@
     },
     "/v1/orgs/{org}/repos/{repo}/runs/{id}/files": {
       "get": {
-        "summary": "The files of the run's output tree under `prefix`, each with a download grant. A run has an output tree only once a runner has reported its result, which is not yet served, so the list is empty until then.",
+        "summary": "The files of the run's output tree under `prefix`, each with a download grant. A run has an output tree only once a runner has reported its result, so the list is empty until then, and for a run that ended without a report.",
         "parameters": [
           {
             "name": "org",
@@ -2800,10 +2800,10 @@
     },
     "/v1/runner/jobs/claim": {
       "post": {
-        "summary": "Claim the oldest queued job a registration of the caller matches. A run's job goes only to a runner whose executor is `host`; a runner that states `gaon`, or none, is never handed one.",
+        "summary": "Claim the oldest queued job a registration of the caller matches; a run's job is offered before a check's. A run's job goes only to a runner whose executor is `host` or absent; a runner that states `gaon` is never handed one.",
         "responses": {
           "200": {
-            "description": "A job, now held by the caller: a check's job, or a run's job where the runner's executor is `host`.",
+            "description": "A job, now held by the caller: a check's job, or a run's job where the runner's executor is `host` or absent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2871,7 +2871,7 @@
                       "host",
                       "gaon"
                     ],
-                    "description": "What the runner runs a command with. Absent means the runner is never handed a run's job. The claim does not hand out run jobs yet: #259 adds the claim of a run and its result."
+                    "description": "What the runner runs a command with. Absent means `host`. A runner whose executor is `gaon` is never handed a run's job."
                   }
                 }
               }
@@ -2984,7 +2984,15 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/JobResult"
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/JobResult"
+                  },
+                  {
+                    "$ref": "#/components/schemas/RunReport"
+                  }
+                ],
+                "description": "A check's job takes `JobResult` and a run's job takes `RunReport`; the server tells them apart by the job. A body that does not fit the job's kind is a 400."
               }
             }
           }
@@ -4160,6 +4168,10 @@
               "$ref": "#/components/schemas/ProducedFile"
             },
             "description": "The files the command left under the check's caches, already uploaded; read only where the status is `passed`."
+          },
+          "objects": {
+            "$ref": "#/components/schemas/ObjectCounts",
+            "description": "How many objects the runner fetched and already held; absent from older runners."
           }
         }
       },
@@ -4721,6 +4733,112 @@
           }
         }
       },
+      "ObjectCounts": {
+        "type": "object",
+        "required": [
+          "downloaded",
+          "from_cache"
+        ],
+        "properties": {
+          "downloaded": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Objects the runner fetched from the store."
+          },
+          "from_cache": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Objects the runner already held."
+          }
+        }
+      },
+      "RunReport": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "exit_code",
+          "stdout",
+          "stderr",
+          "objects",
+          "outputs",
+          "caches",
+          "changes",
+          "refused"
+        ],
+        "description": "A runner's report of how a run's job ended, posted to the result route of a job that is a run. The server builds the output tree and each cache path's tree from `outputs` and `caches`.",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "exited",
+              "timed_out",
+              "cancelled",
+              "executor_failed"
+            ],
+            "description": "The same as `RunResult.outcome`; the runner decides it."
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The command's exit code; 128 plus the signal where a signal ended it; null unless the outcome is `exited`."
+          },
+          "stdout": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunStream"
+              }
+            ],
+            "description": "The command's standard output, already uploaded; null where the command never started."
+          },
+          "stderr": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunStream"
+              }
+            ],
+            "description": "The command's standard error, already uploaded; null where the command never started."
+          },
+          "objects": {
+            "$ref": "#/components/schemas/ObjectCounts"
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProducedFile"
+            },
+            "description": "The files the command left under the run's outputs, already uploaded."
+          },
+          "caches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProducedFile"
+            },
+            "description": "The files the command left under the run's cache paths, already uploaded."
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunChange"
+            },
+            "description": "What the command changed, as `RunResult.changes` says."
+          },
+          "refused": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Sent or `add` paths that hold anything other than a regular file, as `RunResult.refused` says."
+          }
+        }
+      },
       "JobUploads": {
         "type": "object",
         "required": [
@@ -4844,7 +4962,7 @@
               "integer",
               "null"
             ],
-            "description": "While running: when the runner's lease lapses, in seconds since 1970-01-01T00:00:00Z."
+            "description": "While running: when the runner's lease lapses, in seconds since 1970-01-01T00:00:00Z. Absent while the server writes the run's changes back, when the run still shows as `running`."
           },
           "deadline": {
             "type": [
@@ -4879,7 +4997,7 @@
           "refused",
           "write_back"
         ],
-        "description": "How a run ended. Until #259 serves a runner's report, only a cancelled run ends, with every field empty but the outcome and the write-back.",
+        "description": "How a run ended. A run that ended without a runner's report, by cancellation or a timeout, has every field empty but the outcome and the write-back.",
         "properties": {
           "outcome": {
             "type": "string",
@@ -4907,7 +5025,7 @@
                 "$ref": "#/components/schemas/RunStream"
               }
             ],
-            "description": "Set by #259."
+            "description": "Null where the command never started or the run ended without a report."
           },
           "stderr": {
             "oneOf": [
@@ -4918,26 +5036,10 @@
                 "$ref": "#/components/schemas/RunStream"
               }
             ],
-            "description": "Set by #259."
+            "description": "Null where the command never started or the run ended without a report."
           },
           "objects": {
-            "type": "object",
-            "required": [
-              "downloaded",
-              "from_cache"
-            ],
-            "properties": {
-              "downloaded": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "Objects the runner fetched from the store. Set by #259."
-              },
-              "from_cache": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "Objects the runner already held. Set by #259."
-              }
-            }
+            "$ref": "#/components/schemas/ObjectCounts"
           },
           "output_tree": {
             "oneOf": [
@@ -4948,21 +5050,21 @@
                 "$ref": "#/components/schemas/Address"
               }
             ],
-            "description": "The address of the output tree. Set by #259."
+            "description": "The address of the output tree; null where the run ended without a report."
           },
           "changes": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/RunChange"
             },
-            "description": "What the command changed: each sent path whose content or kind differs from what it was sent as, or which is gone, and each path under `add` that exists, with its kind and address. Paths under a cache path are never changes. Set by #259."
+            "description": "What the command changed: each sent path whose content or kind differs from what it was sent as, or which is gone, and each path under `add` that exists, with its kind and address. Paths under a cache path are never changes."
           },
           "refused": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Sent or `add` paths that hold anything other than a regular file, symbolic links included, which the runner reads without following; they are not reported as changes. Set by #259."
+            "description": "Sent or `add` paths that hold anything other than a regular file, symbolic links included, which the runner reads without following; they are not reported as changes."
           },
           "write_back": {
             "$ref": "#/components/schemas/RunWriteBack"
@@ -5110,7 +5212,7 @@
           "files",
           "caches"
         ],
-        "description": "The job of a run, as a runner whose executor is `host` claims it. A run job is claimed only once #259 lands.",
+        "description": "The job of a run, as a runner whose executor is `host` or absent claims it.",
         "properties": {
           "id": {
             "type": "integer",
