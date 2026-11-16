@@ -23,9 +23,6 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
-/// Bound on each request to the token endpoint.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// A token is replaced when it is this close to its expiry.
 const EXPIRY_MARGIN: Duration = Duration::from_secs(5);
 
@@ -198,9 +195,10 @@ impl TokenClient {
         token_endpoint: &str,
         audience: Option<String>,
         authentication: Authentication,
+        timeout: Duration,
     ) -> Result<Self, InvalidClient> {
         let http = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
+            .timeout(timeout)
             .build()
             .map_err(|error| InvalidClient(error.to_string()))?;
         let credentials = match authentication {
@@ -500,6 +498,7 @@ mod tests {
                 key_id: None,
                 issuer: "https://garam.test".to_owned(),
             },
+            Duration::from_secs(10),
         )
     }
 

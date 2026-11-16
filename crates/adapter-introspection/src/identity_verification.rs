@@ -6,9 +6,6 @@ use app::domain::principal::Principal;
 use app::port::driven::identity_verification::{IdentityError, IdentityVerification};
 use serde::Deserialize;
 
-/// Bound on each request to the introspection endpoint.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// Identity verification by RFC 7662 token introspection. Every verification is one request to
 /// the endpoint, authenticated as the configured client; nothing is cached.
 pub struct IntrospectionIdentityVerification {
@@ -60,9 +57,10 @@ impl IntrospectionIdentityVerification {
         client_secret: &str,
         issuer: &str,
         audience: &str,
+        timeout: Duration,
     ) -> Result<Self, IdentityError> {
         let http = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
+            .timeout(timeout)
             .build()
             .map_err(backend)?;
         Ok(Self {
