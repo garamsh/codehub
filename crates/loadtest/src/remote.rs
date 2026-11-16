@@ -63,8 +63,11 @@ pub struct Options {
     /// The longest, in seconds after the fault, until a landing succeeds again.
     #[arg(long, default_value_t = 60)]
     recover_within: u64,
+    /// Prints an access token, for a client that is not this one, and does nothing else.
+    #[arg(long, requires = "server")]
+    pub print_token: bool,
     /// Does not load: reads back every landing recorded in this file.
-    #[arg(long, requires = "server", conflicts_with = "fault")]
+    #[arg(long, requires = "server", conflicts_with_all = ["fault", "print_token"])]
     pub verify: Option<PathBuf>,
     /// With `--verify`, a recorded landing that is absent from `main` is accepted, as one landed
     /// after a backup is; one that is present must still be intact.
@@ -248,7 +251,8 @@ async fn shell(command: &str) -> Result<(), Failure> {
     }
 }
 
-/// Reads `acks` back from the server and counts the verdicts: intact, missing and changed.
+/// Reads `acks` back from the server, the history and the file's bytes, and counts the verdicts:
+/// intact, missing and changed.
 async fn read_back(context: &Arc<Context>, acks: Vec<Ack>) -> Result<[u64; 3], Failure> {
     let mut counts = [0_u64; 3];
     let mut pending = acks.into_iter();
@@ -261,7 +265,17 @@ async fn read_back(context: &Arc<Context>, acks: Vec<Ack>) -> Result<[u64; 3], F
                 for _ in 0..VERIFY_ATTEMPTS {
                     let (status, versions) = context.session().versions(&ack.path).await;
                     if succeeded(status) {
-                        return Some(judge(&ack, &versions));
+                        let verdict = judge(&ack, &versions);
+                        if verdict != Verdict::Intact {
+                            return Some(verdict);
+                        }
+                        // The history names the object; reading the file proves it is still there.
+                        let (status, bytes) = context.session().read(&ack.path).await;
+                        return Some(if succeeded(status) && bytes == ack.content.as_bytes() {
+                            Verdict::Intact
+                        } else {
+                            Verdict::Changed
+                        });
                     }
                     if status == 404 {
                         return Some(Verdict::Missing);
@@ -311,6 +325,12 @@ fn append_record(path: &Path, acks: &[Ack]) -> Result<(), Failure> {
 pub const fn passes(counts: [u64; 3], tolerate_missing: bool) -> bool {
     let [intact, missing, changed] = counts;
     changed == 0 && (tolerate_missing || missing == 0) && intact + missing + changed > 0
+}
+
+/// Prints an access token for the user the options name.
+pub async fn print_token(options: &Options) -> Result<bool, Failure> {
+    println!("{}", context(options).await?.token);
+    Ok(true)
 }
 
 /// Reads the landings in `options.verify` back; whether they pass.

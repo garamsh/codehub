@@ -1,0 +1,36 @@
+# The chart in the cluster of the fault runs. The addresses that carry a node's IP (the S3 endpoint,
+# the issuer, the registry's realm) are set by the run with --set.
+image:
+  repository: codehub/server
+  tag: dev
+  pullPolicy: Never
+postgres:
+  urlSecret: {name: pg-url-direct, key: url}
+  migrateUrlSecret: {name: pg-url-direct, key: url}
+  poolSize: 10
+s3:
+  region: us-east-1
+  bucket: codehub
+  accessKey: codehub
+  secretKeySecret: {name: minio-credentials, key: rootPassword}
+config:
+  CODEHUB_IDENTITY: oidc
+  CODEHUB_OIDC_AUDIENCE: codehub
+api:
+  replicas: 2
+  service: {type: NodePort, port: 8080, nodePort: 30080}
+runnerApi:
+  replicas: 2
+worker:
+  replicas: 1
+registry:
+  enabled: true
+  keyId: kind-key
+  storage:
+    region: us-east-1
+    bucket: registry
+    accessKey: codehub
+    secretKeySecret: {name: minio-credentials, key: rootPassword}
+  httpSecret: {name: registry-http, key: http-secret}
+  keySecret: {name: registry-key}
+  service: {type: NodePort, port: 5000, nodePort: 30500}

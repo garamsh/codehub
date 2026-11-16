@@ -1,0 +1,24 @@
+# A new cluster restored from the backup of `pg` in the object store.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: pg-restored
+spec:
+  instances: 3
+  storage:
+    size: 1Gi
+  bootstrap:
+    recovery:
+      source: pg
+      database: codehub
+      owner: codehub
+      secret:
+        name: pg-app-user
+  externalClusters:
+    - name: pg
+      barmanObjectStore:
+        destinationPath: s3://cnpg-backups/
+        endpointURL: http://minio:9000
+        s3Credentials:
+          accessKeyId: {name: minio-credentials, key: rootUser}
+          secretAccessKey: {name: minio-credentials, key: rootPassword}

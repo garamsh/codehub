@@ -123,6 +123,9 @@ struct Output<'a> {
 }
 
 async fn run(cli: &Cli) -> Result<bool, Failure> {
+    if cli.remote.print_token {
+        return remote::print_token(&cli.remote).await;
+    }
     if let Some(path) = &cli.remote.verify {
         return remote::verify(&cli.remote, path).await;
     }

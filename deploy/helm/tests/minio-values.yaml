@@ -1,0 +1,18 @@
+# Distributed MinIO: four servers. The credentials are the Secret minio-credentials, made by the run.
+mode: distributed
+replicas: 4
+persistence:
+  size: 1Gi
+resources:
+  requests:
+    memory: 256Mi
+existingSecret: minio-credentials
+buckets:
+  - {name: codehub, policy: none, purge: false}
+  - {name: codehub-backup, policy: none, purge: false}
+  - {name: codehub-restored, policy: none, purge: false}
+  - {name: registry, policy: none, purge: false}
+  - {name: cnpg-backups, policy: none, purge: false}
+service:
+  type: NodePort
+  nodePort: 30900

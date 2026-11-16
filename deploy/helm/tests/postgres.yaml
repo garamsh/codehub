@@ -1,0 +1,40 @@
+# PostgreSQL by CloudNativePG: three instances that archive to the object store, and a PgBouncer
+# in transaction mode in front of the primary. The app user's password is the Secret pg-app-user.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: pg
+spec:
+  instances: 3
+  storage:
+    size: 1Gi
+  bootstrap:
+    initdb:
+      database: codehub
+      owner: codehub
+      secret:
+        name: pg-app-user
+  backup:
+    barmanObjectStore:
+      destinationPath: s3://cnpg-backups/
+      endpointURL: http://minio:9000
+      s3Credentials:
+        accessKeyId: {name: minio-credentials, key: rootUser}
+        secretAccessKey: {name: minio-credentials, key: rootPassword}
+      wal:
+        compression: gzip
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: pg-pooler
+spec:
+  cluster:
+    name: pg
+  instances: 2
+  type: rw
+  pgbouncer:
+    poolMode: transaction
+    parameters:
+      max_client_conn: "500"
+      default_pool_size: "20"
