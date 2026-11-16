@@ -1614,10 +1614,12 @@ async fn hands_a_run_to_a_host_runner_which_reports_it_and_the_changes_are_writt
     assert!(claimed.body["files"][0]["download"]["url"].is_string());
 
     let address = api.upload(&ada, "acme", "b\n").await;
-    let report = run_report(json!([
+    let out = api.upload(&ada, "acme", "made\n").await;
+    let mut report = run_report(json!([
         {"path": "src/a.txt", "kind": "regular", "address": address},
         {"path": "src/gone", "kind": "deleted", "address": null},
     ]));
+    report["stdout"] = json!({"address": out, "cut": false});
     let reported = api
         .post(&format!("/v1/runner/jobs/{id}/result"), &runner, report)
         .await;
@@ -1634,6 +1636,11 @@ async fn hands_a_run_to_a_host_runner_which_reports_it_and_the_changes_are_writt
         json!(["src/a.txt", "src/gone"])
     );
     assert_eq!(result["changes"][0]["address"], address);
+    assert_eq!(result["stdout"]["address"], out);
+    assert_eq!(result["stdout"]["cut"], false);
+    assert_eq!(result["stdout"]["download"]["method"], "GET");
+    assert!(result["stdout"]["download"]["url"].is_string());
+    assert_eq!(result["stderr"], Value::Null);
     // The run is over: a second report is refused.
     let again = api
         .post(

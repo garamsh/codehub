@@ -31,7 +31,7 @@ use app::port::driven::membership::{Access, Role};
 use app::port::driving::access::AccessError;
 use app::port::driving::jobs::{Jobs, JobsError, Upload};
 use app::port::driving::runners::Runners;
-use app::port::driving::runs::{Runs, RunsError, StartRun};
+use app::port::driving::runs::{Runs, RunsError, StartRun, StreamDownloads};
 
 const RUN_FILE: &str = ".codehub/run.toml";
 
@@ -928,6 +928,43 @@ pub async fn a_run_lists_its_output_tree_under_a_prefix<H: RunnerDeployment>() {
     admin.grant(&bob, "", Access::Read).await;
     assert_eq!(
         runs.files(&bob, repo.id, run.id, &Prefix::whole()).await,
+        Err(RunsError::NotFound(run.id))
+    );
+}
+
+/// A run's reported streams each come with a download grant once it has ended, and a run that
+/// has not ended, or reported none, or is another principal's, has none.
+pub async fn a_run_gives_download_grants_for_the_streams_it_reported<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let (repo, bot) = runnable(&harness, &ada, &[("src/a", "a")], &[("src/a", "x")]).await;
+    let run = start(&repo, &ada, request(None, &[])).await.unwrap();
+    let runs = harness.assembly().runs();
+    assert_eq!(
+        runs.streams(&ada, repo.id, &run).await,
+        Ok(StreamDownloads::default())
+    );
+    harness.jobs().claim_run(&bot, 0).await.unwrap().unwrap();
+    let out = repo.upload("out").await;
+    let mut report = exited(vec![]);
+    report.stdout = Some(RunStream {
+        address: out,
+        cut: false,
+    });
+    harness
+        .jobs()
+        .report_run(&bot, run.id, report, 1)
+        .await
+        .unwrap();
+
+    let ended = read(&harness, &repo, &ada, run.id).await;
+    let grants = runs.streams(&ada, repo.id, &ended).await.unwrap();
+
+    assert!(grants.stdout.is_some());
+    assert_eq!(grants.stderr, None);
+    let bob = harness.caller("bob").await;
+    assert_eq!(
+        runs.streams(&bob, repo.id, &ended).await,
         Err(RunsError::NotFound(run.id))
     );
 }

@@ -12,7 +12,7 @@ use crate::domain::name::DraftName;
 use crate::domain::path::{Path, Prefix};
 use crate::domain::principal::Caller;
 use crate::domain::repository::RepositoryId;
-use crate::domain::run::{NewRun, Run, RunId, RunSettings};
+use crate::domain::run::{NewRun, Run, RunId, RunSettings, RunStream};
 use crate::port::driven::authorisation_decision::{Action, AuthorisationDecision, Resource};
 use crate::port::driven::cache_refs::CacheRefs;
 use crate::port::driven::changeset_log::{ChangesetLog, Ref};
@@ -23,7 +23,7 @@ use crate::port::driven::job_queue::{JobQueue, JobQueueError};
 use crate::port::driven::membership::Access;
 use crate::port::driven::object_store::ObjectStore;
 use crate::port::driven::repository_directory::RepositoryDirectory;
-use crate::port::driving::runs::{OutputFile, Runs, RunsError, StartRun};
+use crate::port::driving::runs::{OutputFile, Runs, RunsError, StartRun, StreamDownloads};
 use crate::use_case::access::{readable_repository, require, require_paths};
 use crate::use_case::cache_refs::create_workspace_cache_ref;
 use crate::use_case::jobs::walk_tree;
@@ -375,6 +375,35 @@ impl Runs for RunsService {
                 JobQueueError::Finished(_) => RunsError::Finished(run),
                 other @ (JobQueueError::NotFound(_) | JobQueueError::Backend(_)) => other.into(),
             })
+    }
+
+    async fn streams(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        run: &Run,
+    ) -> Result<StreamDownloads, RunsError> {
+        if run.request.principal != *caller.principal() || run.request.repository != repository {
+            return Err(RunsError::NotFound(run.id));
+        }
+        let Some(result) = run.ended() else {
+            return Ok(StreamDownloads::default());
+        };
+        let grant = |stream: Option<RunStream>| async move {
+            match stream {
+                Some(stream) => Ok(Some(
+                    self.adapters
+                        .objects
+                        .download_grant(repository, stream.address)
+                        .await?,
+                )),
+                None => Ok::<_, RunsError>(None),
+            }
+        };
+        Ok(StreamDownloads {
+            stdout: grant(result.stdout).await?,
+            stderr: grant(result.stderr).await?,
+        })
     }
 
     async fn files(

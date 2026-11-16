@@ -45,6 +45,15 @@ pub struct OutputFile {
     pub download: Grant,
 }
 
+/// Permission to download a run's output streams.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct StreamDownloads {
+    /// Permission to download the standard output; `None` where the run has none.
+    pub stdout: Option<Grant>,
+    /// Permission to download the standard error; `None` where the run has none.
+    pub stderr: Option<Grant>,
+}
+
 /// What the principal who started runs asks of them. Every operation on a run answers
 /// [`RunsError::NotFound`] to a caller who is not the principal that started it.
 #[async_trait::async_trait]
@@ -105,6 +114,20 @@ pub trait Runs: Send + Sync {
         repository: RepositoryId,
         run: RunId,
     ) -> Result<Run, RunsError>;
+
+    /// Permission to download the output streams `run` reported, which the caller holds from
+    /// [`Runs::get`], [`Runs::latest`] or [`Runs::cancel`]. Both are `None` until the run has
+    /// ended with a report.
+    ///
+    /// # Errors
+    ///
+    /// [`RunsError::NotFound`] where `run` is not a run of the caller in `repository`.
+    async fn streams(
+        &self,
+        caller: &Caller,
+        repository: RepositoryId,
+        run: &Run,
+    ) -> Result<StreamDownloads, RunsError>;
 
     /// The files of the output tree of the run `run` of the caller under `prefix`, each with a
     /// download grant. A run has an output tree only once a runner reported its result, so that
