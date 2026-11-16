@@ -216,7 +216,7 @@ fn has_the_values_of_the_enumerations() {
     let roles = [Role::Admin, Role::Member];
     let role = &schemas["Member"]["properties"]["role"];
     assert_eq!(allowed(role), written(&roles));
-    let accesses = [Access::Read, Access::Write];
+    let accesses = [Access::Read, Access::Write, Access::Run];
     let access = &schemas["Grant"]["properties"]["access"];
     assert_eq!(allowed(access), written(&accesses));
     let methods = [TransferMethod::Get, TransferMethod::Put];

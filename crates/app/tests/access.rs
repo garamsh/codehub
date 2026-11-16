@@ -54,3 +54,13 @@ async fn a_failing_authorisation_backend_refuses_the_call_with_its_description()
 async fn a_landing_of_many_paths_asks_the_decision_port_once() {
     access::a_landing_of_many_paths_asks_the_decision_port_once::<Harness>().await;
 }
+
+#[tokio::test]
+async fn a_member_holding_run_is_allowed_run_and_one_holding_write_is_not() {
+    access::a_member_holding_run_is_allowed_run_and_one_holding_write_is_not::<Harness>().await;
+}
+
+#[tokio::test]
+async fn a_run_grant_with_a_prefix_is_refused() {
+    access::a_run_grant_with_a_prefix_is_refused::<Harness>().await;
+}

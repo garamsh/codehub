@@ -184,6 +184,7 @@ impl From<AccessError> for Problem {
                 let access = match access {
                     Access::Read => "read",
                     Access::Write => "write",
+                    Access::Run => "run",
                 };
                 Self::naming(
                     StatusCode::FORBIDDEN,
@@ -213,6 +214,7 @@ impl From<MembersError> for Problem {
             MembersError::Access(error) => error.into(),
             MembersError::Directory(error) => error.into(),
             MembersError::Membership(error) => error.into(),
+            MembersError::RunGrantOnPrefix => Self::new(StatusCode::BAD_REQUEST, error.to_string()),
             MembersError::ExternallyAdministered => Self::new(
                 StatusCode::FORBIDDEN,
                 "members are administered outside codehub",

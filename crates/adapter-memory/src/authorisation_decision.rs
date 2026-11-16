@@ -11,8 +11,9 @@ use crate::membership::{Member, Members};
 
 /// The ADR 0021 policy evaluated over the memberships of a [`crate::MemoryMembership`]: an admin
 /// may take every action in its organisation; a member's grants allow `read` and `write` on the
-/// paths they cover, and a member holding any grant on a repository may read or write it as a
-/// whole as that grant allows. [`MemoryAuthorisationDecision::answer`] fixes the decision for an
+/// paths they cover, and a member holding any grant on a repository may read, write or run it
+/// as a whole as that grant allows; `run` is asked of a repository only (ADR 0051).
+/// [`MemoryAuthorisationDecision::answer`] fixes the decision for an
 /// action ahead of that policy, as an outside decision point that keeps its own entities would.
 pub struct MemoryAuthorisationDecision {
     state: Arc<Mutex<Members>>,
@@ -38,15 +39,19 @@ impl MemoryAuthorisationDecision {
 
 const fn covers(held: Access, asked: Action) -> bool {
     match (held, asked) {
-        (Access::Write, Action::Read | Action::Write) | (Access::Read, Action::Read) => true,
+        (Access::Write, Action::Read | Action::Write)
+        | (Access::Read, Action::Read)
+        | (Access::Run, Action::Run) => true,
         (
-            Access::Write | Access::Read,
+            Access::Write | Access::Read | Access::Run,
             Action::CreateOrganisation
             | Action::CreateRepository
             | Action::AdministerMembers
             | Action::AdministerRunners,
         )
-        | (Access::Read, Action::Write) => false,
+        | (Access::Read, Action::Write | Action::Run)
+        | (Access::Write, Action::Run)
+        | (Access::Run, Action::Read | Action::Write) => false,
     }
 }
 
@@ -58,9 +63,10 @@ fn permits(member: &Member, action: Action, resource: &Resource) -> bool {
                 Action::CreateRepository | Action::AdministerMembers | Action::AdministerRunners
             )
         }
-        (Role::Admin, Resource::Repository { .. } | Resource::Path { .. }) => {
-            matches!(action, Action::Read | Action::Write)
+        (Role::Admin, Resource::Repository { .. }) => {
+            matches!(action, Action::Read | Action::Write | Action::Run)
         }
+        (Role::Admin, Resource::Path { .. }) => matches!(action, Action::Read | Action::Write),
         (Role::Member, Resource::Organisation(_)) => false,
         (Role::Member, Resource::Repository { repository, .. }) => member
             .grants
@@ -71,11 +77,14 @@ fn permits(member: &Member, action: Action, resource: &Resource) -> bool {
             Resource::Path {
                 repository, path, ..
             },
-        ) => member.grants.iter().any(|grant| {
-            grant.repository == *repository
-                && covers(grant.access, action)
-                && grant.prefix.covers(path)
-        }),
+        ) => {
+            action != Action::Run
+                && member.grants.iter().any(|grant| {
+                    grant.repository == *repository
+                        && covers(grant.access, action)
+                        && grant.prefix.covers(path)
+                })
+        }
     }
 }
 

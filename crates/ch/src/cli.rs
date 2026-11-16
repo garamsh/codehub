@@ -390,6 +390,10 @@ pub enum MemberCommand {
         /// A prefix to grant write access to; empty for the whole repository.
         #[arg(long)]
         write: Vec<String>,
+        /// Grant the right to run commands on the organisation's runners against the caller's
+        /// workspace; for the whole repository only.
+        #[arg(long)]
+        run: bool,
     },
     /// Remove a member, or only the grants named.
     Remove {
@@ -456,6 +460,19 @@ mod tests {
         };
         assert_eq!(write, ["", "src"]);
         assert_eq!(read, ["docs"]);
+    }
+
+    #[test]
+    fn takes_run_as_a_flag_for_the_whole_repository() {
+        let cli = parse(&["member", "add", "bob", "--run"]).unwrap();
+        let Command::Member {
+            command: MemberCommand::Add { run, .. },
+        } = cli.command
+        else {
+            panic!("not member add");
+        };
+        assert!(run);
+        assert!(parse(&["member", "add", "bob", "--run", "src"]).is_err());
     }
 
     #[test]

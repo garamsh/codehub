@@ -20,7 +20,7 @@ use app::port::driven::membership::{Access, Role};
 use app::port::driven::repository_directory::DirectoryError;
 use app::port::driving::access::AccessError;
 use app::port::driving::authentication::{Authentication, AuthenticationError};
-use app::port::driving::members::Members;
+use app::port::driving::members::{Members, MembersError};
 use app::port::driving::repositories::{Repositories, RepositoriesError};
 use app::port::driving::source_control::{LandError, Landing};
 use app::port::driving::source_control::{SourceControl, SourceControlError};
@@ -77,6 +77,15 @@ impl<H: Deployment> Admin<'_, H> {
     }
 
     pub(crate) async fn grant(&self, member: &Caller, path: &str, access: Access) {
+        self.try_grant(member, path, access).await.unwrap();
+    }
+
+    async fn try_grant(
+        &self,
+        member: &Caller,
+        path: &str,
+        access: Access,
+    ) -> Result<(), MembersError> {
         MembersService::new(
             MembersAdapters {
                 directory: self.harness.directory().clone(),
@@ -94,7 +103,6 @@ impl<H: Deployment> Admin<'_, H> {
             access,
         )
         .await
-        .unwrap();
     }
 
     pub(crate) async fn ungrant(&self, member: &Caller, path: &str, access: Access) {
@@ -600,4 +608,115 @@ pub async fn a_landing_of_many_paths_asks_the_decision_port_once<H: Deployment>(
         .await
         .unwrap();
     assert_eq!(counted.many.load(Ordering::SeqCst), 2);
+}
+
+/// The decision on `action` for `subject` on the whole of repository `repo` of `acme`.
+async fn decision_on_repository<H: Deployment>(
+    harness: &H,
+    repo: &Repo<'_, H>,
+    subject: &Caller,
+    action: Action,
+) -> Decision {
+    let resource = Resource::Repository {
+        organisation: acme(),
+        name: "app".parse().unwrap(),
+        repository: repo.id,
+    };
+    harness
+        .authorisation()
+        .decide(subject.principal(), action, &resource)
+        .await
+        .unwrap()
+}
+
+/// A member holding `run` is allowed `run`; one holding only `write`, and a non member, are
+/// denied; an admin is allowed; and `run` allows neither `read` nor `write`.
+pub async fn a_member_holding_run_is_allowed_run_and_one_holding_write_is_not<H: Deployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let bob = harness.caller("bob").await;
+    let eve = harness.caller("eve").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let admin = Admin {
+        harness: &harness,
+        caller: &ada,
+    };
+    admin.add(&bob, Role::Member).await;
+    admin.grant(&bob, "", Access::Write).await;
+
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &bob, Action::Run).await,
+        Decision::Deny
+    );
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &eve, Action::Run).await,
+        Decision::Deny
+    );
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &ada, Action::Run).await,
+        Decision::Allow
+    );
+
+    admin.grant(&bob, "", Access::Run).await;
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &bob, Action::Run).await,
+        Decision::Allow
+    );
+
+    // Control: a member holding only `run` may neither read nor write.
+    admin.ungrant(&bob, "", Access::Write).await;
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &bob, Action::Run).await,
+        Decision::Allow
+    );
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &bob, Action::Read).await,
+        Decision::Deny
+    );
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &bob, Action::Write).await,
+        Decision::Deny
+    );
+
+    // Control: `run` is asked of a repository, so it is denied on a path, even an admin's.
+    let resource = Resource::Path {
+        organisation: acme(),
+        name: "app".parse().unwrap(),
+        repository: repo.id,
+        path: "src/a".parse().unwrap(),
+    };
+    for caller in [&ada, &bob] {
+        assert_eq!(
+            harness
+                .authorisation()
+                .decide(caller.principal(), Action::Run, &resource)
+                .await,
+            Ok(Decision::Deny)
+        );
+    }
+}
+
+/// A `run` grant with a non empty prefix is refused, and one for the whole repository is given.
+pub async fn a_run_grant_with_a_prefix_is_refused<H: Deployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let bob = harness.caller("bob").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let admin = Admin {
+        harness: &harness,
+        caller: &ada,
+    };
+    admin.add(&bob, Role::Member).await;
+
+    assert_eq!(
+        admin.try_grant(&bob, "src", Access::Run).await,
+        Err(MembersError::RunGrantOnPrefix)
+    );
+    // Control: a `write` grant on the same prefix is given, and `run` on the whole repository.
+    assert_eq!(admin.try_grant(&bob, "src", Access::Write).await, Ok(()));
+    assert_eq!(admin.try_grant(&bob, "", Access::Run).await, Ok(()));
+    assert_eq!(
+        decision_on_repository(&harness, &repo, &bob, Action::Run).await,
+        Decision::Allow
+    );
 }

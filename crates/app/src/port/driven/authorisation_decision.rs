@@ -23,6 +23,9 @@ pub enum Action {
     Read,
     /// Write; asked of a [`Resource::Repository`] or a [`Resource::Path`].
     Write,
+    /// Run a command on a runner against the caller's workspace (ADR 0051); asked of a
+    /// [`Resource::Repository`]. Neither `Read` nor `Write` includes it.
+    Run,
 }
 
 /// What the action is on.

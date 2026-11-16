@@ -17,6 +17,7 @@ const fn action(access: Access) -> Action {
     match access {
         Access::Read => Action::Read,
         Access::Write => Action::Write,
+        Access::Run => Action::Run,
     }
 }
 

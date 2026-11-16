@@ -17,13 +17,16 @@ pub enum Role {
     Member,
 }
 
-/// What a grant allows; `Write` includes `Read`.
+/// What a grant allows; `Write` includes `Read`, and `Run` includes neither.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Access {
     /// Read.
     Read,
     /// Read and write.
     Write,
+    /// Run a command on a runner against the caller's workspace (ADR 0051); held for the whole
+    /// repository only.
+    Run,
 }
 
 /// Permission for a member over the paths of one repository under a prefix.

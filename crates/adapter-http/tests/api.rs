@@ -196,6 +196,37 @@ async fn grant(api: &Api, method: Method, admin: &str, name: &str, prefix: &str)
 }
 
 #[tokio::test]
+async fn refuses_a_run_grant_with_a_prefix_and_gives_one_for_the_whole_repository() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    api.repository(&ada, "acme").await;
+    add_member(&api, &ada, "acme", "bob", "member").await;
+    let run_grant = |prefix: &'static str| {
+        let (api, ada) = (&api, &ada);
+        async move {
+            api.send(
+                Method::PUT,
+                "/v1/orgs/acme/repos/app/grants",
+                Some(ada),
+                Some(json!({
+                    "issuer": "https://id.test",
+                    "subject": "bob",
+                    "prefix": prefix,
+                    "access": "run",
+                })),
+            )
+            .await
+        }
+    };
+
+    let refused = run_grant("src").await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert_eq!(refused.content_type, PROBLEM);
+    // The control: the same grant for the whole repository is given.
+    assert_eq!(run_grant("").await.status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
 async fn names_the_paths_of_a_landing_the_caller_may_not_write() {
     let api = Api::new();
     let ada = api.token("ada");
