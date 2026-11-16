@@ -176,8 +176,8 @@ pub trait JobQueue: Send + Sync {
     /// it has ended.
     async fn cancel_run(&self, run: RunId) -> Result<Run, JobQueueError>;
 
-    /// The latest run that has ended of `principal`'s opening `instance` of the workspace `draft`
-    /// in `repository`; `None` where none has.
+    /// The ended run with the highest identifier of `principal`'s opening `instance` of the
+    /// workspace `draft` in `repository`; `None` where none has.
     ///
     /// # Errors
     ///

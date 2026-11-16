@@ -5,7 +5,7 @@ use app::domain::file::{File, FileKind};
 use app::domain::name::DraftName;
 use app::domain::principal::Principal;
 use app::domain::repository::RepositoryId;
-use app::domain::run::{NewRun, Run, RunId, RunSettings, RunState};
+use app::domain::run::{NewRun, Run, RunId, RunState};
 use app::port::driven::job_queue::JobQueueError;
 use sqlx::{FromRow, PgPool};
 
@@ -45,6 +45,32 @@ fn kind(text: &str) -> Result<FileKind, String> {
         "executable" => Ok(FileKind::Executable),
         other => Err(format!("a stored run file has the unknown kind {other:?}")),
     }
+}
+
+/// The column text of a state, matched on every state so that none can be left out of the
+/// queries that name states.
+const fn state_column(state: &RunState) -> &'static str {
+    match state {
+        RunState::Queued => "queued",
+        RunState::Running { .. } => "running",
+        RunState::Cancelled => "cancelled",
+    }
+}
+
+/// The column text of each state that has ended, as [`RunState::ended`] says.
+fn ended_columns() -> Vec<&'static str> {
+    [
+        RunState::Queued,
+        RunState::Running {
+            lease_expires_at: 0,
+            deadline: 0,
+        },
+        RunState::Cancelled,
+    ]
+    .iter()
+    .filter(|state| state.ended())
+    .map(state_column)
+    .collect()
 }
 
 #[derive(FromRow)]
@@ -134,11 +160,8 @@ impl RunRow {
                 prefix: conversion::prefix(&self.prefix)?,
                 add: paths(&self.add_paths)?.into_iter().collect(),
                 outputs: paths(&self.outputs)?.into_iter().collect(),
-                settings: RunSettings {
-                    caches: paths(&self.cache_paths)?.into_iter().collect(),
-                    labels: conversion::labels(&self.labels)?,
-                    timeout,
-                },
+                labels: conversion::labels(&self.labels)?,
+                timeout,
                 files,
                 caches,
             },
@@ -178,8 +201,8 @@ pub(crate) async fn queue(pool: &PgPool, new: NewRun) -> Result<Run, JobQueueErr
     .bind(conversion::path_columns(
         &new.outputs.iter().cloned().collect::<Vec<_>>(),
     ))
-    .bind(conversion::labels_column(&new.settings.labels))
-    .bind(number(new.settings.timeout.seconds(), "timeout")?)
+    .bind(conversion::labels_column(&new.labels))
+    .bind(number(new.timeout.seconds(), "timeout")?)
     .bind(
         caches
             .iter()
@@ -262,13 +285,14 @@ pub(crate) async fn latest(
         "select ",
         columns!(),
         " from runs where repository = $1 and issuer = $2 and subject = $3 \
-         and draft = $4 and instance = $5 and state = 'cancelled' order by id desc limit 1"
+         and draft = $4 and instance = $5 and state = any($6) order by id desc limit 1"
     ))
     .bind(conversion::repository_column(repository).map_err(backend)?)
     .bind(principal.issuer())
     .bind(principal.subject())
     .bind(draft.as_str())
     .bind(number(instance.get(), "instance")?)
+    .bind(ended_columns())
     .fetch_optional(pool)
     .await
     .map_err(backend)?

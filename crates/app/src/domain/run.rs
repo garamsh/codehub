@@ -84,11 +84,14 @@ pub struct NewRun {
     pub add: BTreeSet<Path>,
     /// The paths the run's output tree holds.
     pub outputs: BTreeSet<Path>,
-    /// What `.codehub/run.toml` said when the run started.
-    pub settings: RunSettings,
+    /// The labels a runner must offer, from `.codehub/run.toml` when the run started.
+    pub labels: BTreeSet<Label>,
+    /// How long the run may take, from `.codehub/run.toml` when the run started.
+    pub timeout: Timeout,
     /// The files sent: the workspace's tree under the prefix at `version`.
     pub files: BTreeMap<Path, File>,
-    /// The tree of each cache path's workspace cache ref when the run started.
+    /// The cache paths from `.codehub/run.toml`, each with the tree of its workspace cache ref
+    /// when the run started.
     pub caches: BTreeMap<Path, Address>,
 }
 

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crate::domain::changeset::Change;
 use crate::domain::draft::{Draft, DraftId};
 use crate::domain::file::File;
+use crate::domain::job::empty_output_tree;
 use crate::domain::name::DraftName;
 use crate::domain::path::{Path, Prefix};
 use crate::domain::principal::Caller;
@@ -24,7 +25,7 @@ use crate::port::driven::object_store::ObjectStore;
 use crate::port::driven::repository_directory::RepositoryDirectory;
 use crate::port::driving::runs::{OutputFile, Runs, RunsError, StartRun};
 use crate::use_case::access::{readable_repository, require, require_paths};
-use crate::use_case::cache_refs::seed_workspace_cache_ref;
+use crate::use_case::cache_refs::create_workspace_cache_ref;
 use crate::use_case::list_files::files_under;
 use crate::use_case::tree_checks::tree_files;
 
@@ -86,34 +87,38 @@ impl RunsService {
         Ok(files)
     }
 
-    /// The settings of the workspace's run file, and whether the file exists.
-    async fn settings(
+    /// The workspace's run file, where it has one.
+    async fn run_file(
         &self,
         repository: RepositoryId,
         draft: &Draft,
-    ) -> Result<(RunSettings, Option<Path>), RunsError> {
+    ) -> Result<Option<File>, RunsError> {
         let file = self.adapters.definitions.run_file();
-        let found = self
+        Ok(self
             .files(repository, draft, &Prefix::from(file.clone()))
             .await?
-            .remove(file);
-        let Some(found) = found else {
-            return Ok((RunSettings::default(), None));
-        };
+            .remove(file))
+    }
+
+    /// The settings `found`, the content of the run file, holds.
+    async fn settings(
+        &self,
+        repository: RepositoryId,
+        found: File,
+    ) -> Result<RunSettings, RunsError> {
         let bytes = self.adapters.objects.get(repository, found.content).await?;
-        let settings = self
-            .adapters
+        self.adapters
             .definitions
             .parse_run(&bytes)
             .map_err(|error| RunsError::RunFile {
-                file: file.clone(),
+                file: self.adapters.definitions.run_file().clone(),
                 error,
-            })?;
-        Ok((settings, Some(file.clone())))
+            })
     }
 
     /// The tree each of `caches` starts from. A ref the workspace lacks is seeded from `main`'s,
-    /// which needs read on every file of `main`.
+    /// which needs read on every file of `main`; where `main` has none either, it starts empty
+    /// and nothing is asked.
     async fn cache_trees(
         &self,
         caller: &Caller,
@@ -123,16 +128,29 @@ impl RunsService {
         draft: &Draft,
         caches: &BTreeSet<Path>,
     ) -> Result<BTreeMap<Path, crate::domain::address::Address>, RunsError> {
-        let mut seeding = false;
+        let mut trees = BTreeMap::new();
+        let mut seeds = BTreeMap::new();
         for path in caches {
-            seeding |= self
+            if let Some(held) = self
                 .adapters
                 .cache_refs
                 .workspace_cache_ref(repository, draft.instance, path)
                 .await?
-                .is_none();
+            {
+                trees.insert(path.clone(), held);
+                continue;
+            }
+            let seed = self
+                .adapters
+                .cache_refs
+                .cache_ref(repository, &Prefix::whole(), path)
+                .await?
+                .map(|main| main.tree);
+            seeds.insert(path.clone(), seed);
         }
-        if seeding && let Some(main) = self.adapters.log.read_ref(repository, Ref::Main).await? {
+        if seeds.values().any(Option::is_some)
+            && let Some(main) = self.adapters.log.read_ref(repository, Ref::Main).await?
+        {
             let root = self.adapters.derived.root(repository, main).await?;
             let tree = tree_files(&*self.adapters.derived, repository, root).await?;
             require_paths(
@@ -146,16 +164,16 @@ impl RunsService {
             )
             .await?;
         }
-        let mut trees = BTreeMap::new();
-        for path in caches {
-            let tree = seed_workspace_cache_ref(
+        for (path, seed) in seeds {
+            let tree = create_workspace_cache_ref(
                 &*self.adapters.cache_refs,
                 repository,
                 draft.instance,
-                path,
+                &path,
+                seed.unwrap_or_else(empty_output_tree),
             )
             .await?;
-            trees.insert(path.clone(), tree);
+            trees.insert(path, tree);
         }
         Ok(trees)
     }
@@ -240,7 +258,10 @@ impl Runs for RunsService {
             )
             .await?;
         let files = self.files(repository, &held, &prefix).await?;
-        let (settings, run_file) = self.settings(repository, &held).await?;
+        let run_file = self.run_file(repository, &held).await?;
+        let run_path = run_file
+            .as_ref()
+            .map(|_| self.adapters.definitions.run_file().clone());
         require_paths(
             &*self.adapters.authorisation,
             caller.principal(),
@@ -248,9 +269,13 @@ impl Runs for RunsService {
             &name,
             repository,
             Access::Read,
-            files.keys().chain(run_file.iter()),
+            files.keys().chain(run_path.iter()),
         )
         .await?;
+        let settings = match run_file {
+            Some(found) => self.settings(repository, found).await?,
+            None => RunSettings::default(),
+        };
         let caches = self
             .cache_trees(
                 caller,
@@ -276,7 +301,8 @@ impl Runs for RunsService {
                 prefix,
                 add,
                 outputs,
-                settings,
+                labels: settings.labels,
+                timeout: settings.timeout,
                 files,
                 caches,
             })

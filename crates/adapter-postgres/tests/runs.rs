@@ -32,6 +32,11 @@ async fn seeding_a_cache_needs_read_on_the_whole_repository() {
 }
 
 #[tokio::test]
+async fn a_cache_main_has_no_ref_for_starts_empty_without_a_read_check() {
+    runs::a_cache_main_has_no_ref_for_starts_empty_without_a_read_check::<Harness>().await;
+}
+
+#[tokio::test]
 async fn another_principals_run_is_not_found() {
     runs::another_principals_run_is_not_found::<Harness>().await;
 }

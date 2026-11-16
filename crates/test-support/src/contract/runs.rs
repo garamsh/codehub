@@ -6,12 +6,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::contract::access::Admin;
 use crate::contract::runner_deployment::RunnerDeployment;
 use crate::contract::{Repo, draft};
+use app::domain::address::Address;
 use app::domain::check::{Command, Timeout};
 use app::domain::draft::DraftId;
-use app::domain::job::empty_output_tree;
-use app::domain::path::Path;
+use app::domain::job::{CacheRef, empty_output_tree};
+use app::domain::path::{Path, Prefix};
 use app::domain::principal::Caller;
 use app::domain::run::{Run, RunId, RunSettings, RunState};
+use app::port::driven::cache_refs::CacheRefs;
 use app::port::driven::check_definitions::CheckFileError;
 use app::port::driven::draft_store::DraftStore;
 use app::port::driven::membership::{Access, Role};
@@ -109,8 +111,8 @@ pub async fn starting_a_run_needs_the_run_action<H: RunnerDeployment>() {
         run.request.files.keys().cloned().collect::<Vec<_>>(),
         vec![path("src/a")]
     );
-    assert_eq!(run.request.settings, RunSettings::default());
-    assert_eq!(run.request.settings.timeout, Timeout::default_timeout());
+    assert!(run.request.labels.is_empty());
+    assert_eq!(run.request.timeout, Timeout::default_timeout());
     assert!(run.request.caches.is_empty());
 }
 
@@ -146,15 +148,26 @@ pub async fn every_path_sent_and_the_settings_file_must_be_readable<H: RunnerDep
     repo.stage(
         &bob,
         &draft("work"),
-        &[("src/a", "a"), ("docs/b", "b"), (RUN_FILE, "timeout = 5")],
+        &[
+            ("src/a", "a"),
+            ("docs/b", "b"),
+            (RUN_FILE, "timeout = oops"),
+        ],
     )
     .await;
-    harness.teach_run("timeout = 5", Ok(settings(&[], 5)));
+    harness.teach_run(
+        "timeout = oops",
+        Err(CheckFileError::Invalid {
+            line: 1,
+            reason: "timeout is a whole number of seconds".to_owned(),
+        }),
+    );
     admin.grant(&bob, "", Access::Run).await;
     admin.ungrant(&bob, "", Access::Write).await;
     admin.grant(&bob, "src", Access::Read).await;
 
-    // The workspace tree holds the settings file, which the caller may not read.
+    // The workspace tree holds the settings file, which the caller may not read: the refusal is
+    // the same whether or not it parses, and says nothing of its content.
     assert_eq!(
         start(&repo, &bob, request(Some("src"), &[])).await,
         Err(denied(Access::Read, &[RUN_FILE]))
@@ -164,11 +177,22 @@ pub async fn every_path_sent_and_the_settings_file_must_be_readable<H: RunnerDep
         Err(denied(Access::Read, &[RUN_FILE, "docs/b"]))
     );
 
-    // Control: with read on the settings file and the prefix, the run is queued, with its
-    // timeout.
+    // With read on it, the file is parsed.
     admin.grant(&bob, ".codehub", Access::Read).await;
+    let parsed = start(&repo, &bob, request(Some("src"), &[])).await;
+    assert!(
+        matches!(parsed, Err(RunsError::RunFile { .. })),
+        "{parsed:?}"
+    );
+
+    // Control: with read on the settings file and the prefix, a file that parses queues the run,
+    // with its timeout.
+    admin.grant(&bob, "", Access::Write).await;
+    repo.stage(&bob, &draft("work"), &[(RUN_FILE, "timeout = 5")])
+        .await;
+    harness.teach_run("timeout = 5", Ok(settings(&[], 5)));
     let run = start(&repo, &bob, request(Some("src"), &[])).await.unwrap();
-    assert_eq!(run.request.settings.timeout, Timeout::new(5).unwrap());
+    assert_eq!(run.request.timeout, Timeout::new(5).unwrap());
 }
 
 fn settings(caches: &[&str], timeout: u64) -> RunSettings {
@@ -187,7 +211,7 @@ pub async fn a_settings_file_that_does_not_parse_is_refused<H: RunnerDeployment>
     let repo = harness.repository(&ada, "acme").await;
     repo.stage(&ada, &draft("work"), &[("src/a", "a")]).await;
     let absent = start(&repo, &ada, request(None, &[])).await.unwrap();
-    assert_eq!(absent.request.settings, RunSettings::default());
+    assert_eq!(absent.request.timeout, Timeout::default_timeout());
 
     repo.stage(&ada, &draft("work"), &[(RUN_FILE, "timeout = oops")])
         .await;
@@ -212,45 +236,125 @@ pub async fn a_settings_file_that_does_not_parse_is_refused<H: RunnerDeployment>
     harness.teach_run("timeout = 7", Ok(settings(&[], 7)));
     let next = start(&repo, &ada, request(Some("src"), &[])).await.unwrap();
     assert_eq!(next.id, RunId::new(absent.id.value() + 1));
-    assert_eq!(next.request.settings.timeout, Timeout::new(7).unwrap());
+    assert_eq!(next.request.timeout, Timeout::new(7).unwrap());
 }
 
-/// A cache the workspace has no ref for is seeded from `main`'s, which needs read on all of
+/// A member who reads only `src` and `.codehub`, runs, and has a workspace that caches `target`,
+/// where `main` has a file in `docs`.
+async fn limited_cache_reader<H: RunnerDeployment>(
+    harness: &H,
+    ada: &Caller,
+    bob: &Caller,
+    repo: &Repo<'_, H>,
+) {
+    let admin = Admin {
+        harness,
+        caller: ada,
+    };
+    repo.stage(ada, &draft("landed"), &[("docs/b", "b")]).await;
+    repo.land(ada, &draft("landed"), "main").await.unwrap();
+    admin.add(bob, Role::Member).await;
+    admin.grant(bob, "", Access::Write).await;
+    repo.stage(
+        bob,
+        &draft("work"),
+        &[("src/a", "a"), (RUN_FILE, "caches = [\"target\"]")],
+    )
+    .await;
+    harness.teach_run("caches = [\"target\"]", Ok(settings(&["target"], 600)));
+    admin.grant(bob, "", Access::Run).await;
+    admin.ungrant(bob, "", Access::Write).await;
+    admin.grant(bob, "src", Access::Read).await;
+    admin.grant(bob, ".codehub", Access::Read).await;
+}
+
+/// The tree of `caller`'s workspace cache ref of `target`, where it has one.
+async fn workspace_cache_ref<H: RunnerDeployment>(
+    harness: &H,
+    repo: &Repo<'_, H>,
+    caller: &Caller,
+) -> Option<Address> {
+    let held = harness
+        .drafts()
+        .get(
+            repo.id,
+            &DraftId {
+                principal: caller.principal().clone(),
+                name: draft("work"),
+            },
+        )
+        .await
+        .unwrap();
+    harness
+        .cache_refs()
+        .workspace_cache_ref(repo.id, held.instance, &path("target"))
+        .await
+        .unwrap()
+}
+
+/// A cache the workspace has no ref for is seeded from `main`'s ref, which needs read on all of
 /// `main`: a caller who may not read it is refused and nothing is seeded or queued.
 pub async fn seeding_a_cache_needs_read_on_the_whole_repository<H: RunnerDeployment>() {
     let harness = H::start().await;
     let ada = harness.caller("ada").await;
     let bob = harness.caller("bob").await;
     let repo = harness.repository(&ada, "acme").await;
-    let admin = Admin {
-        harness: &harness,
-        caller: &ada,
+    limited_cache_reader(&harness, &ada, &bob, &repo).await;
+    repo.stage(&ada, &draft("work"), &[("src/a", "a")]).await;
+    let first = start(&repo, &ada, request(None, &[])).await.unwrap();
+    let main = CacheRef {
+        tree: Address::of(b"main tree"),
+        changeset: Address::of(b"landed"),
     };
-    repo.stage(&ada, &draft("landed"), &[("docs/b", "b")]).await;
-    repo.land(&ada, &draft("landed"), "main").await.unwrap();
-    admin.add(&bob, Role::Member).await;
-    admin.grant(&bob, "", Access::Write).await;
-    repo.stage(
-        &bob,
-        &draft("work"),
-        &[("src/a", "a"), (RUN_FILE, "caches = [\"target\"]")],
-    )
-    .await;
-    harness.teach_run("caches = [\"target\"]", Ok(settings(&["target"], 600)));
-    admin.grant(&bob, "", Access::Run).await;
-    admin.ungrant(&bob, "", Access::Write).await;
-    admin.grant(&bob, "src", Access::Read).await;
-    admin.grant(&bob, ".codehub", Access::Read).await;
+    let set = harness
+        .cache_refs()
+        .advance_cache_ref(repo.id, &Prefix::whole(), &path("target"), None, main)
+        .await
+        .unwrap();
+    assert!(set);
 
     let refused = start(&repo, &bob, request(Some("src"), &[])).await;
 
     assert_eq!(refused, Err(denied(Access::Read, &["docs/b"])));
-    // Control: with read on all of `main`, the run is queued with the cache's tree.
-    admin.grant(&bob, "docs", Access::Read).await;
+    assert_eq!(workspace_cache_ref(&harness, &repo, &bob).await, None);
+    // Control: with read on all of `main`, the run is queued with the tree of `main`'s ref, which
+    // the workspace's ref now holds. The refusal queued nothing.
+    Admin {
+        harness: &harness,
+        caller: &ada,
+    }
+    .grant(&bob, "docs", Access::Read)
+    .await;
     let run = start(&repo, &bob, request(Some("src"), &[])).await.unwrap();
+    assert_eq!(run.id, RunId::new(first.id.value() + 1));
+    assert_eq!(
+        run.request.caches,
+        BTreeMap::from([(path("target"), main.tree)])
+    );
+    assert_eq!(
+        workspace_cache_ref(&harness, &repo, &bob).await,
+        Some(main.tree)
+    );
+}
+
+/// Where `main` has no ref for a cache, the workspace's starts empty and a caller who reads only
+/// part of the repository is not refused.
+pub async fn a_cache_main_has_no_ref_for_starts_empty_without_a_read_check<H: RunnerDeployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let bob = harness.caller("bob").await;
+    let repo = harness.repository(&ada, "acme").await;
+    limited_cache_reader(&harness, &ada, &bob, &repo).await;
+
+    let run = start(&repo, &bob, request(Some("src"), &[])).await.unwrap();
+
     assert_eq!(
         run.request.caches,
         BTreeMap::from([(path("target"), empty_output_tree())])
+    );
+    assert_eq!(
+        workspace_cache_ref(&harness, &repo, &bob).await,
+        Some(empty_output_tree())
     );
 }
 
@@ -308,6 +412,14 @@ pub async fn cancelling_ends_a_run_and_the_latest_is_the_latest_ended<H: RunnerD
         Err(RunsError::NoRun(draft("work")))
     );
 
+    // The later run ends first: the latest is the highest identifier among the ended, not the one
+    // that ended last.
+    let ended = runs.cancel(&ada, repo.id, second.id).await.unwrap();
+    assert_eq!(
+        runs.latest(&ada, repo.id, &draft("work")).await,
+        Ok(ended.clone())
+    );
+
     let cancelled = runs.cancel(&ada, repo.id, first.id).await.unwrap();
 
     assert_eq!(cancelled.state, RunState::Cancelled);
@@ -320,11 +432,5 @@ pub async fn cancelling_ends_a_run_and_the_latest_is_the_latest_ended<H: RunnerD
         runs.cancel(&ada, repo.id, first.id).await,
         Err(RunsError::Finished(first.id))
     );
-    assert_eq!(
-        runs.latest(&ada, repo.id, &draft("work")).await,
-        Ok(cancelled)
-    );
-    // The later run that ends is the latest, though the earlier one ended first.
-    let ended = runs.cancel(&ada, repo.id, second.id).await.unwrap();
     assert_eq!(runs.latest(&ada, repo.id, &draft("work")).await, Ok(ended));
 }

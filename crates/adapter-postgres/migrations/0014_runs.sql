@@ -31,6 +31,11 @@ create table runs (
     deadline bigint,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
+    constraint runs_cache_arrays check (cardinality(cache_paths) = cardinality(cache_trees)),
+    constraint runs_file_arrays check (
+        cardinality(file_paths) = cardinality(file_kinds)
+        and cardinality(file_paths) = cardinality(file_contents)
+    ),
     constraint runs_repository foreign key (repository) references repositories (id)
 );
 
