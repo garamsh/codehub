@@ -122,7 +122,7 @@ Alternatives not taken:
 **The `run` action** (decision 4)
 - `run` is an action on a repository. It is granted to a member for the whole repository only: a `run` grant carries the empty prefix, and one with any other prefix is refused (detail).
 - Neither `write` nor `read` includes it. An organisation admin holds it.
-- The AuthZEN plain profile names it `Run`, with no path property. The GRN profile names it `codehub:repo.run`, with no `context.path` (detail).
+- The AuthZEN plain profile names it `run`, as its other actions are named in lowercase, with no path property. The GRN profile names it `codehub:repo.run`, with no `context.path` (detail).
 
 **The runner's object cache** (detail)
 - Every job a runner runs, a run's or a check's, takes its files through the cache.
