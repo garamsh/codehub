@@ -436,7 +436,10 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
     );
     let (authorisation, changes): Selected = match selection.authorisation {
         AuthorisationMode::Postgres => (
-            Arc::new(PostgresAuthorisationDecision::new(&database)),
+            Arc::new(Observed::new(
+                "decision_point",
+                PostgresAuthorisationDecision::new(&database),
+            )),
             Arc::new(()),
         ),
         AuthorisationMode::Authzen(mode) => authzen(

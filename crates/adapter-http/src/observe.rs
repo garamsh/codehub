@@ -18,11 +18,31 @@ use crate::Scrape;
 /// The histogram of API request durations, by method, route and status.
 const REQUEST_DURATION: &str = "codehub_http_request_duration_seconds";
 
+/// The label of a request method: the standard ones by name and every other as `other`, so that a
+/// caller who needs no credential to send a method cannot make a series of its own.
+fn method_label(method: &axum::http::Method) -> String {
+    use axum::http::Method;
+    let standard = [
+        Method::GET,
+        Method::HEAD,
+        Method::POST,
+        Method::PUT,
+        Method::PATCH,
+        Method::DELETE,
+        Method::OPTIONS,
+    ];
+    if standard.contains(method) {
+        method.as_str().to_owned()
+    } else {
+        "other".to_owned()
+    }
+}
+
 /// Wraps one request in the span `http.request`, continuing the trace its `traceparent` header
 /// names, logs it once and records its duration. The log line carries the method, the route
 /// template and the status, never the headers, the query or the body.
 pub(crate) async fn observe(request: Request, next: Next) -> Response {
-    let method = request.method().to_string();
+    let method = method_label(request.method());
     let route = request
         .extensions()
         .get::<MatchedPath>()
@@ -78,4 +98,23 @@ pub(crate) async fn scrape(State(scrape): State<Arc<dyn Scrape>>) -> Response {
         scrape.render(),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::Method;
+
+    use super::method_label;
+
+    #[test]
+    fn a_standard_method_is_its_own_label_and_any_other_is_other() {
+        for name in ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] {
+            let method = Method::from_bytes(name.as_bytes()).unwrap();
+            assert_eq!(method_label(&method), name);
+        }
+        for name in ["BREW", "TRACE", "CONNECT", "x-1234"] {
+            let method = Method::from_bytes(name.as_bytes()).unwrap();
+            assert_eq!(method_label(&method), "other", "{name}");
+        }
+    }
 }

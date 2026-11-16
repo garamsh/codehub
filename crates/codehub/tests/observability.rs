@@ -99,6 +99,16 @@ async fn the_scrape_reports_requests_the_landing_gate_and_the_queue() {
         .land_files("acme", "app", "work", &[(".codehub/checks.toml", CHECKS)])
         .await;
 
+    // A method no one registered, sent with no credential, makes no series of its own.
+    reqwest::Client::new()
+        .request(
+            reqwest::Method::from_bytes(b"BREW").unwrap(),
+            format!("{}/v1/orgs", server.base),
+        )
+        .send()
+        .await
+        .unwrap();
+
     let text = scrape_until(&server, |text| {
         text.lines()
             .any(|line| line.starts_with("codehub_queue_depth{") && line.ends_with(" 1"))
@@ -130,6 +140,11 @@ async fn the_scrape_reports_requests_the_landing_gate_and_the_queue() {
         "{text}"
     );
     assert!(has("codehub_outbox_pending"), "{text}");
+    assert!(
+        has("codehub_http_request_duration_seconds_count{method=\"other\""),
+        "{text}"
+    );
+    assert!(!text.contains("BREW"), "{text}");
     // The scrape names no credential and no path parameter.
     assert!(!text.contains("Bearer"), "{text}");
     assert!(!text.contains("/v1/orgs/acme"), "{text}");
@@ -202,6 +217,7 @@ async fn a_request_exports_one_trace_across_its_calls_and_names_it_in_the_log() 
     for name in [
         "POST /v1/orgs/{org}/repos/{repo}/drafts/{draft}/land",
         "landing.gate_wait",
+        "decision_point.decide",
         "object_store.get",
         "landing.attempt",
     ] {
