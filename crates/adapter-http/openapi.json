@@ -3,7 +3,7 @@
   "info": {
     "title": "codehub API",
     "version": "1.0.0",
-    "description": "Errors are RFC 9457 problem details. 401 is returned without a valid token; 404 where the caller may not read the repository, so its existence is not disclosed; 403 where the caller may read it but not take the action, naming the paths it may not write; 409 for a conflict or a lost compare-and-swap, naming the paths. Object bytes do not pass through the API: the grants it returns are used directly against the object store."
+    "description": "Errors are RFC 9457 problem details. 401 is returned without a valid token; 404 where the caller may not read the repository, so its existence is not disclosed; 403 where the caller may read it but not take the action, naming the paths it may not write; 409 for a conflict or a lost compare-and-swap, naming the paths. 413 where a request body is larger than the server reads; 429, with a Retry-After header of whole seconds, where the caller has made more requests than its rate allows (the runner routes are not rate limited); 503, with a Retry-After header where the server is serving as many requests as it takes, and without one where a request took longer than the server allows. Object bytes do not pass through the API: the grants it returns are used directly against the object store."
   },
   "servers": [
     {

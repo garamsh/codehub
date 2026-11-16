@@ -184,11 +184,17 @@ async fn a_request_exports_one_trace_across_its_calls_and_names_it_in_the_log() 
         .await;
 
     let until = Instant::now() + BOUND;
-    while !spans(&exports)
+    // The request span ends after the spans it holds, and the batches that export them are
+    // separate: the landing is whole once its request's span has arrived.
+    let landed = |spans: &[(String, String, String, String)]| {
+        [
+            "landing.swap",
+            "POST /v1/orgs/{org}/repos/{repo}/drafts/{draft}/land",
+        ]
         .iter()
-        .any(|(name, ..)| name == "landing.swap")
-        && Instant::now() < until
-    {
+        .all(|wanted| spans.iter().any(|(name, ..)| name == wanted))
+    };
+    while !landed(&spans(&exports)) && Instant::now() < until {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     let spans = spans(&exports);

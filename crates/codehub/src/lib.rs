@@ -7,7 +7,10 @@ use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use axum::response::IntoResponse;
 
 use adapter_http::{ApiState, Pause, RunnerSettings};
 use adapter_toml::TomlCheckDefinitions;
@@ -36,10 +39,12 @@ use oauth_client::{Authentication, InvalidClient, TokenClient};
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 
+mod overload;
 mod readiness;
 mod settings;
 mod telemetry;
 
+pub use overload::{OverloadOptions, TimingOptions};
 use readiness::Probe;
 pub use settings::{
     AllOptions, ApiOptions, Authorisation, AuthorisationOptions, AuthzenClientAuthentication,
@@ -179,12 +184,15 @@ impl RelayEnvironment for ServerEnvironment {
 fn verifier(
     selection: IdentityMode<'_>,
     jwks_min_refetch: Duration,
+    timeout: Duration,
 ) -> Result<Arc<dyn IdentityVerification>, Error> {
     match selection {
         IdentityMode::Oidc { issuer, audience } => {
-            OidcIdentityVerification::new(issuer, audience, jwks_min_refetch).map(|verifier| {
-                Arc::new(Observed::new("identity", verifier)) as Arc<dyn IdentityVerification>
-            })
+            OidcIdentityVerification::new(issuer, audience, jwks_min_refetch, timeout).map(
+                |verifier| {
+                    Arc::new(Observed::new("identity", verifier)) as Arc<dyn IdentityVerification>
+                },
+            )
         }
         IdentityMode::Introspection {
             endpoint,
@@ -198,6 +206,7 @@ fn verifier(
             client_secret,
             issuer,
             audience,
+            timeout,
         )
         .map(|verifier| {
             Arc::new(Observed::new("identity", verifier)) as Arc<dyn IdentityVerification>
@@ -216,15 +225,20 @@ fn token_client(
     token_endpoint: &str,
     audience: Option<String>,
     authentication: Authentication,
+    timeout: Duration,
 ) -> Result<Arc<TokenClient>, Error> {
-    TokenClient::new(token_endpoint, audience, authentication)
+    TokenClient::new(token_endpoint, audience, authentication, timeout)
         .map(Arc::new)
         .map_err(Error::Client)
 }
 
 /// Builds the garam directory changes over `tokens`.
-fn garam_changes(url: &str, tokens: Arc<TokenClient>) -> Result<Arc<dyn DirectoryChanges>, Error> {
-    GaramDirectoryChanges::new(url, tokens)
+fn garam_changes(
+    url: &str,
+    tokens: Arc<TokenClient>,
+    timeout: Duration,
+) -> Result<Arc<dyn DirectoryChanges>, Error> {
+    GaramDirectoryChanges::new(url, tokens, timeout)
         .map(|changes| Arc::new(Observed::new("directory", changes)) as Arc<dyn DirectoryChanges>)
         .map_err(Error::DirectoryChanges)
 }
@@ -234,18 +248,20 @@ fn authzen(
     mode: AuthzenMode<'_>,
     audience: Option<String>,
     evaluations: bool,
+    timeout: Duration,
 ) -> Result<Selected, Error> {
-    let tokens = token_client(mode.token_endpoint, audience, mode.authentication)?;
+    let tokens = token_client(mode.token_endpoint, audience, mode.authentication, timeout)?;
     let profile = match mode.profile {
         AuthzenProfile::Plain => Profile::Plain,
         AuthzenProfile::Grn => Profile::Grn,
     };
-    let decider = AuthzenAuthorisationDecision::new(mode.url, Arc::clone(&tokens), profile)
-        .map_err(Error::Authorisation)?
-        .with_access_evaluations(evaluations);
+    let decider =
+        AuthzenAuthorisationDecision::new(mode.url, Arc::clone(&tokens), profile, timeout)
+            .map_err(Error::Authorisation)?
+            .with_access_evaluations(evaluations);
     let changes: Arc<dyn DirectoryChanges> = match mode.garam_url {
         None => Arc::new(()),
-        Some(url) => garam_changes(url, tokens)?,
+        Some(url) => garam_changes(url, tokens, timeout)?,
     };
     Ok((Arc::new(Observed::new("decision_point", decider)), changes))
 }
@@ -268,6 +284,8 @@ struct Http<'a> {
     database: &'a DatabaseOptions,
     objects: &'a ObjectOptions,
     landing: &'a LandingOptions,
+    overload: &'a OverloadOptions,
+    timing: &'a TimingOptions,
     /// How long answering a creation waits for its change, in seconds.
     delivery_wait: u64,
     serving: Serving<'a>,
@@ -301,6 +319,8 @@ async fn run_role(role: Role, telemetry: &Telemetry) -> Result<(), Error> {
                 database: &options.database,
                 objects: &options.objects,
                 landing: &options.landing,
+                overload: &options.overload,
+                timing: &options.timing,
                 delivery_wait: options.delivery.directory_delivery_wait,
                 serving: options.serving(),
                 telemetry,
@@ -315,6 +335,8 @@ async fn run_role(role: Role, telemetry: &Telemetry) -> Result<(), Error> {
                 database: &options.database,
                 objects: &options.objects,
                 landing: &options.landing,
+                overload: &options.overload,
+                timing: &options.timing,
                 delivery_wait: UNUSED_DELIVERY_WAIT,
                 serving: options.serving(),
                 telemetry,
@@ -329,6 +351,8 @@ async fn run_role(role: Role, telemetry: &Telemetry) -> Result<(), Error> {
                 database: &options.database,
                 objects: &options.objects,
                 landing: &options.landing,
+                overload: &options.overload,
+                timing: &options.timing,
                 delivery_wait: options.delivery.directory_delivery_wait,
                 serving: options.serving(),
                 telemetry,
@@ -380,8 +404,9 @@ async fn work(options: &WorkerOptions, telemetry: &Telemetry) -> Result<(), Erro
                 delivery.token_endpoint,
                 options.authzen.authzen_audience.clone(),
                 delivery.authentication,
+                options.timing.authzen_timeout(),
             )?;
-            garam_changes(delivery.url, tokens)?
+            garam_changes(delivery.url, tokens, options.timing.authzen_timeout())?
         }
     };
     let relay = relay(&database, changes, UNUSED_DELIVERY_WAIT);
@@ -399,7 +424,13 @@ async fn work(options: &WorkerOptions, telemetry: &Telemetry) -> Result<(), Erro
     };
     let router = adapter_http::health_router(Arc::new(readiness))
         .merge(adapter_http::metrics_router(telemetry.scrape()));
-    listen_and_serve(options.listen.listen, router, Some(relay)).await
+    listen_and_serve(
+        options.listen.listen,
+        router,
+        Some(relay),
+        options.timing.shutdown_deadline(),
+    )
+    .await
 }
 
 /// Builds the adapters and use cases a role that serves routes needs and serves them.
@@ -410,6 +441,8 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
         database: database_options,
         objects: object_options,
         landing,
+        overload,
+        timing,
         delivery_wait,
         serving,
         telemetry,
@@ -420,6 +453,7 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
     let identity = verifier(
         selection.identity,
         Duration::from_secs(serving.identity.jwks_min_refetch_seconds),
+        overload.identity_timeout(),
     )?;
     let database = connect(database_options).await?;
     if routes == Routes::All {
@@ -446,6 +480,7 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
             mode,
             serving.client.authzen_audience.clone(),
             serving.authorisation.authzen_evaluations,
+            timing.authzen_timeout(),
         )?,
     };
     let relay = relay(&database, Arc::clone(&changes), delivery_wait);
@@ -457,6 +492,7 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
             &object_options.s3_access_key,
             &object_options.s3_secret_key,
             object_options.max_object_size,
+            overload.object_timeouts(),
         )
         .map(|store| store.with_expiry(Duration::from_secs(object_options.grant_expiry_seconds)))
         .map_err(Error::ObjectStore)
@@ -509,6 +545,7 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
             schema: Arc::new(database),
             objects: Some(probed),
         }),
+        limits: overload.limits(),
     };
     let (router, delivering) = match routes {
         Routes::Api => (adapter_http::api_router(state), None),
@@ -516,15 +553,17 @@ async fn serve(http: Http<'_>) -> Result<(), Error> {
         Routes::All => (adapter_http::router(state), Some(relay)),
     };
     let router = router.merge(adapter_http::metrics_router(telemetry.scrape()));
-    listen_and_serve(listen, router, delivering).await
+    listen_and_serve(listen, router, delivering, timing.shutdown_deadline()).await
 }
 
 /// Binds `listen` and serves `router`, with `relay` delivering alongside where given, until
-/// SIGTERM or SIGINT; then finishes the requests in flight and returns.
+/// SIGTERM or SIGINT; then lets the requests in flight finish for up to `deadline` and returns,
+/// dropping any still open.
 async fn listen_and_serve(
     listen: SocketAddr,
     router: axum::Router,
     relay: Option<Arc<DirectoryRelay<ServerEnvironment>>>,
+    deadline: Duration,
 ) -> Result<(), Error> {
     let listener = TcpListener::bind(listen)
         .await
@@ -535,17 +574,82 @@ async fn listen_and_serve(
     // Nowhere left to report a failed stderr write.
     let _ = writeln!(std::io::stderr(), "codehub listening on {address}");
     let delivering = relay.map(|relay| tokio::spawn(async move { relay.run().await }));
-    let served = axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
+    let served = serve_until(
+        listener,
+        router,
+        async move {
             tokio::select! {
                 _ = terminate.recv() => {}
                 _ = interrupt.recv() => {}
             }
-        })
-        .await
-        .map_err(Error::Serve);
+        },
+        deadline,
+    )
+    .await
+    .map_err(Error::Serve);
     if let Some(delivering) = delivering {
         delivering.abort();
     }
     served
 }
+
+/// The longest a stopping server goes on accepting connections while it answers `/readyz` with
+/// 503, so that a load balancer probing it takes it out of rotation before it stops accepting.
+const DRAIN_NOTICE: Duration = Duration::from_secs(5);
+
+/// Serves `router` on `listener` until `stop` completes; from then, for the fifth of `deadline`
+/// but at most [`DRAIN_NOTICE`], answers `/readyz` with 503 and serves on, then stops accepting,
+/// waits for the requests in flight and returns at `deadline` from `stop` at the latest, leaving
+/// any still open to be dropped with the runtime (ADR 0055).
+async fn serve_until(
+    listener: TcpListener,
+    router: axum::Router,
+    stop: impl Future<Output = ()> + Send + 'static,
+    deadline: Duration,
+) -> std::io::Result<()> {
+    let (stopped, stopping) = tokio::sync::oneshot::channel();
+    let draining = Arc::new(AtomicBool::new(false));
+    let router = router.layer(axum::middleware::from_fn_with_state(
+        Arc::clone(&draining),
+        not_ready_while_draining,
+    ));
+    let serving = axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            stop.await;
+            draining.store(true, Ordering::Release);
+            // The receiver outlives the server, which is waiting for this.
+            let _ = stopped.send(());
+            tokio::time::sleep((deadline / 5).min(DRAIN_NOTICE)).await;
+        })
+        .into_future();
+    tokio::pin!(serving);
+    tokio::select! {
+        served = &mut serving => served,
+        Ok(()) = stopping => {
+            tokio::select! {
+                served = &mut serving => served,
+                () = tokio::time::sleep(deadline) => Ok(()),
+            }
+        }
+    }
+}
+
+/// Answers `/readyz` with 503 once `draining`, so that a load balancer probing a process that is
+/// stopping stops sending requests to it.
+async fn not_ready_while_draining(
+    axum::extract::State(draining): axum::extract::State<Arc<AtomicBool>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if request.uri().path() == "/readyz" && draining.load(Ordering::Acquire) {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "the server is shutting down",
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
+#[cfg(test)]
+mod tests;
