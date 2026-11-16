@@ -696,17 +696,23 @@ async fn a_run_killed_by_a_signal_exits_with_128_plus_the_signal() {
 }
 
 #[tokio::test]
-async fn a_run_stopped_reports_no_outcome() {
+async fn a_run_stopped_after_it_started_reports_its_streams() {
     let work = scratch();
     let (signal, stop) = Stop::channel();
     let executor = executor(&work);
-    let job = run_of("sleep 30", Vec::new(), &[]);
+    let job = run_of("echo begun; echo trouble >&2; sleep 30", Vec::new(), &[]);
     let running = tokio::spawn(async move { executor.run(&job, stop).await });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
     signal.send(StopReason::Cancelled);
     let execution = running.await.unwrap().unwrap();
     assert_eq!(execution.end, End::Stopped(StopReason::Cancelled));
-    assert!(execution.run.is_none());
+    let outcome = outcome(&execution);
+    assert_eq!(outcome.stdout.as_ref().unwrap().bytes, b"begun\n".to_vec());
+    assert_eq!(
+        outcome.stderr.as_ref().unwrap().bytes,
+        b"trouble\n".to_vec()
+    );
+    assert!(outcome.changes.is_empty());
     std::fs::remove_dir_all(&work).unwrap();
 }
 
@@ -873,15 +879,79 @@ async fn a_host_execution_reports_the_objects_it_took() {
 }
 
 #[tokio::test]
-async fn cleaning_removes_partial_files_and_keeps_objects() {
+async fn cleaning_removes_old_partial_files_and_keeps_objects_and_recent_partial_files() {
     let work = scratch();
     let objects = work.join("objects");
     std::fs::create_dir_all(&objects).unwrap();
     std::fs::write(objects.join("tmp-1-abc"), "half").unwrap();
     std::fs::write(objects.join("abc"), "whole").unwrap();
+    std::fs::write(objects.join("tmp-2-fresh"), "live").unwrap();
+    let old = std::fs::File::options()
+        .write(true)
+        .open(objects.join("tmp-1-abc"))
+        .unwrap();
+    old.set_modified(std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60))
+        .unwrap();
     executor(&work).clean().await.unwrap();
     assert!(!objects.join("tmp-1-abc").exists());
+    assert!(
+        objects.join("tmp-2-fresh").exists(),
+        "a recent partial file may be a running runner's"
+    );
     assert!(objects.join("abc").exists());
     executor(&scratch()).clean().await.unwrap();
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn a_sent_file_under_a_cache_path_is_no_change_when_the_command_leaves_it() {
+    let work = scratch();
+    let (sent, cached) = (serve(b"sent").await, serve(b"from the cache").await);
+    let mut job = run_of(
+        "true",
+        vec![file("target/tracked", b"sent", &sent, false)],
+        &[],
+    );
+    job.caches = vec!["target".parse().unwrap()];
+    if let Some(run) = &mut job.run {
+        run.caches = vec![RunCache {
+            path: "target".parse().unwrap(),
+            files: vec![file("tracked", b"from the cache", &cached, false)],
+        }];
+    }
+    let execution = run(&executor(&work), &job).await.unwrap();
+    let outcome = outcome(&execution);
+    assert!(outcome.changes.is_empty(), "{:?}", outcome.changes);
+    assert!(outcome.refused.is_empty());
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn an_add_path_over_a_cache_path_neither_changes_nor_refuses_what_is_under_it() {
+    let work = scratch();
+    let mut job = run_of(
+        "mkdir -p docs/target; echo a > docs/a; ln -s /nowhere docs/target/l; echo b > docs/target/b",
+        Vec::new(),
+        &["docs"],
+    );
+    job.caches = vec!["docs/target".parse().unwrap()];
+    let execution = run(&executor(&work), &job).await.unwrap();
+    let outcome = outcome(&execution);
+    assert_eq!(outcome.changes.len(), 1, "{:?}", outcome.changes);
+    assert!(written(outcome, "docs/a").is_some());
+    assert!(outcome.refused.is_empty(), "{:?}", outcome.refused);
+    std::fs::remove_dir_all(&work).unwrap();
+}
+
+#[tokio::test]
+async fn overlapping_add_paths_report_each_file_once() {
+    let work = scratch();
+    let job = run_of(
+        "mkdir -p docs; echo a > docs/a",
+        Vec::new(),
+        &["docs", "docs/a", "docs"],
+    );
+    let execution = run(&executor(&work), &job).await.unwrap();
+    assert_eq!(outcome(&execution).changes.len(), 1);
     std::fs::remove_dir_all(&work).unwrap();
 }

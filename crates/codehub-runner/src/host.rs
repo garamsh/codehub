@@ -304,9 +304,12 @@ impl HostExecutor {
             .kill_on_drop(true);
         match &job.run {
             Some(run) => {
-                command
-                    .env_remove("CODEHUB_CHECK")
-                    .env_remove("CODEHUB_FOLDER");
+                // The job's `env` is the whole of the command's CODEHUB_* variables.
+                for (name, _) in std::env::vars_os() {
+                    if name.to_string_lossy().starts_with("CODEHUB_") {
+                        command.env_remove(name);
+                    }
+                }
                 command.envs(run.env.iter().map(|(name, value)| (name, value)));
             }
             None => {
@@ -379,12 +382,12 @@ impl HostExecutor {
             )
         };
         let (output, run) = if is_run {
-            let outcome = matches!(end, End::Exited(_)).then(|| RunOutcome {
+            let outcome = RunOutcome {
                 stdout: Some(take(out_tail).into_stream()),
                 stderr: Some(take(err_tail).into_stream()),
                 ..RunOutcome::default()
-            });
-            (String::new(), outcome)
+            };
+            (String::new(), Some(outcome))
         } else {
             (take(out_tail).text(), None)
         };
@@ -508,10 +511,10 @@ async fn changes(
     job: &Job,
     run: &RunWork,
 ) -> Result<(Vec<Change>, Vec<String>), ExecutorError> {
-    let under_cache = |path: &RelativePath| {
+    let under_cache = |path: &Path| {
         job.caches
             .iter()
-            .any(|cache| path.as_path().starts_with(cache.as_path()))
+            .any(|cache| path.starts_with(cache.as_path()))
     };
     let mut changes = Vec::new();
     let mut refused = Vec::new();
@@ -523,6 +526,9 @@ async fn changes(
     let sent: std::collections::HashSet<String> =
         job.files.iter().map(|file| file.path.to_string()).collect();
     for file in &job.files {
+        if under_cache(file.path.as_path()) {
+            continue;
+        }
         match place(dir, &file.path).await? {
             Place::Reached(None) => changes.push(Change::Deleted(file.path.clone())),
             Place::Linked => refused.push(file.path.to_string()),
@@ -542,6 +548,7 @@ async fn changes(
             Place::Reached(Some(_)) => refused.push(file.path.to_string()),
         }
     }
+    let mut written = std::collections::HashSet::new();
     for added in &run.add {
         let mut pending = vec![(dir.join(added.as_path()), added.to_string())];
         if matches!(place(dir, added).await?, Place::Linked) {
@@ -549,6 +556,9 @@ async fn changes(
             continue;
         }
         while let Some((at, name)) = pending.pop() {
+            if under_cache(Path::new(&name)) {
+                continue;
+            }
             let fail = |error: std::io::Error| ExecutorError::Collect {
                 path: name.clone(),
                 reason: error.to_string(),
@@ -565,16 +575,13 @@ async fn changes(
                     pending.push((entry.path(), format!("{name}/{child}")));
                 }
             } else if metadata.is_file() {
-                if sent.contains(&name) {
+                if sent.contains(&name) || !written.insert(name.clone()) {
                     continue;
                 }
                 let path: RelativePath = name.parse().map_err(|error| ExecutorError::Collect {
                     path: name.clone(),
                     reason: format!("{error}"),
                 })?;
-                if under_cache(&path) {
-                    continue;
-                }
                 let bytes = tokio::fs::read(&at).await.map_err(fail)?;
                 changes.push(Change::Written(ProducedFile {
                     address: Address::new(Sha256::digest(&bytes).into()),

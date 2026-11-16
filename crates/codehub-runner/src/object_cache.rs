@@ -94,7 +94,8 @@ impl ObjectCache {
         stored
     }
 
-    /// Removes the partial files a runner that was killed while keeping an object left behind.
+    /// Removes the partial files a runner that was killed while keeping an object left behind,
+    /// those not changed for an hour. A newer one may belong to a runner that is running.
     ///
     /// # Errors
     ///
@@ -106,7 +107,16 @@ impl ObjectCache {
             Err(error) => return Err(error),
         };
         while let Some(entry) = entries.next_entry().await? {
-            if entry.file_name().to_string_lossy().starts_with("tmp-") {
+            if !entry.file_name().to_string_lossy().starts_with("tmp-") {
+                continue;
+            }
+            let age = entry
+                .metadata()
+                .await?
+                .modified()?
+                .elapsed()
+                .unwrap_or_default();
+            if age >= PARTIAL_AGE {
                 remove_if_present(&entry.path()).await?;
             }
         }
@@ -148,6 +158,9 @@ impl ObjectCache {
         Ok(())
     }
 }
+
+/// How long a partial file stands unchanged before it is taken for a dead runner's.
+const PARTIAL_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 fn name_of(address: Address) -> String {
     address.to_string().replace("sha256:", "")

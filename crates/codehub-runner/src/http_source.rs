@@ -584,9 +584,26 @@ impl JobSource for HttpJobSource {
 
     async fn report(&self, job: JobId, report: &Report) -> Result<(), SourceError> {
         let objects = objects_of(&report.produced, report.run.as_ref());
-        if let Err(error) = self.upload(job, &objects).await {
+        let uploaded = self.upload(job, &objects).await;
+        if let Err(error) = &uploaded {
             eprintln!("job {job}: uploading its files failed: {error}");
         }
+        // A run that could not store what it names reports no object, so the report never
+        // names one the store may lack.
+        let failed;
+        let report = if uploaded.is_err() && report.run.is_some() {
+            failed = Report {
+                status: Status::Failed,
+                exit_code: None,
+                output: String::new(),
+                produced: Produced::default(),
+                objects: report.objects,
+                run: Some(RunOutcome::default()),
+            };
+            &failed
+        } else {
+            report
+        };
         let path = format!("/v1/runner/jobs/{job}/result");
         if let Some(run) = &report.run {
             let body = WireRunReport {

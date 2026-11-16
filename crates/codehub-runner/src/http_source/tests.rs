@@ -584,3 +584,38 @@ async fn a_check_report_carries_the_object_counts() {
     assert!(body.get("outcome").is_none());
     std::fs::remove_file(file).unwrap();
 }
+
+#[tokio::test]
+async fn a_run_whose_upload_fails_reports_executor_failed_and_names_no_object() {
+    let seen = Seen::default();
+    // This server has no uploads route.
+    let (source, file) = source(seen.clone()).await;
+    let edited = produced_file("a.txt", b"new");
+    let report = Report {
+        status: Status::Passed,
+        exit_code: Some(0),
+        output: String::new(),
+        produced: Produced {
+            outputs: vec![edited.clone()],
+            caches: Vec::new(),
+        },
+        objects: Some(ObjectCounts {
+            downloaded: 1,
+            cached: 0,
+        }),
+        run: Some(RunOutcome {
+            stdout: Some(Stream::new(b"out".to_vec(), false)),
+            changes: vec![Change::Written(edited)],
+            ..RunOutcome::default()
+        }),
+    };
+    source.report(JobId::new(9), &report).await.unwrap();
+    let body = seen.lock().unwrap().pop().unwrap().1;
+    assert_eq!(body["outcome"], "executor_failed");
+    assert_eq!(body["exit_code"], Value::Null);
+    assert_eq!(body["stdout"], Value::Null);
+    assert_eq!(body["outputs"], json!([]));
+    assert_eq!(body["changes"], json!([]));
+    assert_eq!(body["objects"], json!({"downloaded": 1, "from_cache": 0}));
+    std::fs::remove_file(file).unwrap();
+}
