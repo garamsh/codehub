@@ -1424,3 +1424,103 @@ async fn lists_the_files_of_a_changeset_and_refuses_the_listing_lacking_read_on_
     let readable = api.get(&format!("{uri}?prefix=src"), &bob).await;
     assert_eq!(readable.status, StatusCode::OK);
 }
+
+const RUNS: &str = "/v1/orgs/acme/repos/app";
+
+#[tokio::test]
+async fn starts_reads_waits_for_and_cancels_a_run() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    api.repository(&ada, "acme").await;
+    api.stage(&ada, "acme", "work", "src/a.txt", "a\n").await;
+    let start = format!("{RUNS}/drafts/work/runs");
+
+    let started = api
+        .post(
+            &start,
+            &ada,
+            json!({"command": "make", "prefix": "src", "add": ["src/new"], "outputs": ["out"]}),
+        )
+        .await;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    assert_eq!(started.body["state"], "queued");
+    assert_eq!(started.body["command"], "make");
+    assert_eq!(started.body["prefix"], "src");
+    assert_eq!(started.body["result"], Value::Null);
+    let id = started.body["id"].as_u64().unwrap();
+    let uri = format!("{RUNS}/runs/{id}");
+
+    // An invalid path, an add outside the prefix and a wait over the bound are 400.
+    for body in [
+        json!({"command": "make", "add": ["a//b"]}),
+        json!({"command": "make", "prefix": "src", "add": ["docs/x"]}),
+        json!({"command": ""}),
+    ] {
+        let refused = api.post(&start, &ada, body).await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    }
+    let too_long = api.get(&format!("{uri}?wait=61"), &ada).await;
+    assert_eq!(too_long.status, StatusCode::BAD_REQUEST);
+
+    // Another principal is told the run does not exist, on every route.
+    let bob = api.token("bob");
+    let files = format!("{uri}/files");
+    for reply in [
+        api.get(&uri, &bob).await,
+        api.post(&format!("{uri}/cancel"), &bob, json!({})).await,
+        api.get(&files, &bob).await,
+    ] {
+        assert_eq!(reply.status, StatusCode::NOT_FOUND);
+    }
+    let latest = format!("{RUNS}/drafts/work/runs/latest");
+    assert_eq!(api.get(&latest, &ada).await.status, StatusCode::NOT_FOUND);
+    let listed = api.get(&files, &ada).await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body, json!({"files": []}));
+
+    // A read that waits returns when the run ends, not when the wait does.
+    let began = Instant::now();
+    let cancel = async {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        api.post(&format!("{uri}/cancel"), &ada, json!({})).await
+    };
+    let waiting = format!("{uri}?wait=10");
+    let (waited, cancelled) = tokio::join!(api.get(&waiting, &ada), cancel);
+    assert_eq!(cancelled.status, StatusCode::OK);
+    assert!(began.elapsed() < Duration::from_secs(5));
+    assert_eq!(waited.status, StatusCode::OK);
+    assert_eq!(waited.body["state"], "ended");
+    assert_eq!(waited.body["result"]["outcome"], "cancelled");
+    assert_eq!(waited.body["result"]["write_back"]["reason"], "cancelled");
+
+    let again = api.post(&format!("{uri}/cancel"), &ada, json!({})).await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+    let latest = api.get(&latest, &ada).await;
+    assert_eq!(latest.status, StatusCode::OK);
+    assert_eq!(latest.body["id"], id);
+}
+
+#[tokio::test]
+async fn refuses_a_run_to_a_caller_without_the_run_action() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    api.repository(&ada, "acme").await;
+    assert!(
+        add_member(&api, &ada, "acme", "bob", "member")
+            .await
+            .is_success()
+    );
+    assert!(grant(&api, Method::PUT, &ada, "bob", "").await.is_success());
+    let bob = api.token("bob");
+    api.stage(&bob, "acme", "work", "a.txt", "a\n").await;
+
+    let refused = api
+        .post(
+            &format!("{RUNS}/drafts/work/runs"),
+            &bob,
+            json!({"command": "make"}),
+        )
+        .await;
+
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+}

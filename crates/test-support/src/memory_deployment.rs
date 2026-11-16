@@ -11,6 +11,7 @@ use adapter_memory::{
 };
 use app::domain::check::CheckDefinition;
 use app::domain::repository::RepositoryId;
+use app::domain::run::RunSettings;
 use app::port::driven::check_definitions::{CheckDefinitions, CheckFileError};
 use app::port::driven::directory_changes::{ChangeKind, RepositoryChange};
 
@@ -37,10 +38,17 @@ pub trait Definitions {
         text: &str,
         outcome: Result<Vec<CheckDefinition>, CheckFileError>,
     );
+
+    /// Makes `adapter` read the run settings `text` as `outcome`, as [`Definitions::teach`] does
+    /// for a check file.
+    fn teach_run(adapter: &Self::Adapter, text: &str, outcome: Result<RunSettings, CheckFileError>);
 }
 
 /// The file the in-memory check definitions read, as the TOML reader names it.
 const CHECK_FILE: &str = ".codehub/checks.toml";
+
+/// The file the in-memory run settings are read from, as the TOML reader names it.
+const RUN_FILE: &str = ".codehub/run.toml";
 
 /// The in-memory check definitions, which read a file as whatever they are taught.
 pub struct Taught;
@@ -49,7 +57,7 @@ impl Definitions for Taught {
     type Adapter = MemoryCheckDefinitions;
 
     fn start() -> MemoryCheckDefinitions {
-        MemoryCheckDefinitions::new(CHECK_FILE.parse().unwrap())
+        MemoryCheckDefinitions::new(CHECK_FILE.parse().unwrap(), RUN_FILE.parse().unwrap())
     }
 
     fn teach(
@@ -58,6 +66,14 @@ impl Definitions for Taught {
         outcome: Result<Vec<CheckDefinition>, CheckFileError>,
     ) {
         adapter.teach(text, outcome);
+    }
+
+    fn teach_run(
+        adapter: &MemoryCheckDefinitions,
+        text: &str,
+        outcome: Result<RunSettings, CheckFileError>,
+    ) {
+        adapter.teach_run(text, outcome);
     }
 }
 
@@ -206,5 +222,9 @@ impl<K: Definitions> Deployment for MemoryDeployment<K> {
 impl<K: Definitions> RunnerDeployment for MemoryDeployment<K> {
     fn teach(&self, text: &str, outcome: Result<Vec<CheckDefinition>, CheckFileError>) {
         K::teach(&self.definitions, text, outcome);
+    }
+
+    fn teach_run(&self, text: &str, outcome: Result<RunSettings, CheckFileError>) {
+        K::teach_run(&self.definitions, text, outcome);
     }
 }

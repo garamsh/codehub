@@ -15,6 +15,7 @@ mod job_queue;
 mod membership;
 mod repository_directory;
 mod runner_registry;
+mod runs;
 
 pub use authorisation_decision::PostgresAuthorisationDecision;
 pub use cache_refs::PostgresCacheRefs;

@@ -13,6 +13,7 @@ use adapter_toml::TomlCheckDefinitions;
 use app::domain::check::CheckDefinition;
 use app::domain::name::{OrganisationName, RepositoryName};
 use app::domain::repository::RepositoryId;
+use app::domain::run::RunSettings;
 use app::port::driven::check_definitions::CheckFileError;
 use app::port::driven::directory_changes::{ChangeKind, RepositoryChange};
 use sqlx::{Connection, PgConnection};
@@ -209,6 +210,10 @@ impl Deployment for Harness {
 
 impl RunnerDeployment for Harness {
     fn teach(&self, _text: &str, _outcome: Result<Vec<CheckDefinition>, CheckFileError>) {
+        // The reader parses the file itself, so there is nothing to teach it.
+    }
+
+    fn teach_run(&self, _text: &str, _outcome: Result<RunSettings, CheckFileError>) {
         // The reader parses the file itself, so there is nothing to teach it.
     }
 }

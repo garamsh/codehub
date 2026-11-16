@@ -17,6 +17,7 @@ use app::port::driving::jobs::JobsError;
 use app::port::driving::members::MembersError;
 use app::port::driving::repositories::RepositoriesError;
 use app::port::driving::runners::RunnersError;
+use app::port::driving::runs::RunsError;
 use app::port::driving::source_control::HistoryError;
 use app::port::driving::source_control::LandError;
 use app::port::driving::source_control::ListFilesError;
@@ -449,6 +450,32 @@ impl From<PlanError> for Problem {
                 StatusCode::UNPROCESSABLE_ENTITY,
                 format!("{file}: {reason}"),
             ),
+        }
+    }
+}
+
+impl From<RunsError> for Problem {
+    fn from(error: RunsError) -> Self {
+        match error {
+            RunsError::Access(error) => error.into(),
+            RunsError::NotFound(id) => Self::new(StatusCode::NOT_FOUND, format!("no run {id}")),
+            RunsError::Finished(id) => {
+                Self::new(StatusCode::CONFLICT, format!("run {id} has ended"))
+            }
+            RunsError::NoRun(draft) => Self::new(
+                StatusCode::NOT_FOUND,
+                format!("no run of {draft} has ended"),
+            ),
+            RunsError::AddOutsidePrefix(path) => {
+                Self::bad_request(format!("{path} is not under the prefix"))
+            }
+            RunsError::RunFile { file, error } => Self::bad_request(format!("{file}: {error}")),
+            RunsError::Drafts(error) => error.into(),
+            RunsError::Derived(error) => error.into(),
+            RunsError::Objects(error) => error.into(),
+            RunsError::Log(error) => error.into(),
+            RunsError::CacheRefs(_) => Self::internal(),
+            RunsError::Queue(error) => error.into(),
         }
     }
 }

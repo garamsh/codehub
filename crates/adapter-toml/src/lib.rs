@@ -15,6 +15,9 @@
 //! outputs = ["target/bin"] # optional: paths, relative to the folder, the check produces
 //! caches = ["target"]      # optional: paths, relative to the folder, used as a build cache
 //! ```
+//!
+//! `.codehub/run.toml` holds the settings of a workspace's runs as top-level `caches`, `labels`
+//! and `timeout`, each as in a check.
 
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -22,6 +25,7 @@ use std::ops::Range;
 use app::domain::check::{CheckDefinition, Command, Need, Pattern, Timeout};
 use app::domain::name::{CheckName, Label};
 use app::domain::path::{Path, PathError, Prefix};
+use app::domain::run::RunSettings;
 use app::port::driven::check_definitions::{CheckDefinitions, CheckFileError};
 use toml::Spanned;
 use toml::de::{DeTable, DeValue};
@@ -29,9 +33,14 @@ use toml::de::{DeTable, DeValue};
 /// Where a repository keeps its check definitions.
 const FILE: &str = ".codehub/checks.toml";
 
-/// The check definitions of a repository, read from the TOML at [`FILE`].
+/// Where a repository keeps the settings of its workspaces' runs (ADR 0051).
+const RUN_FILE: &str = ".codehub/run.toml";
+
+/// The check definitions of a repository, read from the TOML at [`FILE`], and the settings of
+/// its runs, read from the TOML at [`RUN_FILE`].
 pub struct TomlCheckDefinitions {
     file: Path,
+    run_file: Path,
 }
 
 impl TomlCheckDefinitions {
@@ -43,6 +52,7 @@ impl TomlCheckDefinitions {
     pub fn new() -> Result<Self, PathError> {
         Ok(Self {
             file: FILE.parse()?,
+            run_file: RUN_FILE.parse()?,
         })
     }
 }
@@ -102,6 +112,31 @@ impl Reader<'_> {
             .map(Some)
     }
 
+    /// The timeout the table sets, or the default where it sets none.
+    fn timeout(&self, fields: &DeTable<'_>) -> Result<Timeout, CheckFileError> {
+        let Some(value) = fields.get("timeout") else {
+            return Ok(Timeout::default_timeout());
+        };
+        let seconds = value
+            .get_ref()
+            .as_integer()
+            .and_then(|integer| integer.as_str().parse::<u64>().ok())
+            .ok_or_else(|| self.invalid(&value.span(), "timeout is a whole number of seconds"))?;
+        Timeout::new(seconds)
+            .map_err(|error| self.invalid(&value.span(), format!("timeout: {error}")))
+    }
+
+    /// The labels of the array `labels`, none where absent.
+    fn labels(&self, fields: &DeTable<'_>) -> Result<BTreeSet<Label>, CheckFileError> {
+        Ok(self
+            .list(fields, "labels", |text| {
+                text.parse::<Label>().map_err(|error| error.to_string())
+            })?
+            .unwrap_or_default()
+            .into_iter()
+            .collect())
+    }
+
     fn check(&self, table: &Spanned<DeValue<'_>>) -> Result<CheckDefinition, CheckFileError> {
         let span = table.span();
         let fields = table
@@ -138,20 +173,7 @@ impl Reader<'_> {
         let command = Command::new(command)
             .map_err(|error| self.invalid(&span, format!("command: {error}")))?;
 
-        let mut labels = BTreeSet::new();
-        if let Some(value) = fields.get("labels") {
-            let items = value
-                .get_ref()
-                .as_array()
-                .ok_or_else(|| self.invalid(&value.span(), "labels is an array of strings"))?;
-            for item in items {
-                let label: Label = self
-                    .string(item, "a label")?
-                    .parse()
-                    .map_err(|error| self.invalid(&item.span(), format!("label: {error}")))?;
-                labels.insert(label);
-            }
-        }
+        let labels = self.labels(fields)?;
 
         let blocking = match fields.get("blocking") {
             None => true,
@@ -161,20 +183,7 @@ impl Reader<'_> {
                 .ok_or_else(|| self.invalid(&value.span(), "blocking is true or false"))?,
         };
 
-        let timeout = match fields.get("timeout") {
-            None => Timeout::default_timeout(),
-            Some(value) => {
-                let seconds = value
-                    .get_ref()
-                    .as_integer()
-                    .and_then(|integer| integer.as_str().parse::<u64>().ok())
-                    .ok_or_else(|| {
-                        self.invalid(&value.span(), "timeout is a whole number of seconds")
-                    })?;
-                Timeout::new(seconds)
-                    .map_err(|error| self.invalid(&value.span(), format!("timeout: {error}")))?
-            }
-        };
+        let timeout = self.timeout(fields)?;
 
         let inputs = self
             .list(fields, "inputs", |text| {
@@ -205,23 +214,62 @@ impl Reader<'_> {
     }
 }
 
+fn utf8(bytes: &[u8]) -> Result<&str, CheckFileError> {
+    std::str::from_utf8(bytes).map_err(|error| CheckFileError::Syntax {
+        line: bytes.get(..error.valid_up_to()).map_or(1, |valid| {
+            valid.iter().filter(|byte| **byte == b'\n').count() + 1
+        }),
+        description: "the file is not UTF-8".to_owned(),
+    })
+}
+
+fn document(text: &str) -> Result<Spanned<DeTable<'_>>, CheckFileError> {
+    DeTable::parse(text).map_err(|error| CheckFileError::Syntax {
+        line: error.span().map_or(1, |span| line_of(text, span.start)),
+        description: error.message().to_owned(),
+    })
+}
+
 #[async_trait::async_trait]
 impl CheckDefinitions for TomlCheckDefinitions {
     fn file(&self) -> &Path {
         &self.file
     }
 
+    fn run_file(&self) -> &Path {
+        &self.run_file
+    }
+
+    fn parse_run(&self, bytes: &[u8]) -> Result<RunSettings, CheckFileError> {
+        let text = utf8(bytes)?;
+        let document = document(text)?;
+        let folder = Prefix::whole();
+        let reader = Reader {
+            text,
+            folder: &folder,
+        };
+        let root = document.get_ref();
+        if let Some((key, _)) = root
+            .iter()
+            .find(|(key, _)| !matches!(key.get_ref().as_ref(), "caches" | "labels" | "timeout"))
+        {
+            return Err(reader.invalid(&key.span(), format!("unknown key {}", key.get_ref())));
+        }
+        let caches = reader
+            .list(root, "caches", |text| {
+                text.parse::<Path>().map_err(|error| error.to_string())
+            })?
+            .unwrap_or_default();
+        Ok(RunSettings {
+            caches: caches.into_iter().collect(),
+            labels: reader.labels(root)?,
+            timeout: reader.timeout(root)?,
+        })
+    }
+
     fn parse(&self, folder: &Prefix, bytes: &[u8]) -> Result<Vec<CheckDefinition>, CheckFileError> {
-        let text = std::str::from_utf8(bytes).map_err(|error| CheckFileError::Syntax {
-            line: bytes.get(..error.valid_up_to()).map_or(1, |valid| {
-                valid.iter().filter(|byte| **byte == b'\n').count() + 1
-            }),
-            description: "the file is not UTF-8".to_owned(),
-        })?;
-        let document = DeTable::parse(text).map_err(|error| CheckFileError::Syntax {
-            line: error.span().map_or(1, |span| line_of(text, span.start)),
-            description: error.message().to_owned(),
-        })?;
+        let text = utf8(bytes)?;
+        let document = document(text)?;
         let reader = Reader { text, folder };
         let root = document.get_ref();
         if let Some((key, _)) = root

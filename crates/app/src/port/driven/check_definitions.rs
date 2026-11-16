@@ -6,6 +6,7 @@ use std::fmt;
 use crate::domain::check::CheckDefinition;
 use crate::domain::name::CheckName;
 use crate::domain::path::{Path, Prefix};
+use crate::domain::run::RunSettings;
 
 /// Reads the check definitions a repository holds in the files of its tree. The format of the
 /// files is the adapter's.
@@ -21,6 +22,18 @@ pub trait CheckDefinitions: Send + Sync {
     ///
     /// The [`CheckFileError`] naming the first fault in `bytes`.
     fn parse(&self, folder: &Prefix, bytes: &[u8]) -> Result<Vec<CheckDefinition>, CheckFileError>;
+
+    /// The path, relative to the repository root, of the file that holds the settings of the
+    /// runs of a workspace (ADR 0051).
+    fn run_file(&self) -> &Path;
+
+    /// The run settings in `bytes`, the content of [`CheckDefinitions::run_file`].
+    ///
+    /// # Errors
+    ///
+    /// The [`CheckFileError`] naming the first fault in `bytes`; a [`CheckFileError::Duplicate`]
+    /// is never the answer.
+    fn parse_run(&self, bytes: &[u8]) -> Result<RunSettings, CheckFileError>;
 }
 
 /// Why the check definitions' file is not read.

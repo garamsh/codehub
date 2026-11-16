@@ -8,4 +8,5 @@ pub mod members;
 pub mod repositories;
 pub mod revert;
 pub mod runners;
+pub mod runs;
 pub mod source_control;

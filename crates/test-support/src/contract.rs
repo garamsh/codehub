@@ -17,6 +17,7 @@ pub mod outbox;
 pub mod reverts;
 pub mod runner_deployment;
 pub mod runners;
+pub mod runs;
 pub mod scoping;
 pub mod workspace;
 

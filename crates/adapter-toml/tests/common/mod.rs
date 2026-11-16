@@ -3,6 +3,7 @@
 
 use adapter_toml::TomlCheckDefinitions;
 use app::domain::check::CheckDefinition;
+use app::domain::run::RunSettings;
 use app::port::driven::check_definitions::CheckFileError;
 use test_support::{Definitions, MemoryDeployment};
 
@@ -20,6 +21,14 @@ impl Definitions for Toml {
         _adapter: &TomlCheckDefinitions,
         _text: &str,
         _outcome: Result<Vec<CheckDefinition>, CheckFileError>,
+    ) {
+        // The reader parses the file itself, so there is nothing to teach it.
+    }
+
+    fn teach_run(
+        _adapter: &TomlCheckDefinitions,
+        _text: &str,
+        _outcome: Result<RunSettings, CheckFileError>,
     ) {
         // The reader parses the file itself, so there is nothing to teach it.
     }

@@ -10,6 +10,7 @@ mod members;
 mod problem;
 mod repositories;
 mod runners;
+mod runs;
 mod source_control;
 mod workspace;
 
@@ -23,6 +24,7 @@ use app::port::driving::jobs::Jobs;
 use app::port::driving::members::Members;
 use app::port::driving::repositories::Repositories;
 use app::port::driving::runners::Runners;
+use app::port::driving::runs::Runs;
 use app::port::driving::source_control::SourceControl;
 use async_trait::async_trait;
 use axum::Router;
@@ -86,6 +88,8 @@ pub struct ApiState {
     pub jobs: Arc<dyn Jobs>,
     /// Serves the checks and refs of a repository.
     pub checks: Arc<dyn Checks>,
+    /// Starts, reads and cancels the runs of a workspace.
+    pub runs: Arc<dyn Runs>,
     /// How a runner's claim is held.
     pub settings: RunnerSettings,
     /// Asked on every request to `/readyz`.
@@ -149,6 +153,11 @@ routes! {
     "/v1/orgs/{org}/repos/{repo}/jobs/{id}/cancel" => post(checks::cancel);
     "/v1/orgs/{org}/repos/{repo}/refs/{name}" => get(checks::reference);
     "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/checks/plan" => get(checks::plan);
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/runs" => post(runs::start);
+    "/v1/orgs/{org}/repos/{repo}/drafts/{draft}/runs/latest" => get(runs::latest);
+    "/v1/orgs/{org}/repos/{repo}/runs/{id}" => get(runs::get);
+    "/v1/orgs/{org}/repos/{repo}/runs/{id}/cancel" => post(runs::cancel);
+    "/v1/orgs/{org}/repos/{repo}/runs/{id}/files" => get(runs::files);
 }
 
 routes! {

@@ -8,10 +8,13 @@ use std::fmt;
 
 use crate::domain::address::Address;
 use crate::domain::check::CheckKey;
+use crate::domain::draft::Instance;
 use crate::domain::job::{Heartbeat, Job, JobId, JobResult, NewJob, Resolution};
-use crate::domain::name::OrganisationName;
+use crate::domain::name::{DraftName, OrganisationName};
+use crate::domain::principal::Principal;
 use crate::domain::repository::RepositoryId;
 use crate::domain::revert::Revert;
+use crate::domain::run::{NewRun, Run, RunId};
 use crate::domain::runner::{Registration, RegistrationId};
 
 /// Holds the jobs.
@@ -149,6 +152,43 @@ pub trait JobQueue: Send + Sync {
         repository: RepositoryId,
         changeset: Address,
     ) -> Result<Vec<Job>, JobQueueError>;
+
+    /// Records `run` as queued for a runner and returns it as recorded. Its identifier comes from
+    /// the sequence the jobs are numbered by.
+    ///
+    /// # Errors
+    ///
+    /// [`JobQueueError::Backend`] where the queue fails; no run is then queued.
+    async fn queue_run(&self, run: NewRun) -> Result<Run, JobQueueError>;
+
+    /// The run `run`.
+    ///
+    /// # Errors
+    ///
+    /// [`JobQueueError::NotFound`] where there is no such run.
+    async fn run(&self, run: RunId) -> Result<Run, JobQueueError>;
+
+    /// Ends the run `run` as cancelled and returns it.
+    ///
+    /// # Errors
+    ///
+    /// [`JobQueueError::NotFound`] where there is no such run; [`JobQueueError::Finished`] where
+    /// it has ended.
+    async fn cancel_run(&self, run: RunId) -> Result<Run, JobQueueError>;
+
+    /// The latest run that has ended of `principal`'s opening `instance` of the workspace `draft`
+    /// in `repository`; `None` where none has.
+    ///
+    /// # Errors
+    ///
+    /// [`JobQueueError::Backend`] where the queue fails.
+    async fn latest_run(
+        &self,
+        repository: RepositoryId,
+        principal: &Principal,
+        draft: &DraftName,
+        instance: Instance,
+    ) -> Result<Option<Run>, JobQueueError>;
 
     /// Acts on time having passed to `now`. A running job past its deadline times out, and a
     /// running job whose lease lapsed before its deadline returns to the queue with no runner.

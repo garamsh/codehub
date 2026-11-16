@@ -288,6 +288,7 @@ pub async fn run(config: Config) -> Result<(), Error> {
         runners: Arc::new(assembly.runners()),
         jobs: Arc::new(assembly.jobs()),
         checks: Arc::new(assembly.checks()),
+        runs: Arc::new(assembly.runs()),
         settings: RunnerSettings {
             hold: Duration::from_secs(config.runner_claim_hold),
             retry_interval: CLAIM_RETRY_INTERVAL,
