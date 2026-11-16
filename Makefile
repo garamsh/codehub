@@ -91,6 +91,29 @@ images:
 
 ci: lint format build test e2e loadtest-smoke
 
+# A fast local check, not the gate: `ci` stays the whole set. It lints the workspace, which only
+# re-lints the packages changed since the last run and their dependents, and runs the tests of the
+# packages that differ from origin/main (committed, staged, unstaged and untracked files) and of
+# every package that depends on them. A change to a workspace-wide file runs every test. The e2e
+# package and the doc tests are left to `ci`.
+CHANGED_FILES := $(shell { git diff --name-only origin/main; git ls-files --others --exclude-standard; } | sort -u)
+CHANGED_PACKAGES := $(shell printf '%s\n' $(CHANGED_FILES) | sed -n 's|^crates/\([^/]*\)/.*|\1|p' | sort -u)
+CHANGED_WIDE := $(filter Cargo.toml Cargo.lock clippy.toml rust-toolchain.toml Makefile .config/% dev/test.env,$(CHANGED_FILES))
+EMPTY :=
+SPACE := $(EMPTY) $(EMPTY)
+
+.PHONY: check-changed
+check-changed: lint services
+ifneq ($(CHANGED_WIDE),)
+	@echo "check-changed: workspace-wide change ($(CHANGED_WIDE)); running every test"
+	cargo nextest run --workspace --exclude e2e --locked --no-tests=fail $(TEST_ARGS)
+else ifneq ($(CHANGED_PACKAGES),)
+	@echo "check-changed: packages changed against origin/main: $(CHANGED_PACKAGES); testing them and their dependents"
+	cargo nextest run --workspace --exclude e2e --locked --no-tests=fail -E '$(subst $(SPACE), | ,$(foreach p,$(CHANGED_PACKAGES),rdeps($(p))))' $(TEST_ARGS)
+else
+	@echo "check-changed: no package changed against origin/main; no test selected"
+endif
+
 # Running containers are kept; pick up a changed image or configuration with
 # `make services-down` and then `make services`.
 services:
