@@ -7,7 +7,10 @@ use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use axum::response::IntoResponse;
 
 use adapter_http::{ApiState, Pause, RunnerSettings};
 use adapter_toml::TomlCheckDefinitions;
@@ -530,9 +533,14 @@ async fn listen_and_serve(
     served
 }
 
-/// Serves `router` on `listener` until `stop` completes, then waits up to `deadline` for the
-/// requests in flight to finish and returns, leaving any still open to be dropped with the
-/// runtime (ADR 0055).
+/// The longest a stopping server goes on accepting connections while it answers `/readyz` with
+/// 503, so that a load balancer probing it takes it out of rotation before it stops accepting.
+const DRAIN_NOTICE: Duration = Duration::from_secs(5);
+
+/// Serves `router` on `listener` until `stop` completes; from then, for the fifth of `deadline`
+/// but at most [`DRAIN_NOTICE`], answers `/readyz` with 503 and serves on, then stops accepting,
+/// waits for the requests in flight and returns at `deadline` from `stop` at the latest, leaving
+/// any still open to be dropped with the runtime (ADR 0055).
 async fn serve_until(
     listener: TcpListener,
     router: axum::Router,
@@ -540,11 +548,18 @@ async fn serve_until(
     deadline: Duration,
 ) -> std::io::Result<()> {
     let (stopped, stopping) = tokio::sync::oneshot::channel();
+    let draining = Arc::new(AtomicBool::new(false));
+    let router = router.layer(axum::middleware::from_fn_with_state(
+        Arc::clone(&draining),
+        not_ready_while_draining,
+    ));
     let serving = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             stop.await;
+            draining.store(true, Ordering::Release);
             // The receiver outlives the server, which is waiting for this.
             let _ = stopped.send(());
+            tokio::time::sleep((deadline / 5).min(DRAIN_NOTICE)).await;
         })
         .into_future();
     tokio::pin!(serving);
@@ -557,6 +572,23 @@ async fn serve_until(
             }
         }
     }
+}
+
+/// Answers `/readyz` with 503 once `draining`, so that a load balancer probing a process that is
+/// stopping stops sending requests to it.
+async fn not_ready_while_draining(
+    axum::extract::State(draining): axum::extract::State<Arc<AtomicBool>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if request.uri().path() == "/readyz" && draining.load(Ordering::Acquire) {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "the server is shutting down",
+        )
+            .into_response();
+    }
+    next.run(request).await
 }
 
 #[cfg(test)]
