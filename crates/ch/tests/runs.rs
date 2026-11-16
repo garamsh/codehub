@@ -399,7 +399,7 @@ async fn cancels_the_run_on_an_interrupt_and_exits_124() {
     let world = world(&[("a.txt", "one\n")]).await;
     let mut command = world.ada.command(&["run", "--", "make"]);
     command.current_dir(world.view.path());
-    let mut child = command.spawn().unwrap();
+    let child = command.spawn().unwrap();
     let claimed = world.server.claim_run(&world.runner).await;
     let pid = child.id().unwrap().to_string();
     // Let `ch` reach its wait before the interrupt, which would otherwise end it unhandled.
