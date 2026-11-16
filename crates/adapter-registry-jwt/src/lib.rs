@@ -130,7 +130,7 @@ mod tests {
     use super::*;
     use app::domain::image::ImageAction;
     use jsonwebtoken::{DecodingKey, Validation, decode, decode_header};
-    use rcgen::{KeyPair, PKCS_ECDSA_P256_SHA256};
+    use rcgen::{KeyPair, PKCS_ECDSA_P256_SHA256, PKCS_ECDSA_P384_SHA384};
     use serde_json::{Value, json};
 
     fn entry(name: &str, actions: &[ImageAction]) -> GrantedEntry {
@@ -228,9 +228,21 @@ mod tests {
 
     #[test]
     fn refuses_a_key_that_is_not_a_p_256_private_key() {
-        let rsa = "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n";
+        // A P-384 key is a real private key in PEM that cannot sign ES256: the probe in `new`
+        // refuses it. Text that is no key at all is refused too.
+        let other = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
         assert_eq!(
-            Es256RegistryTokenIssuance::new(rsa.as_bytes(), "k".to_owned(), "i".to_owned()).err(),
+            Es256RegistryTokenIssuance::new(
+                other.serialize_pem().as_bytes(),
+                "k".to_owned(),
+                "i".to_owned()
+            )
+            .err(),
+            Some(InvalidKey)
+        );
+        let text = "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n";
+        assert_eq!(
+            Es256RegistryTokenIssuance::new(text.as_bytes(), "k".to_owned(), "i".to_owned()).err(),
             Some(InvalidKey)
         );
         let pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
