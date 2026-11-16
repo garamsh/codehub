@@ -43,6 +43,20 @@ pub trait ChangesetLog: Send + Sync {
         id: Address,
     ) -> Result<Changeset, ChangesetLogError>;
 
+    /// The changesets from `head` back to `base`, exclusive, following first parents, newest
+    /// first: empty where `head` is `base`. `None` where `base` is not on the first-parent chain
+    /// of `head`, which includes a `head` of `None` and a `base` that is not `None`.
+    ///
+    /// # Errors
+    ///
+    /// [`ChangesetLogError::NotFound`] where the log lacks a changeset the chain passes through.
+    async fn first_parent_chain(
+        &self,
+        repository: RepositoryId,
+        head: Option<Address>,
+        base: Option<Address>,
+    ) -> Result<Option<Vec<Changeset>>, ChangesetLogError>;
+
     /// The changeset `name` points at; `None` before it is first set.
     ///
     /// # Errors

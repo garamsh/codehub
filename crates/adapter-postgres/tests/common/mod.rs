@@ -1,6 +1,8 @@
 //! Repositories held by the PostgreSQL adapters, each harness over a database of its own, with
 //! drafts staged and landed through the driving ports.
 
+pub mod proxy;
+
 use std::sync::Arc;
 
 use adapter_memory::{MemoryIdentityVerification, MemoryObjectStore};

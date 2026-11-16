@@ -170,19 +170,13 @@ async fn delta_since(
     base: Option<Address>,
     main: Option<Address>,
 ) -> Result<BTreeMap<Path, Change>, LandError> {
-    let mut deltas = Vec::new();
-    let mut at = main;
-    while at != base {
-        let Some(id) = at else {
-            return Err(LandError::BaseNotOnMain);
-        };
-        let changeset = log.get(repository, id).await?;
-        at = changeset.parents.first().copied();
-        deltas.push(changeset.changes);
-    }
+    let chain = log
+        .first_parent_chain(repository, main, base)
+        .await?
+        .ok_or(LandError::BaseNotOnMain)?;
     let mut delta = BTreeMap::new();
-    for changes in deltas.into_iter().rev() {
-        delta.extend(changes);
+    for changeset in chain.into_iter().rev() {
+        delta.extend(changeset.changes);
     }
     Ok(delta)
 }

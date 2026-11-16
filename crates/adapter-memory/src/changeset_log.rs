@@ -38,6 +38,28 @@ impl ChangesetLog for MemoryChangesetLog {
             .ok_or(ChangesetLogError::NotFound(id))
     }
 
+    async fn first_parent_chain(
+        &self,
+        repository: RepositoryId,
+        head: Option<Address>,
+        base: Option<Address>,
+    ) -> Result<Option<Vec<Changeset>>, ChangesetLogError> {
+        let changesets = lock(&self.changesets);
+        let mut chain = Vec::new();
+        let mut at = head;
+        while at != base {
+            let Some(id) = at else {
+                return Ok(None);
+            };
+            let changeset = changesets
+                .get(&(repository, id))
+                .ok_or(ChangesetLogError::NotFound(id))?;
+            at = changeset.parents.first().copied();
+            chain.push(changeset.clone());
+        }
+        Ok(Some(chain))
+    }
+
     async fn read_ref(
         &self,
         repository: RepositoryId,

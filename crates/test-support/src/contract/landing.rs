@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_util::future::join;
+use tokio::sync::Notify;
+use tokio::time::timeout;
 
 use crate::contract::{Deployment, MAX_UPLOAD_SIZE, Repo, draft};
 use app::domain::address::Address;
@@ -22,7 +24,9 @@ use app::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
 use app::port::driving::source_control::{LandError, Landing, PathConflict};
 use app::port::driving::source_control::{SourceControl, SourceControlError};
 use app::use_case::landing_attempts::LandingAttempts;
-use app::use_case::source_control::{SourceControlAdapters, SourceControlService};
+use app::use_case::source_control::{
+    AfterLanding, AfterLandingError, SourceControlAdapters, SourceControlService,
+};
 
 /// Lands a first changeset writing `files` and checks that `main` points at it.
 async fn seed<H: Deployment>(repo: &Repo<'_, H>, ada: &Caller, files: &[(&str, &str)]) -> Address {
@@ -180,6 +184,15 @@ impl ChangesetLog for RivalsLandFirst {
         id: Address,
     ) -> Result<Changeset, ChangesetLogError> {
         self.inner.get(repository, id).await
+    }
+
+    async fn first_parent_chain(
+        &self,
+        repository: RepositoryId,
+        head: Option<Address>,
+        base: Option<Address>,
+    ) -> Result<Option<Vec<Changeset>>, ChangesetLogError> {
+        self.inner.first_parent_chain(repository, head, base).await
     }
 
     async fn read_ref(
@@ -481,6 +494,15 @@ impl ChangesetLog for CountsLandingsInFlight {
         self.inner.get(repository, id).await
     }
 
+    async fn first_parent_chain(
+        &self,
+        repository: RepositoryId,
+        head: Option<Address>,
+        base: Option<Address>,
+    ) -> Result<Option<Vec<Changeset>>, ChangesetLogError> {
+        self.inner.first_parent_chain(repository, head, base).await
+    }
+
     async fn read_ref(
         &self,
         repository: RepositoryId,
@@ -576,4 +598,253 @@ pub async fn two_landings_on_one_repository_at_once_do_not_rebase_and_swap_toget
     assert_eq!(same, 1);
     assert_eq!(repo.read("b").await.as_deref(), Some("b1\n"));
     assert_eq!(repo.read("c").await.as_deref(), Some("c1\n"));
+}
+
+/// Source control over `harness`'s adapters, its changeset log replaced by `log`.
+fn service_over<H: Deployment>(harness: &H, log: Arc<dyn ChangesetLog>) -> SourceControlService {
+    SourceControlService::new(
+        SourceControlAdapters {
+            objects: harness.objects().clone(),
+            log,
+            derived: harness.derived().clone(),
+            drafts: harness.drafts().clone(),
+            cache_refs: harness.cache_refs().clone(),
+            directory: harness.directory().clone(),
+            authorisation: harness.authorisation().clone(),
+        },
+        MAX_UPLOAD_SIZE,
+    )
+}
+
+/// How long a step that must not wait on another landing may take.
+const STEP_BOUND: Duration = Duration::from_secs(30);
+
+/// Runs after each landing; the first does not finish until it is released.
+struct BlocksFirstAfterLanding {
+    blocked: AtomicBool,
+    entered: Notify,
+    release: Notify,
+}
+
+impl AfterLanding for BlocksFirstAfterLanding {
+    async fn after_landing(
+        &self,
+        _repository: RepositoryId,
+        _landed: Address,
+        _timestamp: i64,
+    ) -> Result<(), AfterLandingError> {
+        if !self.blocked.swap(true, Ordering::SeqCst) {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        Ok(())
+    }
+}
+
+/// A landing waiting at the gate is not held behind another landing's `after_landing`.
+pub async fn a_landing_waiting_at_the_gate_is_not_held_behind_anothers_after_landing<
+    H: Deployment,
+>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let (left, right) = (draft("left"), draft("right"));
+    repo.stage(&ada, &left, &[("a", "a1\n")]).await;
+    repo.stage(&ada, &right, &[("b", "b1\n")]).await;
+    let after = Arc::new(BlocksFirstAfterLanding {
+        blocked: AtomicBool::new(false),
+        entered: Notify::new(),
+        release: Notify::new(),
+    });
+    let service =
+        Arc::new(service_over(&harness, harness.log().clone()).with_after_landing(after.clone()));
+    let landing = |draft: &DraftName| Landing {
+        message: draft.to_string(),
+        timestamp: 0,
+    };
+
+    let first = tokio::spawn({
+        let (service, ada, left, landing, id) = (
+            service.clone(),
+            ada.clone(),
+            left.clone(),
+            landing(&left),
+            repo.id,
+        );
+        async move { service.land(&ada, id, &left, landing).await }
+    });
+    timeout(STEP_BOUND, after.entered.notified()).await.unwrap();
+    // The first landing has swapped `main` and waits in `after_landing`.
+    let second = timeout(
+        STEP_BOUND,
+        service.land(&ada, repo.id, &right, landing(&right)),
+    )
+    .await
+    .expect("the second landing waited for the first's after_landing")
+    .unwrap();
+    after.release.notify_one();
+    let first = first.await.unwrap().unwrap();
+
+    assert_eq!(repo.main().await, Some(second));
+    assert_eq!(
+        harness.log().get(repo.id, second).await.unwrap().parents,
+        [first]
+    );
+}
+
+/// A changeset log that counts the chain reads and the single-changeset reads it is asked for.
+struct CountsReads {
+    inner: Arc<dyn ChangesetLog>,
+    chains: AtomicU32,
+    gets: AtomicU32,
+}
+
+#[async_trait::async_trait]
+impl ChangesetLog for CountsReads {
+    async fn append(
+        &self,
+        repository: RepositoryId,
+        changeset: Changeset,
+    ) -> Result<Address, ChangesetLogError> {
+        self.inner.append(repository, changeset).await
+    }
+
+    async fn get(
+        &self,
+        repository: RepositoryId,
+        id: Address,
+    ) -> Result<Changeset, ChangesetLogError> {
+        self.gets.fetch_add(1, Ordering::SeqCst);
+        self.inner.get(repository, id).await
+    }
+
+    async fn first_parent_chain(
+        &self,
+        repository: RepositoryId,
+        head: Option<Address>,
+        base: Option<Address>,
+    ) -> Result<Option<Vec<Changeset>>, ChangesetLogError> {
+        self.chains.fetch_add(1, Ordering::SeqCst);
+        self.inner.first_parent_chain(repository, head, base).await
+    }
+
+    async fn read_ref(
+        &self,
+        repository: RepositoryId,
+        name: Ref,
+    ) -> Result<Option<Address>, ChangesetLogError> {
+        self.inner.read_ref(repository, name).await
+    }
+
+    async fn compare_and_swap(
+        &self,
+        repository: RepositoryId,
+        name: Ref,
+        expected: Option<Address>,
+        new: Address,
+    ) -> Result<(), ChangesetLogError> {
+        self.inner
+            .compare_and_swap(repository, name, expected, new)
+            .await
+    }
+}
+
+/// An attempt at a landing reads the chain from its base to `main` in one call, however many
+/// changesets `main` is ahead.
+pub async fn an_attempt_reads_the_chain_from_its_base_to_main_in_one_call<H: Deployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    seed(&repo, &ada, &[("a", "a0\n")]).await;
+    let late = draft("late");
+    repo.stage(&ada, &late, &[("z", "z1\n")]).await;
+    for name in ["one", "two", "three"] {
+        let ahead = draft(name);
+        repo.stage(&ada, &ahead, &[(name, "x\n")]).await;
+        repo.land(&ada, &ahead, name).await.unwrap();
+    }
+    let log = Arc::new(CountsReads {
+        inner: harness.log().clone(),
+        chains: AtomicU32::new(0),
+        gets: AtomicU32::new(0),
+    });
+    let service = service_over(&harness, log.clone());
+
+    let landing = Landing {
+        message: "late".to_owned(),
+        timestamp: 0,
+    };
+    let landed = service.land(&ada, repo.id, &late, landing).await.unwrap();
+
+    assert_eq!(repo.main().await, Some(landed));
+    assert_eq!(log.chains.load(Ordering::SeqCst), 1);
+    assert_eq!(log.gets.load(Ordering::SeqCst), 0);
+    assert_eq!(repo.read("z").await.as_deref(), Some("z1\n"));
+    assert_eq!(repo.read("one").await.as_deref(), Some("x\n"));
+}
+
+/// The first-parent chain runs from `head` back to `base`, exclusive, newest first, and follows
+/// first parents only.
+pub async fn the_first_parent_chain_runs_from_head_back_to_base_exclusive<H: Deployment>() {
+    let harness = H::start().await;
+    let ada = harness.caller("ada").await;
+    let repo = harness.repository(&ada, "acme").await;
+    let first = seed(&repo, &ada, &[("a", "a0\n")]).await;
+    let mut landed = vec![first];
+    for name in ["one", "two"] {
+        let next = draft(name);
+        repo.stage(&ada, &next, &[(name, "x\n")]).await;
+        landed.push(repo.land(&ada, &next, name).await.unwrap());
+    }
+    let (one, two) = (landed[1], landed[2]);
+    let log = harness.log();
+    let mut changesets = BTreeMap::new();
+    for id in [first, one, two] {
+        changesets.insert(id, log.get(repo.id, id).await.unwrap());
+    }
+    let of = |ids: &[Address]| -> Option<Vec<Changeset>> {
+        Some(ids.iter().map(|id| changesets[id].clone()).collect())
+    };
+
+    let chain = |head, base| log.first_parent_chain(repo.id, head, base);
+    assert_eq!(
+        chain(Some(two), Some(first)).await.unwrap(),
+        of(&[two, one])
+    );
+    assert_eq!(
+        chain(Some(two), None).await.unwrap(),
+        of(&[two, one, first])
+    );
+    assert_eq!(chain(Some(two), Some(two)).await.unwrap(), Some(Vec::new()));
+    assert_eq!(chain(None, None).await.unwrap(), Some(Vec::new()));
+    // Control: a base that is not behind the head is not found, whichever way round.
+    assert_eq!(chain(Some(first), Some(two)).await.unwrap(), None);
+    assert_eq!(chain(None, Some(first)).await.unwrap(), None);
+    assert_eq!(
+        chain(Some(two), Some(Address::of(b"elsewhere")))
+            .await
+            .unwrap(),
+        None
+    );
+    let unknown = Address::of(b"unknown");
+    assert_eq!(
+        chain(Some(unknown), None).await,
+        Err(ChangesetLogError::NotFound(unknown))
+    );
+
+    // A second parent is not followed.
+    let merge = Changeset {
+        parents: vec![one, two],
+        author: "ada".to_owned(),
+        timestamp: 0,
+        message: "merge".to_owned(),
+        changes: BTreeMap::new(),
+    };
+    let merged = log.append(repo.id, merge.clone()).await.unwrap();
+    let mut expected = of(&[one]).unwrap();
+    expected.insert(0, merge);
+    assert_eq!(
+        chain(Some(merged), Some(first)).await.unwrap(),
+        Some(expected)
+    );
 }
