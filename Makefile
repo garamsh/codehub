@@ -20,10 +20,10 @@ test: services
 	cargo nextest run --workspace --exclude e2e --locked --no-tests=fail $(TEST_ARGS)
 	cargo test --doc --workspace --locked
 
-# Builds the binaries the e2e tests run, then runs the e2e package against the same services
-# and variables as `test`.
-e2e: services
-	cargo build --locked -p codehub -p ch -p codehub-runner
+# Runs the e2e package, against the same services and variables as `test`, on the binaries `build`
+# produced: a build selecting fewer packages resolves other feature sets and compiles the shared
+# dependencies again.
+e2e: build services
 	cargo nextest run -p e2e --locked --no-tests=fail -E 'not test(garam_)' $(TEST_ARGS)
 
 # The e2e tests whose names contain garam_ run against garam's published images, the garam profile
@@ -53,9 +53,9 @@ e2e-gaon:
 	sh dev/gaon/run.sh
 
 # The load harness against two codehub replicas and the check services: a smoke run of every
-# scenario in the debug build, which fails on an unexpected status or a replica that dies.
-loadtest-smoke: services
-	cargo build --locked -p codehub -p loadtest
+# scenario in the debug build, which fails on an unexpected status or a replica that dies. The
+# codehub binary it starts is the one `build` produced.
+loadtest-smoke: build services
 	cargo run --locked -p loadtest -- --scenario all --agents 4 --duration 5
 
 # The full run for the scale baseline: release binaries, 200 agents, LOADTEST_DURATION seconds per
@@ -89,7 +89,7 @@ images:
 		test "$$uid" != 0; \
 	done
 
-ci: lint format test e2e loadtest-smoke build
+ci: lint format build test e2e loadtest-smoke
 
 # Running containers are kept; pick up a changed image or configuration with
 # `make services-down` and then `make services`.
