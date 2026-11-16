@@ -26,12 +26,12 @@ name: codehub
 #
 # The services registry-bucket and registry are the profile `registry`: Distribution v3, the image
 # registry of ADR 0053, in the same project as the services above and starting after them, for the
-# e2e test e2e/tests/registry.rs (`make e2e-registry`). None starts without the profile, and
+# e2e test e2e/tests/registry.rs (`make e2e`). None starts without the profile, and
 # `docker compose --profile registry up --detach --wait --no-recreate registry` adds the two
 # without recreating any other service. The registry stores in the object store above under the
 # bucket CODEHUB_TEST_REGISTRY_BUCKET and trusts the tokens whose public key is in
 # registry-jwks.json of the directory CODEHUB_REGISTRY_E2E_DIR (made by the e2e example garam_keys;
-# set by `make e2e-registry`, defaulting to `.` so the file validates without it). Its token realm
+# set by `make e2e`, defaulting to `.` so the file validates without it). Its token realm
 # is the codehub the test starts on CODEHUB_TEST_REGISTRY_REALM_PORT.
 #
 # Images are pinned by digest (tag kept for the reader). Mover: Dependabot's
@@ -230,7 +230,7 @@ services:
       REGISTRY_AUTH_TOKEN_JWKS: /keys/registry-jwks.json
     volumes:
       - ./dev/registry/config.yml:/etc/distribution/config.yml:ro
-      - ${CODEHUB_REGISTRY_E2E_DIR:-.}:/keys:ro
+      - ${CODEHUB_REGISTRY_E2E_DIR:-.}/registry-jwks.json:/keys/registry-jwks.json:ro
     ports:
       - "127.0.0.1:18083:5000"
     depends_on:
