@@ -89,7 +89,18 @@ images:
 		test "$$uid" != 0; \
 	done
 
-ci: lint format build test e2e loadtest-smoke
+# The check services start while lint, format and build run: pulling their images and waiting for
+# them to be healthy takes as long as those three together and needs no compile, and the tests after
+# them need the services up. The three run one after another, in that order, in their own recipe.
+ci:
+	$(MAKE) -j2 services ci-compile
+	$(MAKE) test e2e loadtest-smoke
+
+.PHONY: ci-compile
+ci-compile:
+	$(MAKE) lint
+	$(MAKE) format
+	$(MAKE) build
 
 # A fast local check, not the gate: `ci` stays the whole set. It lints the workspace, which only
 # re-lints the packages changed since the last run and their dependents, and runs the tests of the
