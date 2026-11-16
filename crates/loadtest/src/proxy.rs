@@ -52,7 +52,7 @@ impl Proxy {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let origin = format!("http://{}", listener.local_addr()?);
         let shared = Arc::new(Shared {
-            http: reqwest::Client::new(),
+            http: crate::api::client(),
             upstream: upstream.trim_end_matches('/').to_owned(),
             count: AtomicU64::new(0),
         });
@@ -146,7 +146,7 @@ mod tests {
     #[tokio::test]
     async fn forwards_each_request_unchanged_and_counts_it() {
         let proxy = Proxy::start(&upstream().await).await.unwrap();
-        let client = reqwest::Client::new();
+        let client = crate::api::client();
 
         for round in 1..=3 {
             let answer = client

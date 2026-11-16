@@ -116,7 +116,7 @@ impl Bucket {
             env("CODEHUB_TEST_S3_SECRET_KEY")?,
         );
         let this = Self {
-            http: reqwest::Client::new(),
+            http: crate::api::client(),
             bucket,
             credentials,
         };
@@ -247,7 +247,7 @@ pub async fn token(client: &str, user: &str) -> Result<String, Failure> {
         "CODEHUB_TEST_KEYCLOAK_PASSWORD_{}",
         user.to_uppercase()
     ))?;
-    let answer: serde_json::Value = reqwest::Client::new()
+    let answer: serde_json::Value = crate::api::client()
         .post(format!("{issuer}/protocol/openid-connect/token"))
         .basic_auth(
             env(&format!("CODEHUB_TEST_KEYCLOAK_{client}_CLIENT_ID"))?,
@@ -284,7 +284,7 @@ pub async fn password_token(
     password: &str,
     scope: &str,
 ) -> Result<String, Failure> {
-    let answer: serde_json::Value = reqwest::Client::new()
+    let answer: serde_json::Value = crate::api::client()
         .post(url)
         .basic_auth(client_id, Some(client_secret))
         .form(&[

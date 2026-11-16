@@ -3,6 +3,7 @@
 
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use reqwest::{Client, RequestBuilder, Response};
 use serde::Deserialize;
@@ -10,6 +11,25 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::stats::{Status, succeeded};
+
+/// The longest one request may take, answer included. It is above the server's own bound on a
+/// request (60 s), so the server answers first and the harness never waits on a connection that
+/// is gone, such as one to a pod that was deleted.
+const REQUEST_BOUND: Duration = Duration::from_secs(90);
+
+/// A client whose every request is bounded; every request of the harness goes through one.
+pub fn client() -> Client {
+    bounded(REQUEST_BOUND)
+}
+
+/// A client whose every request ends within `bound`.
+fn bounded(bound: Duration) -> Client {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(bound)
+        .build()
+        .unwrap_or_default()
+}
 
 /// The client every agent shares, and the count of requests made to the API.
 pub struct Api {
@@ -21,7 +41,7 @@ impl Api {
     /// A client with a connection pool of its own.
     pub fn new() -> Self {
         Self {
-            http: Client::new(),
+            http: client(),
             requests: AtomicU64::new(0),
         }
     }
@@ -319,6 +339,23 @@ impl Session<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_request_to_a_server_that_never_answers_ends_at_its_bound() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let _held = tokio::spawn(async move {
+            let connection = listener.accept().await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            drop(connection);
+        });
+        let failure = bounded(Duration::from_millis(200))
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(failure.is_timeout());
+    }
 
     #[test]
     fn addresses_bytes_by_their_sha256_in_lowercase_hex() {
