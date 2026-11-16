@@ -619,3 +619,287 @@ async fn a_run_whose_upload_fails_reports_executor_failed_and_names_no_object() 
     assert_eq!(body["objects"], json!({"downloaded": 1, "from_cache": 0}));
     std::fs::remove_file(file).unwrap();
 }
+
+// The wire structs against the schemas of `crates/adapter-http/openapi.json`.
+
+fn document() -> Value {
+    let path = format!(
+        "{}/../adapter-http/openapi.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn resolve<'a>(document: &'a Value, schema: &'a Value) -> &'a Value {
+    match schema["$ref"].as_str() {
+        Some(reference) => resolve(
+            document,
+            document.pointer(reference.trim_start_matches('#')).unwrap(),
+        ),
+        None => schema,
+    }
+}
+
+/// An instance of `schema` that carries every property it names.
+fn instance(document: &Value, schema: &Value) -> Value {
+    let schema = resolve(document, schema);
+    if let Some(variants) = schema["oneOf"].as_array() {
+        let first = variants.iter().find(|v| v["type"] != "null").unwrap();
+        return instance(document, first);
+    }
+    if let Some(values) = schema["enum"].as_array() {
+        return values[0].clone();
+    }
+    let kind = match &schema["type"] {
+        Value::Array(kinds) => kinds.iter().find(|k| *k != "null").unwrap().clone(),
+        kind => kind.clone(),
+    };
+    match kind.as_str().unwrap() {
+        "string" if schema["pattern"].is_string() => json!(format!("sha256:{}", "0".repeat(64))),
+        "string" => json!("x"),
+        "integer" => json!(1),
+        "boolean" => json!(true),
+        "array" => json!([instance(document, &schema["items"])]),
+        "object" if schema["properties"].is_object() => Value::Object(
+            schema["properties"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(name, property)| (name.clone(), instance(document, property)))
+                .collect(),
+        ),
+        "object" => json!({"CODEHUB_DRAFT": "x"}),
+        other => panic!("{other}"),
+    }
+}
+
+/// Whether `value` fits `schema`: no property beyond the schema's, every required one present.
+fn conforms(document: &Value, value: &Value, schema: &Value) -> Result<(), String> {
+    let schema = resolve(document, schema);
+    if let Some(variants) = schema["oneOf"].as_array() {
+        return variants
+            .iter()
+            .any(|variant| conforms(document, value, variant).is_ok())
+            .then_some(())
+            .ok_or_else(|| format!("{value} fits none of {variants:?}"));
+    }
+    if let Some(values) = schema["enum"].as_array() {
+        return values
+            .contains(value)
+            .then_some(())
+            .ok_or_else(|| format!("{value} is not one of {values:?}"));
+    }
+    let kinds: Vec<&str> = match &schema["type"] {
+        Value::Array(kinds) => kinds.iter().filter_map(Value::as_str).collect(),
+        Value::String(kind) => vec![kind],
+        _ => Vec::new(),
+    };
+    let fits = |kind: &str| match kind {
+        "null" => value.is_null(),
+        "string" => value.is_string(),
+        "integer" => value.is_u64() || value.is_i64(),
+        "boolean" => value.is_boolean(),
+        "array" => value.is_array(),
+        "object" => value.is_object(),
+        _ => false,
+    };
+    if !kinds.iter().any(|kind| fits(kind)) {
+        return Err(format!("{value} is none of {kinds:?}"));
+    }
+    if let (Some(items), Some(values)) = (schema.get("items"), value.as_array()) {
+        for item in values {
+            conforms(document, item, items)?;
+        }
+    }
+    if let (Some(properties), Some(object)) = (schema["properties"].as_object(), value.as_object())
+    {
+        for name in object.keys() {
+            if !properties.contains_key(name) {
+                return Err(format!("{name} is not a property"));
+            }
+        }
+        for required in schema["required"].as_array().into_iter().flatten() {
+            let name = required.as_str().unwrap();
+            if !object.contains_key(name) {
+                return Err(format!("{name} is required"));
+            }
+        }
+        for (name, property) in properties {
+            if let Some(member) = object.get(name) {
+                conforms(document, member, property)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn assert_conforms(value: &impl Serialize, schema: &str) {
+    let document = document();
+    let schema = &document["components"]["schemas"][schema];
+    let value = serde_json::to_value(value).unwrap();
+    conforms(&document, &value, schema).unwrap_or_else(|why| panic!("{why} in {value}"));
+}
+
+#[test]
+fn the_conformance_check_refuses_what_a_schema_does_not_name() {
+    let document = document();
+    let schema = &document["components"]["schemas"]["ObjectCounts"];
+    assert!(
+        conforms(
+            &document,
+            &json!({"downloaded": 1, "from_cache": 2}),
+            schema
+        )
+        .is_ok()
+    );
+    assert!(conforms(&document, &json!({"downloaded": 1, "cached": 2}), schema).is_err());
+    assert!(conforms(&document, &json!({"downloaded": 1}), schema).is_err());
+}
+
+#[test]
+fn a_claim_is_read_as_the_schema_variant_it_matches() {
+    let document = document();
+    let schemas = &document["components"]["schemas"];
+    let answer = &document["paths"]["/v1/runner/jobs/claim"]["post"]["responses"]["200"]["content"]
+        ["application/json"]["schema"]["oneOf"];
+    assert_eq!(
+        *answer,
+        json!([{"$ref": "#/components/schemas/Job"}, {"$ref": "#/components/schemas/RunJob"}])
+    );
+    let run: WireClaim = serde_json::from_value(instance(&document, &schemas["RunJob"])).unwrap();
+    let check: WireClaim = serde_json::from_value(instance(&document, &schemas["Job"])).unwrap();
+    assert!(matches!(run, WireClaim::Run(_)));
+    assert!(matches!(check, WireClaim::Check(_)));
+    let WireClaim::Run(run) = run else { return };
+    let job = run.into_job().unwrap();
+    let run = job.run.unwrap();
+    assert_eq!(run.draft, "x");
+    assert_eq!(run.caches[0].files[0].path.to_string(), "x");
+    assert!(job.heartbeat_interval > Duration::ZERO);
+}
+
+#[test]
+fn a_claim_request_names_an_executor_the_schema_lists() {
+    let document = document();
+    let schema = &document["paths"]["/v1/runner/jobs/claim"]["post"]["requestBody"]["content"]["application/json"]
+        ["schema"];
+    for executor in ["host", "gaon"] {
+        let body = serde_json::to_value(WireClaimRequest { executor }).unwrap();
+        conforms(&document, &body, schema).unwrap();
+    }
+}
+
+#[test]
+fn a_run_report_fits_its_schema_in_every_shape() {
+    let stream = || {
+        Some(WireStream {
+            address: format!("sha256:{}", "1".repeat(64)),
+            cut: true,
+        })
+    };
+    let produced = || {
+        vec![WireProduced {
+            path: "a".into(),
+            address: format!("sha256:{}", "2".repeat(64)),
+            executable: true,
+        }]
+    };
+    let change = |change: &Change| WireChange::of(change);
+    let written = ProducedFile {
+        path: "a".parse().unwrap(),
+        address: Address::new([3; 32]),
+        executable: true,
+        bytes: Vec::new(),
+    };
+    for (status, code) in [
+        (Status::Passed, Some(0)),
+        (Status::Failed, Some(1)),
+        (Status::Failed, None),
+        (Status::TimedOut, None),
+        (Status::Cancelled, None),
+    ] {
+        for streams in [true, false] {
+            assert_conforms(
+                &WireRunReport {
+                    outcome: outcome_name(status, code),
+                    exit_code: code,
+                    stdout: if streams { stream() } else { None },
+                    stderr: if streams { stream() } else { None },
+                    objects: WireObjects::of(Some(ObjectCounts {
+                        downloaded: 1,
+                        cached: 2,
+                    })),
+                    outputs: produced(),
+                    caches: produced(),
+                    changes: vec![
+                        change(&Change::Written(written.clone())),
+                        change(&Change::Written(ProducedFile {
+                            executable: false,
+                            ..written.clone()
+                        })),
+                        change(&Change::Deleted("b".parse().unwrap())),
+                    ],
+                    refused: vec!["c".into()],
+                },
+                "RunReport",
+            );
+        }
+    }
+}
+
+#[test]
+fn a_check_result_fits_its_schema_with_and_without_counts() {
+    for status in [
+        Status::Passed,
+        Status::Failed,
+        Status::TimedOut,
+        Status::Cancelled,
+    ] {
+        for (code, objects) in [
+            (
+                Some(0),
+                Some(ObjectCounts {
+                    downloaded: 1,
+                    cached: 2,
+                }),
+            ),
+            (None, None),
+        ] {
+            assert_conforms(
+                &WireResult {
+                    status: status_name(status),
+                    exit_code: code,
+                    output_tail: "tail",
+                    outputs: vec![WireProduced {
+                        path: "a".into(),
+                        address: format!("sha256:{}", "2".repeat(64)),
+                        executable: false,
+                    }],
+                    caches: Vec::new(),
+                    objects: objects.map(|counts| WireObjects::of(Some(counts))),
+                },
+                "JobResult",
+            );
+        }
+    }
+}
+
+#[test]
+fn the_upload_request_and_grants_fit_their_schemas() {
+    assert_conforms(
+        &WireUploads {
+            files: vec![WireUpload {
+                address: format!("sha256:{}", "4".repeat(64)),
+                size: 3,
+            }],
+        },
+        "JobUploads",
+    );
+    let document = document();
+    let grants = instance(
+        &document,
+        &document["components"]["schemas"]["JobUploadGrants"],
+    );
+    let parsed: WireUploadGrants = serde_json::from_value(grants).unwrap();
+    assert_eq!(parsed.grants.len(), 1);
+}
