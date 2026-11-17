@@ -182,6 +182,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_action_is_written_as_pull_or_push_and_read_back() {
+        assert_eq!(ImageAction::Pull.as_str(), "pull");
+        assert_eq!(ImageAction::Push.as_str(), "push");
+        for action in [ImageAction::Pull, ImageAction::Push] {
+            assert_eq!(ImageAction::parse(action.as_str()), Some(action));
+        }
+    }
+
+    #[test]
     fn parses_the_organisation_and_the_repository_of_an_image_name() {
         let name: ImageName = "acme/app/web".parse().unwrap();
         assert_eq!(name.organisation().as_str(), "acme");
