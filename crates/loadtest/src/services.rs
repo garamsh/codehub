@@ -193,6 +193,9 @@ impl Replica {
             .env("CODEHUB_S3_ACCESS_KEY", env("CODEHUB_TEST_S3_ACCESS_KEY")?)
             .env("CODEHUB_S3_SECRET_KEY", env("CODEHUB_TEST_S3_SECRET_KEY")?)
             .env("CODEHUB_OIDC_ISSUER", env("CODEHUB_TEST_OIDC_ISSUER")?)
+            // One principal per scenario exceeds the default rate limit; the run measures the server (ADR 0055).
+            .env("CODEHUB_RATE_LIMIT_PER_SECOND", "5000")
+            .env("CODEHUB_RATE_LIMIT_BURST", "10000")
             .envs(settings.iter().map(|(name, value)| (*name, value)))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
