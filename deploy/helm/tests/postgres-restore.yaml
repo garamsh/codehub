@@ -10,6 +10,12 @@ spec:
   bootstrap:
     recovery:
       source: pg
+      # Stop at the end of the base backup. Without a target the recovery replays every archived WAL
+      # segment, so the restored database would hold the landings made after the backup whose objects
+      # the backup bucket does not have, and the drill would count them as dangling.
+      recoveryTarget:
+        targetImmediate: true
+        backupID: BACKUP_ID  # the script puts the barman id of backup/pg-drill here
       database: codehub
       owner: codehub
       secret:

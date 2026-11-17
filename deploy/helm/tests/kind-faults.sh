@@ -202,7 +202,8 @@ if has restore; then
 	# The objects are copied after the database backup, so they are a superset of what it refers to.
 	aws --endpoint-url "$s3_endpoint" s3 sync s3://codehub s3://codehub-backup --only-show-errors
 	load after-backup 30
-	k apply -f "$here/postgres-restore.yaml"
+	backup_id=$(k get backup/pg-drill -o jsonpath='{.status.backupId}')
+	sed "s/BACKUP_ID/$backup_id/" "$here/postgres-restore.yaml" | k apply -f -
 	# The full recovery replays the WAL of every earlier scenario from the bucket; it took 9 minutes in a run, and two replicas follow it.
 	k wait --for=condition=Ready cluster/pg-restored --timeout=25m
 	aws --endpoint-url "$s3_endpoint" s3 sync s3://codehub-backup s3://codehub-restored --only-show-errors
