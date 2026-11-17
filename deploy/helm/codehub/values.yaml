@@ -1,0 +1,248 @@
+# Values of the codehub chart. A secret value is never a value here: every credential is named as
+# a Secret that already exists in the release's namespace, and the chart reads it by name and key.
+
+image:
+  repository: codehub/server
+  # The server image's tag; the chart's appVersion where empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Settings of the server, every one a CODEHUB_ variable (docs/guide/deployment.md). Each role takes
+# the ones it uses and ignores the rest, so one list serves every role. The chart sets the
+# listening address, PostgreSQL and the object store from the sections below; anything else,
+# the identity and authorisation settings among them, is given here.
+config: {}
+# Settings that are secrets, each read from a Secret: [{name: CODEHUB_..., secretName: ..., key: ...}].
+secretEnv: []
+
+postgres:
+  # The Secret holding the URL of the writable primary: one host, or a multi-host URL.
+  urlSecret: {name: "", key: url}
+  # The Secret holding the URL `codehub migrate` uses. A transaction-mode pooler cannot hold the
+  # session advisory lock the migrations take, so this is a direct connection; it is urlSecret
+  # where it names no Secret.
+  migrateUrlSecret: {name: "", key: url}
+  # The Secret holding the URL of a read replica; none where it names no Secret.
+  readUrlSecret: {name: "", key: url}
+  # Prepared statements each connection keeps (the server's default, 100, where unset). Behind a
+  # pooler in transaction mode it must be 1 or more and the pooler must track prepared statements
+  # (PgBouncer 1.21 or later, max_prepared_statements above 0, and ignore_startup_parameters
+  # including options); 0 is for a direct connection or a session-mode pooler. The acquire timeout
+  # (CODEHUB_POSTGRES_ACQUIRE_TIMEOUT, 5 s) and the statement timeout (CODEHUB_POSTGRES_STATEMENT_TIMEOUT,
+  # 30 s) are set through config.
+  statementCache: null
+  # Connections each pod holds. The sum over every pod that can run at once must stay below
+  # PostgreSQL's max_connections (ADR 0037), which is 100 by default and is shared with the
+  # migrate Job, the operator and anything else that connects: replicas times poolSize, summed over
+  # api, runnerApi and worker, at their autoscaler's maximum where it is enabled. At the defaults
+  # that is 5 pods x 10 = 50; with all three autoscalers on, at 10 + 10 + 3 pods it is 230, which
+  # needs a larger max_connections, a pooler in front of PostgreSQL, or a smaller poolSize.
+  poolSize: 10
+
+s3:
+  endpoint: ""
+  region: ""
+  bucket: ""
+  accessKey: ""
+  secretKeySecret: {name: "", key: secret-key}
+
+# The three roles of the server. Each is a Deployment with its own Service, replicas, resources,
+# autoscaler, disruption budget, anti-affinity and probes.
+api:
+  enabled: true
+  replicas: 2
+  resources:
+    requests: {cpu: 250m, memory: 256Mi}
+    limits: {memory: 512Mi}
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: true
+    # Exactly one of the two is used; minAvailable where it is set.
+    minAvailable: 1
+    maxUnavailable: null
+  # "soft" prefers another node for each replica, "hard" requires it, "" sets no rule.
+  antiAffinity: soft
+  service: {type: ClusterIP, port: 8080, nodePort: null}
+  # Seconds a pod gets to finish its requests after SIGTERM.
+  terminationGracePeriodSeconds: 60
+  probes:
+    startup: {periodSeconds: 2, failureThreshold: 60}
+    liveness: {periodSeconds: 10, failureThreshold: 3}
+    readiness: {periodSeconds: 5, failureThreshold: 2}
+  extraEnv: []
+  nodeSelector: {}
+  tolerations: []
+  podAnnotations: {}
+
+runnerApi:
+  enabled: true
+  replicas: 2
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 512Mi}
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+    maxUnavailable: null
+  antiAffinity: soft
+  service: {type: ClusterIP, port: 8080, nodePort: null}
+  # A runner's claim holds a request open for CODEHUB_RUNNER_CLAIM_HOLD seconds, so a pod gets longer.
+  terminationGracePeriodSeconds: 90
+  probes:
+    startup: {periodSeconds: 2, failureThreshold: 60}
+    liveness: {periodSeconds: 10, failureThreshold: 3}
+    readiness: {periodSeconds: 5, failureThreshold: 2}
+  extraEnv: []
+  nodeSelector: {}
+  tolerations: []
+  podAnnotations: {}
+
+worker:
+  enabled: true
+  replicas: 1
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 256Mi}
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+    maxUnavailable: null
+  antiAffinity: soft
+  # The worker serves only its probes and its metrics, on this port; it has no Service.
+  service: {port: 8080}
+  terminationGracePeriodSeconds: 30
+  probes:
+    startup: {periodSeconds: 2, failureThreshold: 60}
+    liveness: {periodSeconds: 10, failureThreshold: 3}
+    readiness: {periodSeconds: 5, failureThreshold: 2}
+  extraEnv: []
+  nodeSelector: {}
+  tolerations: []
+  podAnnotations: {}
+
+# `codehub migrate`, a Job that runs before an install and before an upgrade, so a new version's
+# pods find the schema they need.
+migrate:
+  enabled: true
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 256Mi}
+
+# Routes /v1/runner/ to runner-api and every other path to api. Off where the cluster has its own routing.
+ingress:
+  enabled: false
+  className: ""
+  # The runner routes (/v1/runner/) need the controller to pass bodies up to 64 MiB (ADR 0055): a
+  # result or an upload list over the controller's limit is refused before the server sees it and
+  # the job is lost at its lease. Set the controller's body limit to at least that; for
+  # ingress-nginx, nginx.ingress.kubernetes.io/proxy-body-size: 64m. ci/full.yaml sets it.
+  annotations: {}
+  host: ""
+  tls: []
+
+# Scrape annotations on every pod of every role.
+metrics:
+  annotations: true
+
+# CNCF Distribution, the image registry (ADR 0053). Its replicas share one http.secret, so an
+# upload begun on one finishes on another, and keep no state besides the bucket.
+registry:
+  enabled: false
+  image:
+    repository: distribution/distribution
+    tag: "3.1.2"
+    digest: sha256:d106962e6fe3fa69c178cec77eeeee5edb626b8df6535b7bd6b95e658a0a5ca9
+  replicas: 2
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 512Mi}
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+    maxUnavailable: null
+  antiAffinity: soft
+  service: {type: ClusterIP, port: 5000, nodePort: null}
+  # The bucket of images, a bucket of its own, and the credentials the registry stores with.
+  storage:
+    endpoint: ""
+    region: ""
+    bucket: ""
+    accessKey: ""
+    secretKeySecret: {name: "", key: secret-key}
+    # MinIO and most other S3-compatible stores address a bucket by path.
+    pathStyle: true
+  # The Secret holding the shared http.secret.
+  httpSecret: {name: "", key: http-secret}
+  # The Secret holding the signing key and the JWKS made from it: the PEM codehub signs with, and
+  # the JWKS the registry trusts. The key's id is the `kid` of the JWKS entry.
+  keySecret: {name: "", pemKey: signing.pem, jwksKey: jwks.json}
+  keyId: ""
+  # The token service: the realm a client is sent to, which a client reaches (it is codehub's
+  # /v1/registry/token), the service name and the issuer of the tokens.
+  realm: ""
+  tokenService: codehub-registry
+  issuer: codehub
+  nodeSelector: {}
+  tolerations: []
+
+# An example of a runner as a Deployment (ADR 0034): it polls the server's runner API and runs
+# jobs with the host driver. Its principal must be registered as a runner of the organisation.
+runner:
+  enabled: false
+  image:
+    repository: codehub/runner
+    tag: ""
+  replicas: 1
+  resources:
+    requests: {cpu: 500m, memory: 512Mi}
+    limits: {memory: 2Gi}
+  # The server's base URL; the chart's runner-api Service where empty.
+  server: ""
+  # The OAuth client-credentials grant: the token endpoint, the client id and the Secret holding the client secret.
+  tokenEndpoint: ""
+  clientId: ""
+  clientSecretSecret: {name: "", key: client-secret}
+  extraEnv: []
+  nodeSelector: {}
+  tolerations: []
+
+# An example of a KEDA ScaledObject that scales the runner Deployment on the queue depth, the
+# number of jobs waiting for a runner, which the worker role reports. It needs KEDA and a
+# Prometheus that scrapes the pods.
+keda:
+  enabled: false
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 300
+  prometheus:
+    serverAddress: ""
+    # Jobs queued (ADR 0056's codehub_queue_depth, kind "job"). Every worker pod reports the whole
+    # backlog, not a share of it, so the query takes the depth of the one pod that reports the most
+    # (summed over its label sets) and does not add the pods up. It assumes the scrape labels each
+    # series with the pod it came from, as a scrape by pod annotation does.
+    query: max(sum by (pod) (codehub_queue_depth{kind="job"}))
+    # Jobs one runner replica is meant to have waiting.
+    threshold: "2"

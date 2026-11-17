@@ -6,6 +6,7 @@ mod api;
 mod cpu;
 mod host;
 mod proxy;
+mod remote;
 mod scenario;
 mod services;
 mod stats;
@@ -101,6 +102,8 @@ struct Cli {
     /// Also write the figures, the commit and the machine to this file as JSON.
     #[arg(long)]
     json: Option<PathBuf>,
+    #[command(flatten)]
+    remote: remote::Options,
 }
 
 #[derive(Serialize)]
@@ -120,6 +123,15 @@ struct Output<'a> {
 }
 
 async fn run(cli: &Cli) -> Result<bool, Failure> {
+    if cli.remote.print_token {
+        return remote::print_token(&cli.remote).await;
+    }
+    if let Some(path) = &cli.remote.verify {
+        return remote::verify(&cli.remote, path).await;
+    }
+    if cli.remote.server.is_some() {
+        return remote::run(&cli.remote, cli.agents, cli.duration.unwrap_or(10)).await;
+    }
     let binary = std::env::current_exe()?.with_file_name("codehub");
     if !binary.exists() {
         return Err(Failure::new(format!(
@@ -171,7 +183,9 @@ async fn main() -> ExitCode {
     match run(&Cli::parse()).await {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => {
-            eprintln!("loadtest: an operation answered a status the scenario does not expect");
+            eprintln!(
+                "loadtest: the run did not pass (an unexpected status, a lost landing or a recovery too slow)"
+            );
             ExitCode::FAILURE
         }
         Err(failure) => {

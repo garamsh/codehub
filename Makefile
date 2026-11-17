@@ -115,7 +115,31 @@ images:
 # them need the services up. The three run one after another, in that order, in their own recipe.
 ci:
 	$(MAKE) -j2 services ci-compile
+	$(MAKE) helm-check
 	$(MAKE) test e2e test-pg-modes loadtest-smoke
+
+# Lints the chart (deploy/helm/codehub) and renders it for each set of values in its ci/ directory,
+# and reports how many sets and objects. A set that renders no object fails.
+.PHONY: helm-check
+helm-check:
+	set -eu; \
+	cases=0; objects=0; \
+	for values in deploy/helm/codehub/ci/*.yaml; do \
+		helm lint --strict deploy/helm/codehub -f $$values; \
+		count=$$(helm template codehub deploy/helm/codehub -f $$values | grep -c '^kind:'); \
+		test "$$count" -gt 0; \
+		cases=$$((cases + 1)); objects=$$((objects + count)); \
+	done; \
+	echo "helm-check: $$cases sets of values linted and rendered, $$objects objects"; \
+	test "$$cases" -gt 0
+
+# The fault runs of the chart in a kind cluster (deploy/helm/tests, ADR 0057). Not part of `ci`: it
+# takes long and needs kind; the kind-faults workflow runs it on demand.
+.PHONY: kind-faults
+kind-faults:
+	$(MAKE) images
+	cargo build -p loadtest --locked
+	deploy/helm/tests/kind-faults.sh
 
 .PHONY: ci-compile
 ci-compile:
