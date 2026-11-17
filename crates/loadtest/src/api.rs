@@ -3,6 +3,7 @@
 
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use reqwest::{Client, RequestBuilder, Response};
 use serde::Deserialize;
@@ -10,6 +11,25 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::stats::{Status, succeeded};
+
+/// The longest one request may take, answer included. It is above the server's own bound on a
+/// request (60 s), so the server answers first and the harness never waits on a connection that
+/// is gone, such as one to a pod that was deleted.
+const REQUEST_BOUND: Duration = Duration::from_secs(90);
+
+/// A client whose every request is bounded; every request of the harness goes through one.
+pub fn client() -> Client {
+    bounded(REQUEST_BOUND)
+}
+
+/// A client whose every request ends within `bound`.
+fn bounded(bound: Duration) -> Client {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(bound)
+        .build()
+        .unwrap_or_default()
+}
 
 /// The client every agent shares, and the count of requests made to the API.
 pub struct Api {
@@ -21,7 +41,7 @@ impl Api {
     /// A client with a connection pool of its own.
     pub fn new() -> Self {
         Self {
-            http: Client::new(),
+            http: client(),
             requests: AtomicU64::new(0),
         }
     }
@@ -86,10 +106,31 @@ pub struct Landing {
     pub status: Status,
     /// A 409 that says `main` moved while landing.
     pub lost_swap: bool,
+    /// The changeset the landing was acknowledged with; none where it was not.
+    pub changeset: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Landed {
+    changeset: String,
+}
+
+/// One version of a file, as `history` lists it.
+#[derive(Deserialize)]
+pub struct Version {
+    /// The changeset that made the version.
+    pub changeset: String,
+    /// The address of the version's content.
+    pub content: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct History {
+    versions: Vec<Version>,
 }
 
 /// The address of `bytes`: `sha256:` and the digest in lowercase hex.
-fn address(bytes: &[u8]) -> String {
+pub fn address(bytes: &[u8]) -> String {
     let mut address = String::from("sha256:");
     for byte in Sha256::digest(bytes) {
         // Writing to a String does not fail.
@@ -195,9 +236,22 @@ impl Session<'_> {
             return Landing {
                 status: 0,
                 lost_swap: false,
+                changeset: None,
             };
         };
         let status = answer.status().as_u16();
+        if succeeded(status) {
+            let changeset = answer
+                .json::<Landed>()
+                .await
+                .ok()
+                .map(|landed| landed.changeset);
+            return Landing {
+                status,
+                lost_swap: false,
+                changeset,
+            };
+        }
         let detail = if status == 409 {
             answer.json::<Problem>().await.map(|problem| problem.detail)
         } else {
@@ -206,6 +260,7 @@ impl Session<'_> {
         Landing {
             status,
             lost_swap: detail.is_ok_and(|detail| is_lost_swap(&detail)),
+            changeset: None,
         }
     }
 
@@ -243,6 +298,25 @@ impl Session<'_> {
             .map_or(0, |answer| answer.status().as_u16())
     }
 
+    /// The versions of the file at `path`, newest first, with the status that ended the request.
+    pub async fn versions(&self, path: &str) -> (Status, Vec<Version>) {
+        let request = self
+            .api
+            .http
+            .get(self.repository_url(&format!("history/{path}")));
+        let Some(answer) = self.send(request).await else {
+            return (0, Vec::new());
+        };
+        let status = answer.status().as_u16();
+        if !succeeded(status) {
+            return (status, Vec::new());
+        }
+        match answer.json::<History>().await {
+            Ok(history) => (status, history.versions),
+            Err(_) => (0, Vec::new()),
+        }
+    }
+
     /// Sends `body` as the JSON of a request of `method` to `url` below the API root, for the
     /// administration a scenario sets up with; the answer is `None` where it got none.
     pub async fn administer(
@@ -265,6 +339,23 @@ impl Session<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_request_to_a_server_that_never_answers_ends_at_its_bound() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let _held = tokio::spawn(async move {
+            let connection = listener.accept().await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            drop(connection);
+        });
+        let failure = bounded(Duration::from_millis(200))
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(failure.is_timeout());
+    }
 
     #[test]
     fn addresses_bytes_by_their_sha256_in_lowercase_hex() {

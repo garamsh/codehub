@@ -1,0 +1,38 @@
+# Dex with dev/dex/config.yaml (the ConfigMap dex-config, made by the run with the issuer of this
+# cluster), reachable on the nodes at 30556.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dex
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dex}
+  template:
+    metadata:
+      labels: {app: dex}
+    spec:
+      containers:
+        - name: dex
+          image: ghcr.io/dexidp/dex:v2.46.1@sha256:65b72ca0f4b0bf6d4ada84ec21da8851782563404ac7b8f926923d27ceced9ab
+          command: [dex, serve, /etc/dex/config.yaml]
+          ports:
+            - containerPort: 5556
+          readinessProbe:
+            httpGet: {path: /healthz/ready, port: 5558}
+          volumeMounts:
+            - {name: config, mountPath: /etc/dex}
+      volumes:
+        - name: config
+          configMap:
+            name: dex-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dex
+spec:
+  type: NodePort
+  selector: {app: dex}
+  ports:
+    - {port: 5556, targetPort: 5556, nodePort: 30556}

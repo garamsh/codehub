@@ -7,12 +7,15 @@ This file is the contract between codehub and whoever declares its deployment. I
 ## Contents
 - Images
 - Server roles
+- Kubernetes
 - Server settings
 - Runner options
 - Checking an executor
 - The runner on gaon
 - What the server needs
+- PostgreSQL
 - Health
+- Telemetry
 - How the runner reaches the server
 
 ## Images
@@ -47,18 +50,40 @@ The server binary runs as one role, named by its first argument (ADR 0052). The 
 - Each role takes only the options its row in the table below lists, and refuses another with exit code 2. An environment variable of an option a role does not take is ignored.
 - `api` and `runner-api` serve the probes below on the listening address, as `worker` does for its own.
 
+## Kubernetes
+
+`deploy/helm/codehub` deploys the `api`, `runner-api` and `worker` roles as Deployments, runs `codehub migrate` as a pre-install and pre-upgrade Job on a direct PostgreSQL URL (`postgres.migrateUrlSecret`), and installs neither PostgreSQL nor the object store. Every credential is an existing Secret named by `name` and `key`. Behind a transaction-mode pooler set `postgres.statementCache` to 1 or more and run the pooler with `max_prepared_statements` above 0 and `ignore_startup_parameters` holding `options` (ADR 0054). `terminationGracePeriodSeconds` must exceed `CODEHUB_SHUTDOWN_DEADLINE_SECONDS`, or the chart fails to render. The runner routes need the ingress to pass request bodies up to 64 MiB (ADR 0055; for ingress-nginx, `nginx.ingress.kubernetes.io/proxy-body-size: 64m`). `/metrics` is scraped by pod annotation. A restore must take the database to a point no later than the copy of the objects, the base backup's consistency point or a target time at or before the object copy: replaying all archived WAL past the object copy leaves landings that refer to missing objects (ADR 0057). `make helm-check` checks the chart; `make kind-faults` runs the fault runs, which `make ci` does not; they need docker, kind, kubectl, helm, crane and the AWS CLI, and public DNS for the registry's token realm (ADR 0057).
+
 ## Server settings
 
 Every setting is an option and a variable of the same name, the option's name upper-cased with the prefix `CODEHUB_`. A variable and the option both given: the option wins. A secret is marked `yes` below, and its value is hidden in the help output and in the server's configuration output.
 
-The roles that serve listen on `127.0.0.1:8080` unless `CODEHUB_LISTEN` says otherwise, so in a container set it to an address that is reachable, such as `0.0.0.0:8080`. It stops on SIGTERM or SIGINT after finishing the requests in flight.
+The roles that serve listen on `127.0.0.1:8080` unless `CODEHUB_LISTEN` says otherwise, so in a container set it to an address that is reachable, such as `0.0.0.0:8080`. On SIGTERM or SIGINT it answers `/readyz` with 503 for a fifth of `CODEHUB_SHUTDOWN_DEADLINE_SECONDS` (at most 5 s), then stops accepting and finishes the requests in flight, for at most the deadline from the signal.
 
 | Option | Variable | Secret | Roles | Purpose |
 |---|---|---|---|---|
 | `--listen` | `CODEHUB_LISTEN` | no | api, runner-api, worker, all | The address to listen on. |
 | `--postgres-url` | `CODEHUB_POSTGRES_URL` | yes | api, runner-api, worker, migrate, all | The PostgreSQL database holding the metadata. |
 | `--postgres-pool-size` | `CODEHUB_POSTGRES_POOL_SIZE` | no | api, runner-api, worker, migrate, all | Connections each server process holds; the sum over processes stays below PostgreSQL's `max_connections` (ADR 0037). |
+| `--postgres-acquire-timeout` | `CODEHUB_POSTGRES_ACQUIRE_TIMEOUT` | no | api, runner-api, worker, migrate, all | Seconds taking a connection from the pool waits before the request fails; 1 to 3600, default 5. |
+| `--postgres-statement-timeout` | `CODEHUB_POSTGRES_STATEMENT_TIMEOUT` | no | api, runner-api, worker, migrate, all | Seconds one statement may run before PostgreSQL cancels it; 0 sets no limit, default 30. Sent as a startup option; behind PgBouncer set `ignore_startup_parameters=options` and set it on the role. Needs no privilege. |
+| `--postgres-statement-cache` | `CODEHUB_POSTGRES_STATEMENT_CACHE` | no | api, runner-api, worker, migrate, all | Prepared statements kept per connection, default 100. Behind a transaction-mode pooler it must be 1 or more and the pooler must track prepared statements (PgBouncer 1.21 or later, `max_prepared_statements` above it). 0 sends every statement unnamed, for a direct connection or a session-mode pooler; it fails behind a transaction pooler (ADR 0054). |
+| `--postgres-read-url` | `CODEHUB_POSTGRES_READ_URL` | yes | api, runner-api, all | A read replica; serves only immutable address-keyed reads, a miss is read from the primary. Unset serves every read from the primary. |
+| `--postgres-migrate-url` | `CODEHUB_POSTGRES_MIGRATE_URL` | yes | migrate, all | The URL migrations use, a direct connection to the primary where the main URL is a pooler (migrations take a session advisory lock). Unset uses `--postgres-url`. |
 | `--landing-attempts` | `CODEHUB_LANDING_ATTEMPTS` | no | api, runner-api, all | How often a landing is tried while `main` moves under it (ADR 0036). |
+| `--log-format` | `CODEHUB_LOG_FORMAT` | no | api, runner-api, worker, migrate, all | How a log line is written on standard output: `json` (one object per line, the default) or `text` (ADR 0056). |
+| `--log-filter` | `CODEHUB_LOG` | no | api, runner-api, worker, migrate, all | Which log lines are kept: a level (`info` by default), or `target=level` directives separated by commas; it does not filter the exported spans (ADR 0056). |
+| `--backlog-interval` | `CODEHUB_BACKLOG_INTERVAL` | no | worker, all | Seconds, 1 to 120, between reads of the queue depth and age and the directory outbox size, 15 by default (ADR 0056). |
+| `--rate-limit-per-second` | `CODEHUB_RATE_LIMIT_PER_SECOND` | no | api, runner-api, all | Requests a second each caller of the user API may make, per process (default 100); runner routes are not limited (ADR 0055). |
+| `--rate-limit-burst` | `CODEHUB_RATE_LIMIT_BURST` | no | api, runner-api, all | Requests a caller may make at once before the rate applies (default 200). |
+| `--max-body-size` | `CODEHUB_MAX_BODY_SIZE` | no | api, runner-api, all | The largest request body in bytes, default 1048576; larger is answered 413. |
+| `--request-timeout-seconds` | `CODEHUB_REQUEST_TIMEOUT_SECONDS` | no | api, runner-api, all | Seconds a request may take before 503, default 60, 1 to 3600; the claim and the landing are exempt. |
+| `--max-in-flight` | `CODEHUB_MAX_IN_FLIGHT` | no | api, runner-api, all | Requests served at once by a process, default 512; one more is answered 503 with `Retry-After`. |
+| `--identity-timeout-seconds` | `CODEHUB_IDENTITY_TIMEOUT_SECONDS` | no | api, runner-api, all | Seconds a request to the identity provider may take, default 10, 1 to 3600. |
+| `--s3-connect-timeout-seconds` | `CODEHUB_S3_CONNECT_TIMEOUT_SECONDS` | no | api, runner-api, all | Seconds connecting to the object store may take, default 3, 1 to 3600. |
+| `--s3-timeout-seconds` | `CODEHUB_S3_TIMEOUT_SECONDS` | no | api, runner-api, all | Seconds a request to the object store waits for its response to start and then for each next byte, default 10, 1 to 3600; a transfer as a whole has no bound. |
+| `--authzen-timeout-seconds` | `CODEHUB_AUTHZEN_TIMEOUT_SECONDS` | no | api, runner-api, worker, all | Seconds a request to the decision point, garam or the token endpoint may take, default 10, 1 to 14 (four of them, one entry's delivery, stay inside the relay's lease of 60 s). |
+| `--shutdown-deadline-seconds` | `CODEHUB_SHUTDOWN_DEADLINE_SECONDS` | no | api, runner-api, worker, all | Seconds a stopping process lets requests in flight finish, default 25, 1 to 3600; then it drops them. Keep it under the pod's grace period. |
 | `--runner-claim-hold` | `CODEHUB_RUNNER_CLAIM_HOLD` | no | runner-api, all | Seconds a runner's claim waits for a job. |
 | `--runner-heartbeat-interval` | `CODEHUB_RUNNER_HEARTBEAT_INTERVAL` | no | runner-api, all | Seconds between the heartbeats runners are told to send. |
 | `--runner-lease` | `CODEHUB_RUNNER_LEASE` | no | runner-api, all | Seconds a claim or heartbeat holds a job; it must exceed the heartbeat interval or the server refuses to start. |
@@ -93,6 +118,10 @@ The roles that serve listen on `127.0.0.1:8080` unless `CODEHUB_LISTEN` says oth
 | `--directory-changes` | `CODEHUB_DIRECTORY_CHANGES` | no | api, worker, all | Where repository and organisation changes go: `none` (default) or `garam`, garam's `ApplyEntityChanges` with the organisation's token. `garam` needs `CODEHUB_AUTHZEN_PROFILE=grn`, or the server refuses to start (ADR 0044). `none` accepts and discards every entry the outbox holds, so enable `garam` before creating any repository garam must know: one created under `none` is never sent later. |
 | `--directory-garam-url` | `CODEHUB_DIRECTORY_GARAM_URL` | no | api, worker, all | The base URL of garam's policy service, which the entity changes are sent to; required with `garam`. |
 | `--directory-delivery-wait` | `CODEHUB_DIRECTORY_DELIVERY_WAIT` | no | api, all | Seconds, at most 3600, creating a repository waits for its change to reach the receiver, 2 by default; the creation is answered either way, and an undelivered change is retried. |
+| `--registry-issuer` | `CODEHUB_REGISTRY_ISSUER` | no | api, all | The `iss` of the tokens the registry's token endpoint issues, which the registry's `auth.token.issuer` names. The endpoint is on where all four `registry` settings are given and answers 404 where none is; some but not all stops the server. |
+| `--registry-service` | `CODEHUB_REGISTRY_SERVICE` | no | api, all | The `aud` of the tokens, the registry's `auth.token.service`; a request for another service is a 400. |
+| `--registry-key-file` | `CODEHUB_REGISTRY_KEY_FILE` | no | api, all | The file holding the PEM PKCS#8 ES256 (P-256) private key the tokens are signed with; the registry trusts a JWKS made from its public half. The path is not a secret, the file's content is. |
+| `--registry-key-id` | `CODEHUB_REGISTRY_KEY_ID` | no | api, all | The `kid` of the key, which the registry's JWKS names it by. |
 
 ## Runner options
 
@@ -137,16 +166,25 @@ Egress and ingress are the cluster's. A job's MicroVM must reach the object stor
   The identity needs `s3:ListBucket` on the bucket as well as object access: without it, S3 answers a missing key with 403, and `/readyz` stays 503.
 - **An identity issuer** the server verifies tokens against, as `CODEHUB_IDENTITY` selects (`docs/architecture/access.md`), and, in the external mode, an AuthZEN decision point.
 
+## PostgreSQL
+
+List every host of a cluster in `CODEHUB_POSTGRES_URL` with `target_session_attrs=read-write`, or front the cluster with a proxy and list one; after a failover `/readyz` is 503 until a primary answers, and requests wait up to about 20 seconds. Zero loss of an acknowledged landing needs synchronous replication (`synchronous_standby_names`) on the primary. Failover tooling must clear or reconfigure `synchronous_standby_names` on the promoted node before it takes writes: left as it was, with no standby to acknowledge, every commit waits for ever and every landing hangs. The role codehub connects as needs `pg_signal_backend` for the swap settle to stop a statement still running after a connection failure. The sum of pool sizes now includes the replica pool, the same size as the primary's and opened lazily, against the replica's own `max_connections`; each process also holds one connection for the supervisor.
+
 ## Health
 
-Every role that serves (`api`, `runner-api`, `worker` and `all`) answers both probes on its listening address. They are unauthenticated and sit outside `/v1`.
+Every role that serves (`api`, `runner-api`, `worker` and `all`) answers both probes and `GET /metrics` on its listening address. They are unauthenticated and sit outside `/v1`.
 
 | Probe | Path | Answers |
 |---|---|---|
 | Liveness | `GET /healthz` | 200 while the process serves requests; depends on nothing. |
-| Readiness | `GET /readyz` | 200 where PostgreSQL answers within 2 seconds with a schema at least as new as the binary's latest migration, and, for `api`, `runner-api` and `all`, the object store answers within 2 seconds; otherwise 503, with a problem detail naming the one that did not. `api`, `runner-api` and `worker` do not migrate, so on a database that `migrate` has not brought forward they stay not ready; a newer schema is accepted, so a rolling upgrade can run the old binary beside the new one. A missing bucket is not detected: the probe asks for an object, and a 404 for it is an answer whether the object or the bucket is missing. |
+| Readiness | `GET /readyz` | 200 where PostgreSQL answers within 2 seconds with a schema at least as new as the binary's latest migration, and, for `api`, `runner-api` and `all`, the object store answers within 2 seconds; otherwise 503, with a problem detail naming the one that did not. PostgreSQL answers only where the server it uses is a writable primary, `pg_is_in_recovery()` false (ADR 0054), and a process that is stopping answers 503 for its drain notice (ADR 0055). `api`, `runner-api` and `worker` do not migrate, so on a database that `migrate` has not brought forward they stay not ready; a newer schema is accepted, so a rolling upgrade can run the old binary beside the new one. A missing bucket is not detected: the probe asks for an object, and a 404 for it is an answer whether the object or the bucket is missing. |
+| Metrics | `GET /metrics` | The Prometheus text format: request, landing gate, outbound call, queue and database pool metrics (ADR 0056). Unauthenticated and outside `/v1`; the queue and outbox gauges come from `worker` and `all` only. |
 
 With the host driver the runner serves no port; with the gaon driver it serves only the result listener, which is not a probe. Either way it has no probe.
+
+## Telemetry
+
+Spans are exported only where the environment names an OTLP endpoint: `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`). `OTEL_EXPORTER_OTLP_PROTOCOL` is `http/protobuf` (the default) or `http/json`; gRPC and TLS are not built in. `OTEL_SERVICE_NAME` names the service (`codehub` by default), and the other `OTEL_*` variables the OpenTelemetry SDK reads apply. A log line names its `trace_id` whether or not spans are exported. The runner sends a `traceparent` header with each call to the server, and the server continues the trace of an incoming `traceparent` before authenticating the caller. The queue gauges show the runner label sets of queued work, which tenants choose: at most 16 per kind, the rest as `other`.
 
 ## How the runner reaches the server
 

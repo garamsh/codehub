@@ -227,6 +227,39 @@ async fn refuses_a_run_grant_with_a_prefix_and_gives_one_for_the_whole_repositor
 }
 
 #[tokio::test]
+async fn refuses_an_image_grant_with_a_prefix_and_gives_one_for_the_whole_repository() {
+    let api = Api::new();
+    let ada = api.token("ada");
+    api.repository(&ada, "acme").await;
+    add_member(&api, &ada, "acme", "bob", "member").await;
+    let image_grant = |access: &'static str, prefix: &'static str| {
+        let (api, ada) = (&api, &ada);
+        async move {
+            api.send(
+                Method::PUT,
+                "/v1/orgs/acme/repos/app/grants",
+                Some(ada),
+                Some(json!({
+                    "issuer": "https://id.test",
+                    "subject": "bob",
+                    "prefix": prefix,
+                    "access": access,
+                })),
+            )
+            .await
+        }
+    };
+
+    for access in ["image_pull", "image_push"] {
+        let refused = image_grant(access, "src").await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+        assert_eq!(refused.content_type, PROBLEM);
+        // The control: the same grant for the whole repository is given.
+        assert_eq!(image_grant(access, "").await.status, StatusCode::NO_CONTENT);
+    }
+}
+
+#[tokio::test]
 async fn names_the_paths_of_a_landing_the_caller_may_not_write() {
     let api = Api::new();
     let ada = api.token("ada");
@@ -700,8 +733,10 @@ async fn documents_no_request_body_on_a_delete_operation() {
 async fn documents_every_route_and_routes_every_documented_operation() {
     let routed: BTreeSet<(String, String)> = adapter_http::ROUTES
         .iter()
+        .chain(adapter_http::REGISTRY_ROUTES)
         .chain(adapter_http::RUNNER_ROUTES)
         .chain(adapter_http::HEALTH_ROUTES)
+        .chain(adapter_http::METRICS_ROUTES)
         .flat_map(|(path, methods)| {
             methods
                 .iter()
@@ -724,6 +759,11 @@ async fn documents_every_route_and_routes_every_documented_operation() {
         }
         uri.push_str(rest);
         let method = Method::from_bytes(method.to_uppercase().as_bytes()).unwrap();
+        if uri == "/metrics" {
+            // Its body is text, not JSON: the scrape test below reads it.
+            assert_eq!(scrape("/metrics").await.0, StatusCode::OK);
+            continue;
+        }
         let probe = uri == "/healthz" || uri == "/readyz";
         let reply = if probe {
             send(health(None), method.clone(), &uri, None, None).await
@@ -742,6 +782,58 @@ async fn documents_every_route_and_routes_every_documented_operation() {
     let unknown = api.send(Method::GET, "/v1/nothing", None, None).await;
     assert_eq!(unknown.status, StatusCode::NOT_FOUND);
     assert_eq!(unknown.content_type, PROBLEM);
+}
+
+/// A scrape that renders a fixed text.
+#[cfg(test)]
+struct Rendered(&'static str);
+
+#[cfg(test)]
+impl adapter_http::Scrape for Rendered {
+    fn render(&self) -> String {
+        self.0.to_owned()
+    }
+}
+
+/// The status, content type and text of a GET of `uri` from the `/metrics` router, sent with no
+/// token.
+#[cfg(test)]
+async fn scrape(uri: &str) -> (StatusCode, String, String) {
+    use tower::ServiceExt;
+    let router = adapter_http::metrics_router(Arc::new(Rendered("codehub_up 1\n")));
+    let request = axum::http::Request::builder()
+        .uri(uri)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .map(|value| value.to_str().unwrap().to_owned())
+        .unwrap_or_default();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        content_type,
+        String::from_utf8(bytes.to_vec()).unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn serves_the_scrape_outside_v1_without_a_token_and_only_from_its_router() {
+    let (status, content_type, text) = scrape("/metrics").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.starts_with("text/plain"), "{content_type}");
+    assert_eq!(text, "codehub_up 1\n");
+
+    // The controls: the API routers do not serve it, and a `/v1` path is not the scrape.
+    let api = Api::new();
+    let absent = api.send(Method::GET, "/metrics", None, None).await;
+    assert_eq!(absent.status, StatusCode::NOT_FOUND);
+    assert_eq!(scrape("/v1/metrics").await.0, StatusCode::NOT_FOUND);
 }
 
 /// Readiness that holds, or fails with `reason`.

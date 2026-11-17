@@ -10,6 +10,7 @@ pub mod draft;
 pub mod encoding;
 pub mod file;
 pub mod file_version;
+pub mod image;
 pub mod job;
 pub mod merge;
 pub mod name;

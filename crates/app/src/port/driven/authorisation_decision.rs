@@ -26,6 +26,12 @@ pub enum Action {
     /// Run a command on a runner against the caller's workspace (ADR 0051); asked of a
     /// [`Resource::Repository`]. Neither `Read` nor `Write` includes it.
     Run,
+    /// Pull images of the repository from the registry (ADR 0053); asked of a
+    /// [`Resource::Repository`]. No other action includes it.
+    ImagePull,
+    /// Push images of the repository to the registry (ADR 0053); asked of a
+    /// [`Resource::Repository`]. No other action includes it, `ImagePull` included.
+    ImagePush,
 }
 
 /// What the action is on.

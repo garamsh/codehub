@@ -43,8 +43,13 @@ fn now() -> u64 {
 
 #[cfg(test)]
 fn dex() -> OidcIdentityVerification {
-    OidcIdentityVerification::new(&env("CODEHUB_TEST_OIDC_ISSUER"), AUDIENCE, REFETCH_INTERVAL)
-        .unwrap()
+    OidcIdentityVerification::new(
+        &env("CODEHUB_TEST_OIDC_ISSUER"),
+        AUDIENCE,
+        REFETCH_INTERVAL,
+        Duration::from_secs(10),
+    )
+    .unwrap()
 }
 
 /// An access token for `user` (`alice`, `bob`, `carol`) from Dex's password grant, with the
@@ -192,7 +197,8 @@ impl Stub {
     }
 
     fn verifier_refetching_after(&self, interval: Duration) -> OidcIdentityVerification {
-        OidcIdentityVerification::new(&self.issuer, AUDIENCE, interval).unwrap()
+        OidcIdentityVerification::new(&self.issuer, AUDIENCE, interval, Duration::from_secs(10))
+            .unwrap()
     }
 
     /// Claims of a token this stub issued for `subject`, valid for an hour.
@@ -258,6 +264,7 @@ async fn rejects_a_dex_token_for_another_audience() {
         &env("CODEHUB_TEST_OIDC_ISSUER"),
         "elsewhere",
         REFETCH_INTERVAL,
+        Duration::from_secs(10),
     )
     .unwrap();
 
@@ -282,8 +289,13 @@ async fn rejects_text_that_is_not_a_token() {
 #[tokio::test]
 async fn reports_an_unreachable_issuer_as_a_backend_failure() {
     let token = credential(&dex_token("alice").await);
-    let unreachable =
-        OidcIdentityVerification::new("http://127.0.0.1:1", AUDIENCE, REFETCH_INTERVAL).unwrap();
+    let unreachable = OidcIdentityVerification::new(
+        "http://127.0.0.1:1",
+        AUDIENCE,
+        REFETCH_INTERVAL,
+        Duration::from_secs(10),
+    )
+    .unwrap();
 
     assert!(matches!(
         unreachable.verify(&token).await,

@@ -1,0 +1,33 @@
+name: kind-faults
+
+# The fault runs of the Helm chart in a kind cluster (`make kind-faults`, ADR 0057). They take long
+# and use the runner's whole machine, so they run on demand and are not part of `ci`.
+on:
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  kind-faults:
+    # Mover: the .github/ owner in CODEOWNERS (@sauce-git) moves this label when a newer versioned label is published.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Record runner image
+        run: echo "ImageOS=$ImageOS ImageVersion=$ImageVersion"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Mover: Dependabot's github-actions updates (.github/dependabot.yml), merged by the PM.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ hashFiles('Cargo.toml') }}
+      # The runner image brings kind, kubectl, helm, docker and the AWS CLI; its label is the mover
+      # of their versions. crane is pinned here, by hand, by the .github/ owner.
+      - name: Install crane
+        run: go install github.com/google/go-containerregistry/cmd/crane@v0.22.1
+      - name: Run the fault runs
+        run: |
+          kind version
+          helm version --short
+          make kind-faults

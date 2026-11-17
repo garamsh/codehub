@@ -1,0 +1,25 @@
+{{- if .Values.keda.enabled }}
+{{- if not .Values.runner.enabled }}
+{{- fail "keda.enabled scales the runner Deployment, so runner.enabled must be true" }}
+{{- end }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "codehub.fullname" . }}-runner
+  labels:
+    {{- include "codehub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: runner
+spec:
+  scaleTargetRef:
+    name: {{ include "codehub.fullname" . }}-runner
+  minReplicaCount: {{ .Values.keda.minReplicaCount }}
+  maxReplicaCount: {{ .Values.keda.maxReplicaCount }}
+  pollingInterval: {{ .Values.keda.pollingInterval }}
+  cooldownPeriod: {{ .Values.keda.cooldownPeriod }}
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: {{ required "keda.prometheus.serverAddress is required" .Values.keda.prometheus.serverAddress | quote }}
+        query: {{ .Values.keda.prometheus.query | quote }}
+        threshold: {{ .Values.keda.prometheus.threshold | quote }}
+{{- end }}

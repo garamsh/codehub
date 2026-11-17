@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use adapter_authzen::{AuthzenAuthorisationDecision, Profile};
 use app::domain::name::{OrganisationName, RepositoryName};
@@ -89,6 +90,7 @@ fn secret_tokens(token_endpoint: &str, client_id: &str, secret: &str) -> Arc<Tok
                 client_id: client_id.to_owned(),
                 client_secret: secret.to_owned(),
             },
+            Duration::from_secs(10),
         )
         .unwrap(),
     )
@@ -115,6 +117,7 @@ async fn real_adapter_with_secret(secret: &str) -> AuthzenAuthorisationDecision 
             secret,
         ),
         Profile::Plain,
+        Duration::from_secs(10),
     )
     .unwrap()
 }
@@ -287,6 +290,7 @@ async fn fails_where_the_decision_point_is_unreachable() {
             &env("CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_SECRET"),
         ),
         Profile::Plain,
+        Duration::from_secs(10),
     )
     .unwrap();
 
@@ -345,6 +349,7 @@ impl Stub {
                 "resource-secret",
             ),
             Profile::Plain,
+            Duration::from_secs(10),
         )
         .unwrap()
     }
@@ -510,6 +515,8 @@ async fn names_every_action_on_the_wire() {
         Action::Read,
         Action::Write,
         Action::Run,
+        Action::ImagePull,
+        Action::ImagePush,
     ] {
         adapter
             .decide(&subject, action, &org("acme"))
@@ -535,7 +542,9 @@ async fn names_every_action_on_the_wire() {
             "administer_members",
             "read",
             "write",
-            "run"
+            "run",
+            "image_pull",
+            "image_push"
         ]
     );
 }
@@ -597,6 +606,7 @@ async fn form_urlencodes_the_client_credentials_before_basic_encoding_them() {
         &stub.url,
         secret_tokens(&format!("{}/token", stub.url), "cli:ent", "p:w%d s"),
         Profile::Plain,
+        Duration::from_secs(10),
     )
     .unwrap();
     let subject = Principal::new("https://issuer.example", "user-1").unwrap();
@@ -1449,6 +1459,7 @@ fn assertion_tokens(
                 key_id: kid.map(str::to_owned),
                 issuer: ISSUER.to_owned(),
             },
+            Duration::from_secs(10),
         )
         .unwrap(),
     )
@@ -1473,6 +1484,7 @@ async fn fixture(key: &SigningKey, options: Options) -> Fixture {
         &stub.url,
         assertion_tokens(&format!("{}/token", stub.url), key, kid, audience),
         profile,
+        Duration::from_secs(10),
     )
     .unwrap()
     .with_access_evaluations(evaluations);
@@ -1841,7 +1853,13 @@ async fn fails_as_a_server_error_on_any_other_refusal_of_a_token_request() {
         })
         .await;
         let tokens = assertion_tokens(&format!("{}/token", stub.url), &key, None, None);
-        let adapter = AuthzenAuthorisationDecision::new(&stub.url, tokens, Profile::Grn).unwrap();
+        let adapter = AuthzenAuthorisationDecision::new(
+            &stub.url,
+            tokens,
+            Profile::Grn,
+            Duration::from_secs(10),
+        )
+        .unwrap();
 
         let decided = adapter
             .decide(&user(), Action::Read, &repository("acme", "app"))
@@ -1892,6 +1910,8 @@ async fn sends_garams_json_for_each_action_in_the_grn_profile() {
         (Action::Write, docs.clone()),
         (Action::Run, repository("acme", "app")),
         (Action::Run, docs),
+        (Action::ImagePull, repository("acme", "app")),
+        (Action::ImagePush, repository("acme", "app")),
     ];
 
     for (action, resource) in &cases {
@@ -1934,6 +1954,8 @@ async fn sends_garams_json_for_each_action_in_the_grn_profile() {
             ),
             request("codehub:repo.run", &repository, None),
             request("codehub:repo.run", &repository, None),
+            request("codehub:repo.image_pull", &repository, None),
+            request("codehub:repo.image_push", &repository, None),
         ]
     );
     assert_eq!(fixture.idp.rejections(), Vec::<String>::new());

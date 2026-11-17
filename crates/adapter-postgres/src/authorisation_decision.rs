@@ -12,13 +12,15 @@ use sqlx::PgPool;
 
 use crate::conversion;
 use crate::database::Database;
+use crate::statements::Statements;
 
 /// The ADR 0021 policy evaluated over the memberships of [`crate::PostgresMembership`]: an admin
 /// may take every action in its organisation; a member's grants allow `read` and `write` on the
-/// paths they cover, and a member holding any grant on a repository may read, write or run it
-/// as a whole as that grant allows; `run` is asked of a repository only (ADR 0051).
+/// paths they cover, and a member holding any grant on a repository may read, write or run it, or pull or push its images,
+/// as a whole as that grant allows; `run` and the image actions are asked of a repository only (ADR 0051, 0053).
 pub struct PostgresAuthorisationDecision {
     pool: PgPool,
+    statements: Statements,
 }
 
 impl PostgresAuthorisationDecision {
@@ -27,6 +29,7 @@ impl PostgresAuthorisationDecision {
     pub fn new(database: &Database) -> Self {
         Self {
             pool: database.pool.clone(),
+            statements: database.statements,
         }
     }
 }
@@ -39,17 +42,23 @@ const fn covers(held: Access, asked: Action) -> bool {
     match (held, asked) {
         (Access::Write, Action::Read | Action::Write)
         | (Access::Read, Action::Read)
-        | (Access::Run, Action::Run) => true,
+        | (Access::Run, Action::Run)
+        | (Access::ImagePull, Action::ImagePull)
+        | (Access::ImagePush, Action::ImagePush) => true,
         (
-            Access::Write | Access::Read | Access::Run,
+            Access::Write | Access::Read | Access::Run | Access::ImagePull | Access::ImagePush,
             Action::CreateOrganisation
             | Action::CreateRepository
             | Action::AdministerMembers
             | Action::AdministerRunners,
         )
-        | (Access::Read, Action::Write | Action::Run)
-        | (Access::Write, Action::Run)
-        | (Access::Run, Action::Read | Action::Write) => false,
+        | (Access::Read, Action::Write | Action::Run | Action::ImagePull | Action::ImagePush)
+        | (Access::Write, Action::Run | Action::ImagePull | Action::ImagePush)
+        | (Access::Run, Action::Read | Action::Write | Action::ImagePull | Action::ImagePush)
+        | (Access::ImagePull, Action::Read | Action::Write | Action::Run | Action::ImagePush)
+        | (Access::ImagePush, Action::Read | Action::Write | Action::Run | Action::ImagePull) => {
+            false
+        }
     }
 }
 
@@ -65,7 +74,10 @@ fn permits(role: Role, grants: &Grants, action: Action, resource: &Resource) -> 
             )
         }
         (Role::Admin, Resource::Repository { .. }) => {
-            matches!(action, Action::Read | Action::Write | Action::Run)
+            matches!(
+                action,
+                Action::Read | Action::Write | Action::Run | Action::ImagePull | Action::ImagePush
+            )
         }
         (Role::Admin, Resource::Path { .. }) => matches!(action, Action::Read | Action::Write),
         (Role::Member, Resource::Organisation(_)) => false,
@@ -73,7 +85,7 @@ fn permits(role: Role, grants: &Grants, action: Action, resource: &Resource) -> 
             grants.iter().any(|(_, access)| covers(*access, action))
         }
         (Role::Member, Resource::Path { path, .. }) => {
-            action != Action::Run
+            !matches!(action, Action::Run | Action::ImagePull | Action::ImagePush)
                 && grants
                     .iter()
                     .any(|(prefix, access)| covers(*access, action) && prefix.covers(path))
@@ -134,20 +146,22 @@ impl PostgresAuthorisationDecision {
     ) -> Result<Held, AuthorisationError> {
         // One statement reads the role and the grants from one snapshot; a member with no grants
         // there yields its role alone, with null grant columns.
-        let rows = sqlx::query_as::<_, (String, Option<Vec<u8>>, Option<String>)>(
-            "select m.role, g.prefix, g.access from members m \
+        let rows = self
+            .statements
+            .query_as::<(String, Option<Vec<u8>>, Option<String>)>(
+                "select m.role, g.prefix, g.access from members m \
              left join grants g \
              on g.organisation = m.organisation and g.issuer = m.issuer \
              and g.subject = m.subject and g.repository = $4 \
              where m.organisation = $1 and m.issuer = $2 and m.subject = $3",
-        )
-        .bind(organisation.as_str())
-        .bind(subject.issuer())
-        .bind(subject.subject())
-        .bind(repository)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(backend)?;
+            )
+            .bind(organisation.as_str())
+            .bind(subject.issuer())
+            .bind(subject.subject())
+            .bind(repository)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend)?;
         let Some((role, ..)) = rows.first() else {
             return Ok(None);
         };

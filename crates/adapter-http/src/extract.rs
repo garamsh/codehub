@@ -11,39 +11,60 @@ use app::domain::principal::{Caller, Principal};
 use app::domain::repository::RepositoryId;
 use axum::body::Bytes;
 use axum::extract::{FromRequest, FromRequestParts, Query, Request};
-use axum::http::header;
 use axum::http::request::Parts;
+use axum::http::{StatusCode, header};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::ApiState;
 use crate::problem::Problem;
 
-/// The caller the request's bearer token identifies.
+/// The caller the request's bearer token identifies, once the caller's rate limit admits the
+/// request (ADR 0055).
 pub struct Authenticated(pub Caller);
 
 impl FromRequestParts<Arc<ApiState>> for Authenticated {
     type Rejection = Problem;
 
     async fn from_request_parts(parts: &mut Parts, ports: &Arc<ApiState>) -> Result<Self, Problem> {
-        let header = parts
-            .headers
-            .get(header::AUTHORIZATION)
-            .ok_or_else(|| Problem::unauthorised("a bearer token is required"))?;
-        let token = header
-            .to_str()
-            .ok()
-            .and_then(|value| value.split_once(' '))
-            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
-            .map(|(_, token)| token)
-            .ok_or_else(|| {
-                Problem::unauthorised("the authorization header is not a bearer token")
-            })?;
-        let credential: Credential = token
-            .parse()
-            .map_err(|_| Problem::unauthorised("the bearer token is empty"))?;
-        Ok(Self(ports.authentication.authenticate(&credential).await?))
+        let caller = authenticate(parts, ports).await?;
+        ports
+            .limits
+            .rate
+            .admit(caller.principal())
+            .map_err(Problem::rate_limited)?;
+        Ok(Self(caller))
     }
+}
+
+/// The runner the request's bearer token identifies. A runner is not rate limited: the server
+/// sets how often it calls (ADR 0055).
+pub struct AuthenticatedRunner(pub Caller);
+
+impl FromRequestParts<Arc<ApiState>> for AuthenticatedRunner {
+    type Rejection = Problem;
+
+    async fn from_request_parts(parts: &mut Parts, ports: &Arc<ApiState>) -> Result<Self, Problem> {
+        authenticate(parts, ports).await.map(Self)
+    }
+}
+
+async fn authenticate(parts: &Parts, ports: &ApiState) -> Result<Caller, Problem> {
+    let header = parts
+        .headers
+        .get(header::AUTHORIZATION)
+        .ok_or_else(|| Problem::unauthorised("a bearer token is required"))?;
+    let token = header
+        .to_str()
+        .ok()
+        .and_then(|value| value.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+        .map(|(_, token)| token)
+        .ok_or_else(|| Problem::unauthorised("the authorization header is not a bearer token"))?;
+    let credential: Credential = token
+        .parse()
+        .map_err(|_| Problem::unauthorised("the bearer token is empty"))?;
+    Ok(ports.authentication.authenticate(&credential).await?)
 }
 
 /// The path parameters, deserialised.
@@ -74,6 +95,23 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequestParts<S> for Queried<T> {
     }
 }
 
+/// The request body as bytes, no more than the server reads.
+pub struct Raw(pub Bytes);
+
+impl<S: Send + Sync> FromRequest<S> for Raw {
+    type Rejection = Problem;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, Problem> {
+        Bytes::from_request(request, state)
+            .await
+            .map(Self)
+            .map_err(|rejection| match rejection.status() {
+                StatusCode::PAYLOAD_TOO_LARGE => Problem::payload_too_large(),
+                _ => Problem::bad_request(rejection.body_text()),
+            })
+    }
+}
+
 /// The request body, parsed as JSON.
 pub struct Body<T>(pub T);
 
@@ -81,9 +119,7 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for Body<T> {
     type Rejection = Problem;
 
     async fn from_request(request: Request, state: &S) -> Result<Self, Problem> {
-        let bytes = Bytes::from_request(request, state)
-            .await
-            .map_err(|rejection| Problem::bad_request(rejection.body_text()))?;
+        let Raw(bytes) = Raw::from_request(request, state).await?;
         serde_json::from_slice(&bytes)
             .map(Self)
             .map_err(|error| Problem::bad_request(format!("the body is not valid: {error}")))

@@ -1,0 +1,99 @@
+# Distributed MinIO: four servers of one erasure set, from Chainguard's image (MinIO no longer
+# publishes its own community images), and a Job that makes the buckets. The credentials are the
+# Secret minio-credentials, made by the run. The S3 API is on the nodes at 30900.
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-headless
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: {app: minio}
+  ports:
+    - {name: s3, port: 9000}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+spec:
+  type: NodePort
+  selector: {app: minio}
+  ports:
+    - {name: s3, port: 9000, targetPort: 9000, nodePort: 30900}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+spec:
+  serviceName: minio-headless
+  replicas: 4
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: {app: minio}
+  template:
+    metadata:
+      labels: {app: minio}
+    spec:
+      securityContext:
+        fsGroup: 65532
+      containers:
+        - name: minio
+          image: cgr.dev/chainguard/minio:latest@sha256:db3f583fa49121942168bd6383a773b2cde3384c9a99bf7193560b9a0f3a28fd
+          args:
+            - server
+            - http://minio-{0...3}.minio-headless.codehub.svc.cluster.local/data
+            - --address=:9000
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom: {secretKeyRef: {name: minio-credentials, key: rootUser}}
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom: {secretKeyRef: {name: minio-credentials, key: rootPassword}}
+          ports:
+            - {name: s3, containerPort: 9000}
+          readinessProbe:
+            httpGet: {path: /minio/health/ready, port: s3}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /minio/health/live, port: s3}
+            periodSeconds: 10
+          resources:
+            requests: {memory: 256Mi}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: {storage: 1Gi}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-buckets
+spec:
+  backoffLimit: 30
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: cgr.dev/chainguard/minio-client:latest@sha256:1260ca38acf78bf8d2833845fda6636b27388ab919b750d79f2c7167fb45ec74
+          args:
+            - mb
+            - --ignore-existing
+            - local/codehub
+            - local/codehub-backup
+            - local/codehub-restored
+            - local/registry
+            - local/cnpg-backups
+          env:
+            - name: MINIO_USER
+              valueFrom: {secretKeyRef: {name: minio-credentials, key: rootUser}}
+            - name: MINIO_PASSWORD
+              valueFrom: {secretKeyRef: {name: minio-credentials, key: rootPassword}}
+            - name: MC_HOST_local
+              value: http://$(MINIO_USER):$(MINIO_PASSWORD)@minio:9000

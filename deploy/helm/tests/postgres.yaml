@@ -1,0 +1,52 @@
+# PostgreSQL by CloudNativePG: three instances that archive to the object store, and a PgBouncer
+# in transaction mode in front of the primary. The app user's password is the Secret pg-app-user.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: pg
+spec:
+  instances: 3
+  storage:
+    size: 1Gi
+  # A commit is acknowledged once one standby has it: with asynchronous replication (the default) a
+  # landing the primary acknowledged and no standby had received is lost with the primary (ADR 0054).
+  # The fixture relies on CloudNativePG keeping synchronous_standby_names right across a promotion:
+  # that the new primary again waits for a standby is ADR 0054's duty of the operator, and here it
+  # is observed (no acknowledged landing was lost in the failovers of the runs), not read from
+  # CloudNativePG's documentation, which describes this setting and not that behaviour.
+  postgresql:
+    synchronous:
+      method: any
+      number: 1
+  bootstrap:
+    initdb:
+      database: codehub
+      owner: codehub
+      secret:
+        name: pg-app-user
+  backup:
+    barmanObjectStore:
+      destinationPath: s3://cnpg-backups/
+      endpointURL: http://minio:9000
+      s3Credentials:
+        accessKeyId: {name: minio-credentials, key: rootUser}
+        secretAccessKey: {name: minio-credentials, key: rootPassword}
+      wal:
+        compression: gzip
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: pg-pooler
+spec:
+  cluster:
+    name: pg
+  instances: 2
+  type: rw
+  pgbouncer:
+    poolMode: transaction
+    parameters:
+      max_client_conn: "500"
+      default_pool_size: "20"
+      max_prepared_statements: "200"
+      ignore_startup_parameters: "options"

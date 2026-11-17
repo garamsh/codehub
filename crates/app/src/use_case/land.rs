@@ -4,6 +4,8 @@
 use std::collections::BTreeMap;
 use std::fmt::Display;
 
+use tracing::Instrument;
+
 use crate::domain::address::Address;
 use crate::domain::changeset::{Change, Changeset};
 use crate::domain::derivation::{self, DerivationError, Step};
@@ -13,6 +15,7 @@ use crate::domain::merge::{self, FileVersion, Rebase};
 use crate::domain::path::Path;
 use crate::domain::repository::RepositoryId;
 use crate::domain::tree::{DeriveError, Tree, Trees};
+use crate::observability;
 use crate::port::driven::changeset_log::{ChangesetLog, ChangesetLogError, Ref};
 use crate::port::driven::derived_data::DerivedData;
 use crate::port::driven::object_store::ObjectStore;
@@ -49,12 +52,24 @@ pub async fn land(
     attempts: LandingAttempts,
 ) -> Result<Address, LandError> {
     let mut moved = LandError::MainMoved { current: None };
-    for _ in 0..attempts.get() {
-        match attempt(objects, log, derived, repository, author, &staged, &landing).await {
-            Err(error @ LandError::MainMoved { .. }) => moved = error,
-            result => return result,
+    let mut lost = 0;
+    for tried in 1..=attempts.get() {
+        let span = tracing::info_span!("landing.attempt", attempt = tried);
+        match attempt(objects, log, derived, repository, author, &staged, &landing)
+            .instrument(span)
+            .await
+        {
+            Err(error @ LandError::MainMoved { .. }) => {
+                lost += 1;
+                moved = error;
+            }
+            result => {
+                observability::landing_attempted(tried, lost);
+                return result;
+            }
         }
     }
+    observability::landing_attempted(lost, lost);
     Err(moved)
 }
 
@@ -68,7 +83,10 @@ async fn attempt(
     staged: &Draft,
     landing: &Landing,
 ) -> Result<Address, LandError> {
-    let main = log.read_ref(repository, Ref::Main).await?;
+    let main = log
+        .read_ref(repository, Ref::Main)
+        .instrument(tracing::info_span!("landing.read_main"))
+        .await?;
     let changes = rebase(
         objects,
         log,
@@ -78,6 +96,7 @@ async fn attempt(
         main,
         staged.changes.clone(),
     )
+    .instrument(tracing::info_span!("landing.rebase"))
     .await?;
     let changeset = Changeset {
         parents: main.into_iter().collect(),
@@ -87,13 +106,19 @@ async fn attempt(
         changes,
     };
 
-    let trees = derive_trees(derived, repository, &changeset).await?;
+    let trees = derive_trees(derived, repository, &changeset)
+        .instrument(tracing::info_span!("landing.derive_trees"))
+        .await?;
     let id = changeset.id()?;
     derived
         .put_trees(repository, id, trees.value, trees.objects)
+        .instrument(tracing::info_span!("landing.put_trees"))
         .await?;
-    log.append(repository, changeset).await?;
+    log.append(repository, changeset)
+        .instrument(tracing::info_span!("landing.append"))
+        .await?;
     log.compare_and_swap(repository, Ref::Main, main, id)
+        .instrument(tracing::info_span!("landing.swap"))
         .await
         .map_err(|error| match error {
             ChangesetLogError::RefMoved { current } => LandError::MainMoved { current },

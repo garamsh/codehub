@@ -1,0 +1,70 @@
+{{- if .Values.runner.enabled }}
+{{- $r := .Values.runner }}
+{{- $name := printf "%s-runner" (include "codehub.fullname" .) }}
+{{- $selector := dict "root" . "component" "runner" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "codehub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: runner
+spec:
+  replicas: {{ $r.replicas }}
+  selector:
+    matchLabels:
+      {{- include "codehub.selector" $selector | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "codehub.labels" . | nindent 8 }}
+        app.kubernetes.io/component: runner
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with $r.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $r.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: runner
+          image: {{ printf "%s:%s" $r.image.repository (default .Chart.AppVersion $r.image.tag) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: CODEHUB_RUNNER_SERVER
+              value: {{ default (printf "http://%s-runner-api:%v" (include "codehub.fullname" .) .Values.runnerApi.service.port) $r.server | quote }}
+            - name: CODEHUB_RUNNER_TOKEN_ENDPOINT
+              value: {{ required "runner.tokenEndpoint is required" $r.tokenEndpoint | quote }}
+            - name: CODEHUB_RUNNER_CLIENT_ID
+              value: {{ required "runner.clientId is required" $r.clientId | quote }}
+            - name: CODEHUB_RUNNER_CLIENT_SECRET_ENV
+              value: CODEHUB_RUNNER_CLIENT_SECRET
+            - name: CODEHUB_RUNNER_WORK_DIR
+              value: /work
+            {{- include "codehub.secretEnv" (dict "name" "CODEHUB_RUNNER_CLIENT_SECRET" "secret" $r.clientSecretSecret "what" "runner.clientSecretSecret") | nindent 12 }}
+            {{- with $r.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - {name: work, mountPath: /work}
+          resources:
+            {{- toYaml $r.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: work
+          emptyDir: {}
+{{- end }}

@@ -111,6 +111,46 @@ impl Server {
         )
     }
 
+    /// Starts the built `codehub` verifying JWTs offline against Keycloak's keys, as
+    /// [`Server::start_oidc`] does, issuing registry tokens (ADR 0053) with the key and key id the
+    /// e2e example `garam_keys` wrote into `keys`, on the port the registry's token realm names.
+    ///
+    /// # Panics
+    ///
+    /// Panics where [`Server::start`] does, or if a key file cannot be read.
+    pub fn start_registry(database: &TestDatabase, keys: &Path) -> Self {
+        Self::start_with(
+            database,
+            vec![
+                ("CODEHUB_OIDC_ISSUER", env("CODEHUB_TEST_KEYCLOAK_ISSUER")),
+                (
+                    "CODEHUB_OIDC_AUDIENCE",
+                    env("CODEHUB_TEST_KEYCLOAK_AUDIENCE"),
+                ),
+                (
+                    "CODEHUB_LISTEN",
+                    format!("127.0.0.1:{}", env("CODEHUB_TEST_REGISTRY_REALM_PORT")),
+                ),
+                (
+                    "CODEHUB_REGISTRY_ISSUER",
+                    env("CODEHUB_TEST_REGISTRY_ISSUER"),
+                ),
+                (
+                    "CODEHUB_REGISTRY_SERVICE",
+                    env("CODEHUB_TEST_REGISTRY_SERVICE"),
+                ),
+                (
+                    "CODEHUB_REGISTRY_KEY_FILE",
+                    keys.join("registry.pem").display().to_string(),
+                ),
+                (
+                    "CODEHUB_REGISTRY_KEY_ID",
+                    std::fs::read_to_string(keys.join("registry.kid")).unwrap(),
+                ),
+            ],
+        )
+    }
+
     /// Starts the built `codehub` in introspection mode with Cerbos deciding every request: the
     /// external mode.
     ///
@@ -136,7 +176,11 @@ impl Server {
     }
 
     /// Starts the built `codehub` with `settings` set after the check environment's.
-    fn start_with(database: &TestDatabase, settings: Vec<(&'static str, String)>) -> Self {
+    ///
+    /// # Panics
+    ///
+    /// Panics where [`Server::start`] does.
+    pub fn start_with(database: &TestDatabase, settings: Vec<(&'static str, String)>) -> Self {
         Self(test_support::Server::start_with(
             &binary("codehub"),
             database,
