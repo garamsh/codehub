@@ -22,6 +22,7 @@ use app::use_case::jobs::{JobsAdapters, JobsService};
 use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::post_land_checks::{PostLandChecks, PostLandChecksAdapters};
 use common::Harness;
+use metrics_exporter_prometheus::PrometheusBuilder;
 use test_support::contract::runner_deployment::{
     RunnerDeployment, check, definitions, land, organisation, runner, text,
 };
@@ -212,4 +213,21 @@ async fn a_revert_that_keeps_losing_the_compare_and_swap_is_given_up_after_its_a
     );
     assert_eq!(log.asked.load(Ordering::SeqCst), 3);
     assert_eq!(repo.main().await, Some(bad));
+}
+
+#[tokio::test]
+async fn the_swaps_a_landing_lost_are_counted() {
+    let harness = Harness::start().await;
+    let (_repo, _bad, job, log) = setup(&harness, 2).await;
+    let recorder = PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    let _installed = metrics::set_default_local_recorder(&recorder);
+
+    report(&harness, &log, job, 5).await.unwrap();
+
+    let text = handle.render();
+    assert!(
+        text.contains("codehub_landing_swaps_lost_total 2"),
+        "{text}"
+    );
 }
