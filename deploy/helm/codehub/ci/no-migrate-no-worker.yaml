@@ -1,0 +1,11 @@
+postgres:
+  urlSecret: {name: pg, key: url}
+s3:
+  endpoint: http://minio:9000
+  region: us-east-1
+  bucket: codehub
+  accessKey: access
+  secretKeySecret: {name: s3, key: secret-key}
+migrate: {enabled: false}
+worker: {enabled: false}
+api: {antiAffinity: ""}

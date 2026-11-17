@@ -116,7 +116,7 @@ impl Bucket {
             env("CODEHUB_TEST_S3_SECRET_KEY")?,
         );
         let this = Self {
-            http: reqwest::Client::new(),
+            http: crate::api::client(),
             bucket,
             credentials,
         };
@@ -247,7 +247,7 @@ pub async fn token(client: &str, user: &str) -> Result<String, Failure> {
         "CODEHUB_TEST_KEYCLOAK_PASSWORD_{}",
         user.to_uppercase()
     ))?;
-    let answer: serde_json::Value = reqwest::Client::new()
+    let answer: serde_json::Value = crate::api::client()
         .post(format!("{issuer}/protocol/openid-connect/token"))
         .basic_auth(
             env(&format!("CODEHUB_TEST_KEYCLOAK_{client}_CLIENT_ID"))?,
@@ -269,4 +269,37 @@ pub async fn token(client: &str, user: &str) -> Result<String, Failure> {
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
         .ok_or_else(|| Failure::new(format!("Keycloak gave {user} no access token: {answer}")))
+}
+
+/// An access token for `user` from the token endpoint `url`, by the password grant.
+///
+/// # Errors
+///
+/// Fails where the endpoint does not answer with an access token.
+pub async fn password_token(
+    url: &str,
+    client_id: &str,
+    client_secret: &str,
+    user: &str,
+    password: &str,
+    scope: &str,
+) -> Result<String, Failure> {
+    let answer: serde_json::Value = crate::api::client()
+        .post(url)
+        .basic_auth(client_id, Some(client_secret))
+        .form(&[
+            ("grant_type", "password"),
+            ("username", user),
+            ("password", password),
+            ("scope", scope),
+        ])
+        .send()
+        .await?
+        .json()
+        .await?;
+    answer
+        .get("access_token")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| Failure::new(format!("{url} gave {user} no access token: {answer}")))
 }

@@ -1,0 +1,7 @@
+apiVersion: v2
+name: codehub
+description: The codehub server as one Deployment per role, its registry, and an example runner
+type: application
+version: 0.1.0
+# The tag of the server and runner images when image.tag is not set.
+appVersion: "0.0.0"
