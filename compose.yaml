@@ -64,7 +64,7 @@ x-policy: &policy
   profiles: [garam]
 
 x-garam-postgres: &garam-postgres
-  image: postgres:17.11-alpine3.24@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+  image: postgres:18.7-alpine3.24@sha256:b6972e1115a4ff8eba5d7f7d19184926d1e16d7d1136ae1e1a7ebf286da0f015
   profiles: [garam]
   healthcheck:
     test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U garam"]
@@ -91,7 +91,7 @@ x-api-environment: &api-environment
 
 services:
   postgres:
-    image: postgres:18.6-alpine3.24@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+    image: postgres:18.7-alpine3.24@sha256:b6972e1115a4ff8eba5d7f7d19184926d1e16d7d1136ae1e1a7ebf286da0f015
     environment:
       POSTGRES_USER: ${CODEHUB_TEST_POSTGRES_USER:?set from dev/test.env}
       POSTGRES_PASSWORD: ${CODEHUB_TEST_POSTGRES_PASSWORD:?set from dev/test.env}
@@ -209,7 +209,7 @@ services:
   # in front of the primary, for `make test-pg-modes` (ADR 0054). The primary commits only once the
   # standby has flushed, so a landing the server acknowledged is on the standby that is promoted.
   pg-primary:
-    image: postgres:18.6-alpine3.24@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+    image: postgres:18.7-alpine3.24@sha256:b6972e1115a4ff8eba5d7f7d19184926d1e16d7d1136ae1e1a7ebf286da0f015
     profiles: [pg-modes]
     environment:
       POSTGRES_USER: ${CODEHUB_TEST_POSTGRES_USER:?set from dev/test.env}
@@ -226,7 +226,7 @@ services:
       retries: 60
 
   pg-standby:
-    image: postgres:18.6-alpine3.24@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+    image: postgres:18.7-alpine3.24@sha256:b6972e1115a4ff8eba5d7f7d19184926d1e16d7d1136ae1e1a7ebf286da0f015
     profiles: [pg-modes]
     user: postgres
     entrypoint: ["/bin/sh", "/pg-modes/standby.sh"]
