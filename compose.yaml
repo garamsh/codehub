@@ -104,7 +104,7 @@ services:
       retries: 60
 
   s3:
-    image: cgr.dev/chainguard/minio:latest@sha256:db3f583fa49121942168bd6383a773b2cde3384c9a99bf7193560b9a0f3a28fd
+    image: cgr.dev/chainguard/minio:latest@sha256:e9cf6b99c226e9539ed0f14b6f00e37b07da153c7ba1f4f8709c807574b471ec
     command: ["server", "/data", "--address", ":9000"]
     environment:
       MINIO_ROOT_USER: ${CODEHUB_TEST_S3_ACCESS_KEY:?set from dev/test.env}
@@ -122,7 +122,7 @@ services:
   # One-shot: creates the bucket once the store is ready, then exits 0. The store has no setting
   # that creates a bucket, so the image's own client does it.
   s3-init:
-    image: cgr.dev/chainguard/minio:latest@sha256:db3f583fa49121942168bd6383a773b2cde3384c9a99bf7193560b9a0f3a28fd
+    image: cgr.dev/chainguard/minio:latest@sha256:e9cf6b99c226e9539ed0f14b6f00e37b07da153c7ba1f4f8709c807574b471ec
     entrypoint: ["mc"]
     command: ["mb", "--ignore-existing", "local/${CODEHUB_TEST_S3_BUCKET:?set from dev/test.env}"]
     environment:
@@ -136,7 +136,7 @@ services:
   # service depends on it with service_completed_successfully. This service holds that dependency
   # and is healthy once the bucket is readable.
   s3-ready:
-    image: cgr.dev/chainguard/minio:latest@sha256:db3f583fa49121942168bd6383a773b2cde3384c9a99bf7193560b9a0f3a28fd
+    image: cgr.dev/chainguard/minio:latest@sha256:e9cf6b99c226e9539ed0f14b6f00e37b07da153c7ba1f4f8709c807574b471ec
     entrypoint: ["sleep", "infinity"]
     environment:
       MC_HOST_local: http://${CODEHUB_TEST_S3_ACCESS_KEY}:${CODEHUB_TEST_S3_SECRET_KEY}@s3:9000
@@ -166,7 +166,7 @@ services:
   # curl, so the healthcheck sends the request over bash's /dev/tcp to the management port's
   # readiness endpoint.
   keycloak:
-    image: quay.io/keycloak/keycloak:26.8.2@sha256:723b1d6e254c0fc96d5cffec860c7e0744d6a3277822b865bb538cf891575e41
+    image: quay.io/keycloak/keycloak:26.8.2@sha256:c68e286cacd87b942ac1939a0a1481461109d6acd3a57dc496969a319a76bbf0
     command: ["start-dev", "--import-realm"]
     environment:
       KC_HOSTNAME: http://127.0.0.1:18081
@@ -250,7 +250,7 @@ services:
   # (`MAX_PREPARED_STATEMENTS`), which the named statements of sqlx need. Set to 0 the landings
   # fail: sqlx sends the Parse and the Bind of a statement in separate rounds (ADR 0054).
   pgbouncer:
-    image: edoburu/pgbouncer:v1.25.1-p0@sha256:4a8371e79d6627e74f553d0aaa8e4c5ace20e30034fb296e569b71c89c99e108
+    image: edoburu/pgbouncer:v1.26.1-p0@sha256:488422e38cff912895d0d65d8963fcd306e6ac589a724398b6eb8e294e94d624
     profiles: [pg-modes]
     environment:
       DATABASE_URL: postgres://${CODEHUB_TEST_POSTGRES_USER:-}:${CODEHUB_TEST_POSTGRES_PASSWORD:-}@pg-primary:5432/codehub
@@ -275,7 +275,7 @@ services:
   # One-shot: creates the registry's bucket, a bucket of its own, once the store is ready, then
   # exits 0. The registry waits for it, which also satisfies the compose rule noted at s3-ready.
   registry-bucket:
-    image: cgr.dev/chainguard/minio:latest@sha256:db3f583fa49121942168bd6383a773b2cde3384c9a99bf7193560b9a0f3a28fd
+    image: cgr.dev/chainguard/minio:latest@sha256:e9cf6b99c226e9539ed0f14b6f00e37b07da153c7ba1f4f8709c807574b471ec
     entrypoint: ["mc"]
     command: ["mb", "--ignore-existing", "local/${CODEHUB_TEST_REGISTRY_BUCKET:?set from dev/test.env}"]
     environment:
@@ -416,7 +416,7 @@ services:
   # beside the other keys once the api is ready, and the policy service starts after it. It asks
   # the api on its own port, where the gateway would strip the /api the api is served under.
   issuer-jwks:
-    image: mirror.gcr.io/library/caddy:2.11.9-alpine@sha256:0bbb055bda6793c999bde78b1b5ce3e89f829fb031af2cf50056ea1246559fee
+    image: mirror.gcr.io/library/caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
     profiles: [garam]
     user: "${CODEHUB_GARAM_E2E_USER:-}"
     entrypoint: ["wget", "-T", "10", "-q", "-O", "/keys/issuer-jwks.json", "http://api:8080/oauth/jwks"]
@@ -473,7 +473,7 @@ services:
   # for policy-feed because compose 5.7.0 treats a one-shot that exited 0 as a failed `up --wait`
   # unless a service depends on it with service_completed_successfully.
   gateway:
-    image: mirror.gcr.io/library/caddy:2.11.9-alpine@sha256:0bbb055bda6793c999bde78b1b5ce3e89f829fb031af2cf50056ea1246559fee
+    image: mirror.gcr.io/library/caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
     profiles: [garam]
     volumes:
       - ./dev/garam/Caddyfile:/etc/caddy/Caddyfile:ro
