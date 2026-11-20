@@ -104,7 +104,7 @@ impl World {
             "--once",
         ])
         .unwrap();
-        tokio::time::timeout(RUN_BOUND, codehub_runner::run(config))
+        let _ = tokio::time::timeout(RUN_BOUND, codehub_runner::run(config))
             .await
             .expect("the runner did not finish in time")
             .unwrap();
