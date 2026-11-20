@@ -25,20 +25,25 @@ const AUDIENCE: &str = "ch";
 /// How long a start, a shutdown, a login or one run of `ch` may take.
 const BOUND: Duration = Duration::from_secs(60);
 
-/// The path of the built binary `name`, which sits beside the directory of the running test.
+/// The path of the built binary `name`, which sits in the nearest directory above the running
+/// test that holds it (`target/debug`, whether the test lies in `deps` or in `build/<package>`).
 ///
 /// # Panics
 ///
 /// Panics, naming the build command, if the binary is not there.
 pub fn binary(name: &str) -> PathBuf {
     let test = std::env::current_exe().unwrap();
-    let path = test.parent().and_then(Path::parent).unwrap().join(name);
-    assert!(
-        path.is_file(),
-        "{} is missing; build it with `cargo build --locked -p codehub -p ch -p codehub-runner`",
-        path.display()
-    );
-    path
+    let found = test
+        .ancestors()
+        .skip(1)
+        .map(|directory| directory.join(name))
+        .find(|path| path.is_file());
+    found.unwrap_or_else(|| {
+        panic!(
+            "{name} is missing above {}; build it with `cargo build --locked -p codehub -p ch -p codehub-runner`",
+            test.display()
+        )
+    })
 }
 
 /// A started `codehub` process, killed when dropped.

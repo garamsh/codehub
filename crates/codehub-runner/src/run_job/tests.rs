@@ -96,7 +96,7 @@ async fn the_end_and_output_of_the_command_are_posted_with_the_result_secret() {
     let (base, seen) = listen().await;
     let url = format!("{base}/results/12");
     let description = Description::new(&job(12, "echo hello; exit 3"), url, "the-secret".into());
-    run_within(&write("posts", &description), Duration::from_secs(5))
+    let _ = run_within(&write("posts", &description), Duration::from_secs(5))
         .await
         .unwrap();
     let seen = seen.lock().unwrap();
@@ -129,7 +129,7 @@ async fn answering(status: u16) -> String {
 async fn a_conflict_from_the_listener_is_a_posted_result_and_an_unauthorised_is_not() {
     let window = Duration::from_millis(100);
     let conflict = Description::new(&job(14, "true"), answering(409).await, "s".into());
-    run_within(&write("conflict", &conflict), window)
+    let _ = run_within(&write("conflict", &conflict), window)
         .await
         .unwrap();
     let refused = Description::new(&job(15, "true"), answering(401).await, "s".into());
