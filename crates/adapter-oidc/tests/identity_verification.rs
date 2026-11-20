@@ -388,7 +388,12 @@ async fn rejects_an_hmac_token_naming_a_published_hmac_key() {
     let claims = stub.claims("ada");
     let mut header = Header::new(Algorithm::HS256);
     header.kid = Some("hmac".to_owned());
-    let forged = encode(&header, &claims, &EncodingKey::from_secret(&secret)).unwrap();
+    let forged = encode(
+        &header,
+        &claims,
+        &EncodingKey::from_secret(&secret).unwrap(),
+    )
+    .unwrap();
 
     assert!(
         verifier
