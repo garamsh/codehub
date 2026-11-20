@@ -416,7 +416,7 @@ services:
   # beside the other keys once the api is ready, and the policy service starts after it. It asks
   # the api on its own port, where the gateway would strip the /api the api is served under.
   issuer-jwks:
-    image: mirror.gcr.io/library/caddy:2.11.9-alpine@sha256:0bbb055bda6793c999bde78b1b5ce3e89f829fb031af2cf50056ea1246559fee
+    image: mirror.gcr.io/library/caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
     profiles: [garam]
     user: "${CODEHUB_GARAM_E2E_USER:-}"
     entrypoint: ["wget", "-T", "10", "-q", "-O", "/keys/issuer-jwks.json", "http://api:8080/oauth/jwks"]
@@ -473,7 +473,7 @@ services:
   # for policy-feed because compose 5.7.0 treats a one-shot that exited 0 as a failed `up --wait`
   # unless a service depends on it with service_completed_successfully.
   gateway:
-    image: mirror.gcr.io/library/caddy:2.11.9-alpine@sha256:0bbb055bda6793c999bde78b1b5ce3e89f829fb031af2cf50056ea1246559fee
+    image: mirror.gcr.io/library/caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
     profiles: [garam]
     volumes:
       - ./dev/garam/Caddyfile:/etc/caddy/Caddyfile:ro
