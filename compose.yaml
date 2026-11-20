@@ -250,7 +250,7 @@ services:
   # (`MAX_PREPARED_STATEMENTS`), which the named statements of sqlx need. Set to 0 the landings
   # fail: sqlx sends the Parse and the Bind of a statement in separate rounds (ADR 0054).
   pgbouncer:
-    image: edoburu/pgbouncer:v1.25.1-p0@sha256:4a8371e79d6627e74f553d0aaa8e4c5ace20e30034fb296e569b71c89c99e108
+    image: edoburu/pgbouncer:v1.26.1-p0@sha256:488422e38cff912895d0d65d8963fcd306e6ac589a724398b6eb8e294e94d624
     profiles: [pg-modes]
     environment:
       DATABASE_URL: postgres://${CODEHUB_TEST_POSTGRES_USER:-}:${CODEHUB_TEST_POSTGRES_PASSWORD:-}@pg-primary:5432/codehub
