@@ -1,0 +1,36 @@
+imagePullSecrets: [{name: ecr-pull}]
+postgres:
+  urlSecret: {name: codehub-db-runtime, key: url}
+  migrateUrlSecret: {name: codehub-db-migrate, key: url}
+  readUrlSecret: {name: codehub-db-read, key: url}
+  statementCache: 1
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: codehub
+  accessKey: access
+  secretKeySecret: {name: codehub-s3, key: secret-key}
+config:
+  CODEHUB_IDENTITY: oidc
+  CODEHUB_OIDC_ISSUER: https://garam.garam.sh/api
+  CODEHUB_OIDC_AUDIENCE: codehub
+  CODEHUB_AUTHORISATION: authzen
+  CODEHUB_AUTHZEN_PROFILE: grn
+  CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION: private-key-jwt
+  CODEHUB_DIRECTORY_CHANGES: garam
+authzen:
+  keySecret: {name: codehub-authzen-key, key: key.pem}
+httpRoute:
+  enabled: true
+  parentRefs: [{name: public, namespace: gateway}]
+  hostnames: [codehub.garam.sh]
+registry:
+  enabled: true
+  keyId: registry-key-1
+  realm: https://codehub.garam.sh/v1/registry/token
+  storage: {endpoint: https://s3.example.com, region: us-east-1, bucket: codehub-registry, accessKey: access, secretKeySecret: {name: codehub-s3, key: secret-key}}
+  httpSecret: {name: codehub-registry-http, key: secret}
+  keySecret: {name: codehub-registry-signing, pemKey: key.pem, jwksKey: jwks.json}
+  httpRoute:
+    enabled: true
+    hostnames: [cr.codehub.garam.sh]

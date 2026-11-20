@@ -8,6 +8,7 @@ This file is the contract between codehub and whoever declares its deployment. I
 - Images
 - Server roles
 - Kubernetes
+- Secret contract
 - Server settings
 - Runner options
 - Checking an executor
@@ -52,7 +53,46 @@ The server binary runs as one role, named by its first argument (ADR 0052). The 
 
 ## Kubernetes
 
-`deploy/helm/codehub` deploys the `api`, `runner-api` and `worker` roles as Deployments, runs `codehub migrate` as a pre-install and pre-upgrade Job on a direct PostgreSQL URL (`postgres.migrateUrlSecret`), and installs neither PostgreSQL nor the object store. Every credential is an existing Secret named by `name` and `key`. Behind a transaction-mode pooler set `postgres.statementCache` to 1 or more and run the pooler with `max_prepared_statements` above 0 and `ignore_startup_parameters` holding `options` (ADR 0054). `terminationGracePeriodSeconds` must exceed `CODEHUB_SHUTDOWN_DEADLINE_SECONDS`, or the chart fails to render. The runner routes need the ingress to pass request bodies up to 64 MiB (ADR 0055; for ingress-nginx, `nginx.ingress.kubernetes.io/proxy-body-size: 64m`). `/metrics` is scraped by pod annotation. A restore must take the database to a point no later than the copy of the objects, the base backup's consistency point or a target time at or before the object copy: replaying all archived WAL past the object copy leaves landings that refer to missing objects (ADR 0057). `make helm-check` checks the chart; `make kind-faults` runs the fault runs, which `make ci` does not; they need docker, kind, kubectl, helm, crane and the AWS CLI, and public DNS for the registry's token realm (ADR 0057).
+`deploy/helm/codehub` deploys the `api`, `runner-api` and `worker` roles as Deployments, runs `codehub migrate` as a pre-install and pre-upgrade Job on a direct PostgreSQL URL (`postgres.migrateUrlSecret`), and installs neither PostgreSQL nor the object store. Every credential is an existing Secret named by `name` and `key`. Behind a transaction-mode pooler set `postgres.statementCache` to 1 or more and run the pooler with `max_prepared_statements` above 0 and `ignore_startup_parameters` holding `options` (ADR 0054). `terminationGracePeriodSeconds` must exceed `CODEHUB_SHUTDOWN_DEADLINE_SECONDS`, or the chart fails to render. `/metrics` is scraped by pod annotation. A restore must take the database to a point no later than the copy of the objects, the base backup's consistency point or a target time at or before the object copy: replaying all archived WAL past the object copy leaves landings that refer to missing objects (ADR 0057). `make helm-check` checks the chart; `make kind-faults` runs the fault runs, which `make ci` does not; they need docker, kind, kubectl, helm, crane and the AWS CLI, and public DNS for the registry's token realm (ADR 0057).
+
+### Routing
+
+The chart renders an `Ingress` (`ingress.enabled`), a Gateway API `HTTPRoute` (`httpRoute.enabled`), both, or neither where the cluster routes by its own means. Each is off by default, and enabling both renders both.
+
+- **Choose `ingress`** where the cluster's entry is an ingress controller, and `httpRoute` where it is a Gateway (ADR 0058). Enable both only while moving from one to the other, on different hosts.
+- **Both split the same way:** `/v1/runner/` goes to `runner-api` and every other path to `api`. The `HTTPRoute` takes `parentRefs` verbatim and `hostnames` from `httpRoute`.
+- **The registry** has its own host, so its route has its own switch: `registry.httpRoute.{enabled,hostnames}` renders an `HTTPRoute` that sends `/v2/` to the registry, on the same `httpRoute.parentRefs`. The registry has no `Ingress`.
+- **The 64 MiB body limit** (ADR 0055) is the cluster's to set on whichever route is used, and the chart sets it on neither: for ingress-nginx an annotation (`nginx.ingress.kubernetes.io/proxy-body-size: 64m`, set in `ingress.annotations`); for Envoy Gateway a `ClientTrafficPolicy` or `BackendTrafficPolicy` on the Gateway or the route. Where it is lower, a runner's result or an upload list is refused before the server sees it.
+
+## Secret contract
+
+Every Secret the chart reads, by value path. A Secret is never a value: it exists in the release's namespace before the install, and the chart reads it by `name` and key. The default key is the value's own `key` (`pemKey` and `jwksKey` for the registry's); a Secret of another key is named by setting it.
+
+| Value path | Default key | Holds | Format | Roles that read it | Required |
+|---|---|---|---|---|---|
+| `postgres.urlSecret` | `url` | The URL of the writable primary the roles connect to, a transaction-mode pooler's where one is used (ADR 0054). | PostgreSQL URL | `api`, `runner-api`, `worker`; `migrate` where `postgres.migrateUrlSecret` names none | yes |
+| `postgres.migrateUrlSecret` | `url` | A direct URL of the primary, which holds the advisory lock the migrations take. | PostgreSQL URL | `migrate` | no; `postgres.urlSecret` where it names none |
+| `postgres.readUrlSecret` | `url` | The URL of a read replica. | PostgreSQL URL | `api`, `runner-api` | no; reads go to the primary where it names none |
+| `s3.secretKeySecret` | `secret-key` | The object store's secret key. | string | `api`, `runner-api` | yes |
+| `registry.storage.secretKeySecret` | `secret-key` | The secret key the registry stores images with. | string | registry | where `registry.enabled` |
+| `registry.httpSecret` | `http-secret` | The `http.secret` the registry's replicas share. | random string | registry | where `registry.enabled` |
+| `registry.keySecret` (`pemKey`) | `signing.pem` | The key the registry's tokens are signed with. | PEM PKCS#8, ES256 (P-256) | `api` | where `registry.enabled` |
+| `registry.keySecret` (`jwksKey`) | `jwks.json` | The JWKS of that key's public half, whose `kid` is `registry.keyId`. | JSON (RFC 7517) | registry | where `registry.enabled`; the same Secret as `pemKey` |
+| `authzen.keySecret` | `key.pem` | The private key that signs the `private-key-jwt` assertions (ADR 0042); mounted at `/etc/codehub/authzen/key.pem`, named by `CODEHUB_AUTHZEN_KEY_FILE`. | PEM PKCS#8, RSA or P-256 | `api`, `runner-api`, `worker` | where `CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION` is `private-key-jwt`; nothing is mounted where it names none |
+| `secretEnv[]` | the entry's `key` | Any secret setting of the server, such as `CODEHUB_AUTHZEN_CLIENT_SECRET`, as the variable the entry names. | string | every role | no |
+| `runner.clientSecretSecret` | `client-secret` | The runner example's OAuth client secret. | string | the runner example | where `runner.enabled` |
+| `imagePullSecrets[]` | by `name` | The credentials for pulling the images. | `kubernetes.io/dockerconfigjson` | every pod and the `migrate` Job | no |
+
+- **Names on the cluster that runs codehub for garam** (garamsh/discussions#6, discussioncomment-19779859, agreed 2026-11-21): namespace `codehub`, release `codehub`.
+  - `codehub-db-runtime`, `codehub-db-migrate` and `codehub-db-read`, key `url`, for the three PostgreSQL values: the pooler, `-rw` directly, and `-ro`.
+  - `codehub-s3`, key `secret-key`, for both `s3.secretKeySecret` and `registry.storage.secretKeySecret`; its identity is scoped to the buckets `codehub` and `codehub-registry`.
+  - `codehub-registry-http`, key `secret`, so `registry.httpSecret.key` is `secret`.
+  - `codehub-registry-signing`, keys `key.pem` and `jwks.json`, so `registry.keySecret.pemKey` is `key.pem`.
+  - `codehub-authzen-key`, key `key.pem`: RSA PKCS#8, which garam accepts (garamsh/discussions#6, discussioncomment-19779853 says RSA only, at most two keys per service, `kid` the RFC 7638 thumbprint). Its public JWK goes to garam; set `CODEHUB_AUTHZEN_KEY_ID` to the thumbprint.
+  - `ecr-pull`, in `imagePullSecrets`.
+- **The pooler behind `codehub-db-runtime`** (ADR 0054): PgBouncer 1.21 or later in transaction mode, with `max_prepared_statements` above 0 and `ignore_startup_parameters` holding `options`, and `postgres.statementCache` set to 1 or more. `max_connections` and `default_pool_size` cover the pods' pool sizes (50 at the chart's defaults: replicas times `postgres.poolSize`), the migrate connection and headroom (ADR 0037).
+- **Restore order** (ADR 0057): take the database to a point no later than the copy of the objects, the base backup's consistency point or a target time at or before the object copy. Replaying all archived WAL past the object copy leaves landings that refer to missing objects.
+- **A rotated key or Secret takes a rollout.** A mounted Secret file is updated in place, but a role reads `CODEHUB_AUTHZEN_KEY_FILE` and the registry key at start, and a Secret read as a variable is fixed at the pod's start; restart the Deployments after replacing one.
 
 ## Server settings
 

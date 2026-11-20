@@ -99,6 +99,11 @@ spec:
               mountPath: /etc/codehub/registry
               readOnly: true
             {{- end }}
+            {{- if $.Values.authzen.keySecret.name }}
+            - name: authzen-key
+              mountPath: /etc/codehub/authzen
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml $values.resources | nindent 12 }}
           securityContext:
@@ -125,6 +130,16 @@ spec:
             items:
               - key: {{ $.Values.registry.keySecret.pemKey }}
                 path: signing.pem
+        {{- end }}
+        {{- with $.Values.authzen.keySecret }}
+        {{- if .name }}
+        - name: authzen-key
+          secret:
+            secretName: {{ .name }}
+            items:
+              - key: {{ required "authzen.keySecret names no key" .key }}
+                path: key.pem
+        {{- end }}
         {{- end }}
 {{- if $role.service }}
 ---
