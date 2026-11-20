@@ -104,7 +104,7 @@ services:
       retries: 60
 
   s3:
-    image: cgr.dev/chainguard/minio:latest@sha256:db3f583fa49121942168bd6383a773b2cde3384c9a99bf7193560b9a0f3a28fd
+    image: cgr.dev/chainguard/minio:latest@sha256:e9cf6b99c226e9539ed0f14b6f00e37b07da153c7ba1f4f8709c807574b471ec
     command: ["server", "/data", "--address", ":9000"]
     environment:
       MINIO_ROOT_USER: ${CODEHUB_TEST_S3_ACCESS_KEY:?set from dev/test.env}
@@ -122,7 +122,7 @@ services:
   # One-shot: creates the bucket once the store is ready, then exits 0. The store has no setting
   # that creates a bucket, so the image's own client does it.
   s3-init:
-    image: cgr.dev/chainguard/minio:latest@sha256:db3f583fa49121942168bd6383a773b2cde3384c9a99bf7193560b9a0f3a28fd
+    image: cgr.dev/chainguard/minio:latest@sha256:e9cf6b99c226e9539ed0f14b6f00e37b07da153c7ba1f4f8709c807574b471ec
     entrypoint: ["mc"]
     command: ["mb", "--ignore-existing", "local/${CODEHUB_TEST_S3_BUCKET:?set from dev/test.env}"]
     environment:
@@ -136,7 +136,7 @@ services:
   # service depends on it with service_completed_successfully. This service holds that dependency
   # and is healthy once the bucket is readable.
   s3-ready:
-    image: cgr.dev/chainguard/minio:latest@sha256:db3f583fa49121942168bd6383a773b2cde3384c9a99bf7193560b9a0f3a28fd
+    image: cgr.dev/chainguard/minio:latest@sha256:e9cf6b99c226e9539ed0f14b6f00e37b07da153c7ba1f4f8709c807574b471ec
     entrypoint: ["sleep", "infinity"]
     environment:
       MC_HOST_local: http://${CODEHUB_TEST_S3_ACCESS_KEY}:${CODEHUB_TEST_S3_SECRET_KEY}@s3:9000
@@ -275,7 +275,7 @@ services:
   # One-shot: creates the registry's bucket, a bucket of its own, once the store is ready, then
   # exits 0. The registry waits for it, which also satisfies the compose rule noted at s3-ready.
   registry-bucket:
-    image: cgr.dev/chainguard/minio:latest@sha256:db3f583fa49121942168bd6383a773b2cde3384c9a99bf7193560b9a0f3a28fd
+    image: cgr.dev/chainguard/minio:latest@sha256:e9cf6b99c226e9539ed0f14b6f00e37b07da153c7ba1f4f8709c807574b471ec
     entrypoint: ["mc"]
     command: ["mb", "--ignore-existing", "local/${CODEHUB_TEST_REGISTRY_BUCKET:?set from dev/test.env}"]
     environment:
