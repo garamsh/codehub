@@ -60,7 +60,6 @@ impl Outcome {
     }
 
     /// Prints the outcome and returns the exit code.
-    #[must_use]
     pub fn finish(self) -> ExitCode {
         print!("{}", self.stdout);
         eprint!("{}", self.stderr);
