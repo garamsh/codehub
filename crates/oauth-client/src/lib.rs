@@ -60,6 +60,46 @@ pub enum Authentication {
     },
 }
 
+/// The certificate authorities one client trusts in place of the system roots (ADR 0059).
+///
+/// A pinned client accepts a server whose chain ends at any certificate of the bundle and no
+/// other, a system-trusted authority included.
+#[derive(Clone)]
+pub struct PinnedCa(Vec<reqwest::Certificate>);
+
+impl PinnedCa {
+    /// The certificates of a PEM bundle: one or several, in any order.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidClient`] where the bytes are not PEM certificates or hold none.
+    pub fn from_pem(pem: &[u8]) -> Result<Self, InvalidClient> {
+        let certificates = reqwest::Certificate::from_pem_bundle(pem)
+            .map_err(|error| InvalidClient(format!("the CA bundle is not valid: {error}")))?;
+        if certificates.is_empty() {
+            return Err(InvalidClient(
+                "the CA bundle holds no certificate".to_owned(),
+            ));
+        }
+        Ok(Self(certificates))
+    }
+}
+
+/// An HTTP client whose requests each take at most `timeout`, trusting only `ca` where given and
+/// the system roots otherwise.
+///
+/// # Errors
+///
+/// A description where the client cannot be built.
+pub fn http_client(ca: Option<&PinnedCa>, timeout: Duration) -> Result<reqwest::Client, String> {
+    let builder = reqwest::Client::builder().timeout(timeout);
+    let builder = match ca {
+        Some(ca) => builder.tls_certs_only(ca.0.iter().cloned()),
+        None => builder,
+    };
+    builder.build().map_err(|error| error.to_string())
+}
+
 /// Why a client cannot be built.
 #[derive(Debug, PartialEq, Eq)]
 pub struct InvalidClient(String);
@@ -184,7 +224,8 @@ struct ErrorResponse {
 }
 
 impl TokenClient {
-    /// A client of `token_endpoint`, adding `audience` to each token request where given.
+    /// A client of `token_endpoint`, adding `audience` to each token request where given and
+    /// trusting only `ca` there where given.
     ///
     /// # Errors
     ///
@@ -195,12 +236,10 @@ impl TokenClient {
         token_endpoint: &str,
         audience: Option<String>,
         authentication: Authentication,
+        ca: Option<&PinnedCa>,
         timeout: Duration,
     ) -> Result<Self, InvalidClient> {
-        let http = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|error| InvalidClient(error.to_string()))?;
+        let http = http_client(ca, timeout).map_err(InvalidClient)?;
         let credentials = match authentication {
             Authentication::ClientSecret {
                 client_id,
@@ -498,6 +537,7 @@ mod tests {
                 key_id: None,
                 issuer: "https://garam.test".to_owned(),
             },
+            None,
             Duration::from_secs(10),
         )
     }

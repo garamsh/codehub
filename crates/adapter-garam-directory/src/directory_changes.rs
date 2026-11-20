@@ -7,7 +7,7 @@ use std::time::Duration;
 use app::port::driven::directory_changes::{
     ChangeKind, DirectoryChanges, OrganisationChange, RepositoryChange,
 };
-use oauth_client::TokenClient;
+use oauth_client::{PinnedCa, TokenClient, http_client};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -38,8 +38,9 @@ enum Answer {
 
 impl GaramDirectoryChanges {
     /// An adapter that delivers to `<base_url>/garam/policy/v1/entity-changes` with the bearer
-    /// tokens of `tokens`. Each request takes at most `timeout`; one delivery is at most two token
-    /// requests and two posts, so the relay's lease must outlast four times `timeout`.
+    /// tokens of `tokens`, trusting only `ca` where given. Each request takes at most `timeout`;
+    /// one delivery is at most two token requests and two posts, so the relay's lease must
+    /// outlast four times `timeout`.
     ///
     /// # Errors
     ///
@@ -47,6 +48,7 @@ impl GaramDirectoryChanges {
     pub fn new(
         base_url: &str,
         tokens: Arc<TokenClient>,
+        ca: Option<&PinnedCa>,
         timeout: Duration,
     ) -> Result<Self, String> {
         let url = reqwest::Url::parse(base_url)
@@ -54,10 +56,7 @@ impl GaramDirectoryChanges {
         if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
             return Err(format!("{base_url:?} is not an http or https URL"));
         }
-        let http = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|error| error.to_string())?;
+        let http = http_client(ca, timeout)?;
         let base_url = base_url.trim_end_matches('/');
         Ok(Self {
             http,

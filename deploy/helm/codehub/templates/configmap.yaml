@@ -22,6 +22,12 @@ data:
   {{- if .Values.authzen.keySecret.name }}
   CODEHUB_AUTHZEN_KEY_FILE: /etc/codehub/authzen/key.pem
   {{- end }}
+  {{- if .Values.authzen.caSecret.name }}
+  CODEHUB_AUTHZEN_CA_FILE: /etc/codehub/authzen-ca/ca.crt
+  {{- end }}
+  {{- if .Values.authzen.tokenCaSecret.name }}
+  CODEHUB_AUTHZEN_TOKEN_CA_FILE: /etc/codehub/authzen-token-ca/ca.crt
+  {{- end }}
   {{- range $name, $value := .Values.config }}
   {{ $name }}: {{ $value | quote }}
   {{- end }}

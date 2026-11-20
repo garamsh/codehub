@@ -30,6 +30,7 @@ How the server is run in production: what bounds a process under load, what it r
 - **Pods run non-root with a read-only root filesystem** and an `emptyDir` at `/tmp`.
 - **Routing** is an `Ingress`, a Gateway API `HTTPRoute` or both, each off by default and independent; both send `/v1/runner/` to `runner-api` and the rest to `api`, and the registry's own `HTTPRoute` sends `/v2/` to it (ADR 0058). The 64 MiB body limit is the cluster's to set on the controller or the gateway; `ci/full.yaml` sets it for ingress-nginx.
 - **`authzen.keySecret`** mounts the `private-key-jwt` key read-only into `api`, `runner-api` and `worker` and sets `CODEHUB_AUTHZEN_KEY_FILE`; a rotated key takes a rollout (ADR 0058). The Secret contract is in `docs/guide/deployment.md`.
+- **`authzen.caSecret` and `authzen.tokenCaSecret`** mount the CA each endpoint is pinned to (the policy service, and the token endpoint) read-only into the same roles and set `CODEHUB_AUTHZEN_CA_FILE` and `CODEHUB_AUTHZEN_TOKEN_CA_FILE`; a rotated CA takes a rollout, with the new CA added beside the old one first (ADR 0059).
 - **The registry** is a Deployment of Distribution with replicas sharing one `http.secret` and the bucket (`registry.md`).
 - **Examples, off by default:** a runner Deployment, and a KEDA `ScaledObject` scaling it on `max(sum by (pod) (codehub_queue_depth{kind="job"}))`, which takes the deepest worker's reading.
 - **`make helm-check`** lints and renders every set of values in `ci/` and is part of `make ci`.

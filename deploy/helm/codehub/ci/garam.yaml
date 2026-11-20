@@ -20,6 +20,8 @@ config:
   CODEHUB_DIRECTORY_CHANGES: garam
 authzen:
   keySecret: {name: codehub-authzen-key, key: key.pem}
+  caSecret: {name: garam-policy-ca, key: ca.crt}
+  tokenCaSecret: {name: garam-server-root, key: ca.crt}
 httpRoute:
   enabled: true
   parentRefs: [{name: public, namespace: gateway}]

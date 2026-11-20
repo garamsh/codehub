@@ -6,7 +6,7 @@ use app::domain::principal::Principal;
 use app::port::driven::authorisation_decision::{
     Action, AuthorisationDecision, AuthorisationError, Decision, Resource,
 };
-use oauth_client::{TokenClient, TokenError};
+use oauth_client::{PinnedCa, TokenClient, TokenError, http_client};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -104,7 +104,7 @@ impl Evaluation {
 impl AuthzenAuthorisationDecision {
     /// An adapter that evaluates at `<base_url>/access/v1/evaluation` and reads the decision
     /// point's metadata at `<base_url>/.well-known/authzen-configuration`, with the bearer tokens
-    /// of `tokens` and the names of `profile`.
+    /// of `tokens` and the names of `profile`, trusting only `ca` where given.
     ///
     /// # Errors
     ///
@@ -113,12 +113,11 @@ impl AuthzenAuthorisationDecision {
         base_url: &str,
         tokens: Arc<TokenClient>,
         profile: Profile,
+        ca: Option<&PinnedCa>,
         timeout: Duration,
     ) -> Result<Self, AuthorisationError> {
-        let http = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(backend)?;
+        let http = http_client(ca, timeout)
+            .map_err(|description| AuthorisationError::Backend(description))?;
         let base_url = base_url.trim_end_matches('/');
         Ok(Self {
             http,
