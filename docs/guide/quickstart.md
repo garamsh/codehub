@@ -455,7 +455,7 @@ Set these on `codehub`, besides its database and object-store settings. The midd
 | `CODEHUB_DIRECTORY_CHANGES` | `garam` | `garam` |
 | `CODEHUB_DIRECTORY_GARAM_URL` | `https://localhost:28083` | garam's policy service |
 
-The end-to-end test also sets `SSL_CERT_FILE` to its throwaway certificate authority, because its TLS certificates are not publicly trusted; an operator whose garam serves publicly trusted certificates does not.
+The end-to-end test also sets `CODEHUB_AUTHZEN_TOKEN_CA_FILE` and `CODEHUB_AUTHZEN_CA_FILE` to its throwaway certificate authority, because its TLS certificates are not publicly trusted, and `SSL_CERT_FILE` to it for the OIDC issuer, which has no setting of its own; an operator whose garam serves publicly trusted certificates sets none of them.
 
 `CODEHUB_DIRECTORY_CHANGES=garam` has to be set before any repository garam must know is created. With the default `none`, `codehub` accepts and discards every change its outbox holds, so a repository created under `none` is never sent to garam later, and garam answers requests about it as for a repository it does not hold (`ch` exits 5). Creation answers after `CODEHUB_DIRECTORY_DELIVERY_WAIT` (2 seconds by default) whether or not garam has the repository yet, so a step that needs garam to know it waits for that.
 

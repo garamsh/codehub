@@ -31,6 +31,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "test-support",
  "tokio",
 ]
 
@@ -1998,6 +1999,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "test-support",
  "tokio",
 ]
 
@@ -3321,10 +3323,12 @@ dependencies = [
  "async-trait",
  "clap",
  "futures-util",
+ "rcgen",
  "reqwest",
  "serde_json",
  "sqlx",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

@@ -20,6 +20,7 @@ mod deployment;
 mod keycloak;
 mod memory_deployment;
 mod server;
+pub mod tls;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;

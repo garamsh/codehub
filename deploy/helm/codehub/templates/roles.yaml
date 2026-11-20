@@ -104,6 +104,16 @@ spec:
               mountPath: /etc/codehub/authzen
               readOnly: true
             {{- end }}
+            {{- if $.Values.authzen.caSecret.name }}
+            - name: authzen-ca
+              mountPath: /etc/codehub/authzen-ca
+              readOnly: true
+            {{- end }}
+            {{- if $.Values.authzen.tokenCaSecret.name }}
+            - name: authzen-token-ca
+              mountPath: /etc/codehub/authzen-token-ca
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml $values.resources | nindent 12 }}
           securityContext:
@@ -139,6 +149,26 @@ spec:
             items:
               - key: {{ required "authzen.keySecret names no key" .key }}
                 path: key.pem
+        {{- end }}
+        {{- end }}
+        {{- with $.Values.authzen.caSecret }}
+        {{- if .name }}
+        - name: authzen-ca
+          secret:
+            secretName: {{ .name }}
+            items:
+              - key: {{ required "authzen.caSecret names no key" .key }}
+                path: ca.crt
+        {{- end }}
+        {{- end }}
+        {{- with $.Values.authzen.tokenCaSecret }}
+        {{- if .name }}
+        - name: authzen-token-ca
+          secret:
+            secretName: {{ .name }}
+            items:
+              - key: {{ required "authzen.tokenCaSecret names no key" .key }}
+                path: ca.crt
         {{- end }}
         {{- end }}
 {{- if $role.service }}

@@ -36,7 +36,7 @@ use app::port::driving::registry_token::RegistryToken;
 use app::use_case::assembly::Assembly;
 use app::use_case::landing_attempts::LandingAttempts;
 use app::use_case::relay::{DirectoryRelay, RelayEnvironment};
-use oauth_client::{Authentication, InvalidClient, TokenClient};
+use oauth_client::{Authentication, InvalidClient, PinnedCa, TokenClient};
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -83,6 +83,16 @@ pub enum Error {
     IncompatibleSettings(&'static str),
     /// The file named by `CODEHUB_AUTHZEN_KEY_FILE` could not be read.
     KeyFile(PathBuf, std::io::Error),
+    /// A file named by `CODEHUB_AUTHZEN_TOKEN_CA_FILE` or `CODEHUB_AUTHZEN_CA_FILE` could not be
+    /// read or holds no certificate.
+    CaFile {
+        /// The variable that names the file.
+        setting: &'static str,
+        /// The file.
+        path: PathBuf,
+        /// Why it was refused.
+        reason: String,
+    },
     /// The AuthZEN client could not be built from its settings.
     Client(InvalidClient),
     /// The check definitions reader could not be built.
@@ -127,6 +137,15 @@ impl fmt::Display for Error {
             Self::KeyFile(path, error) => write!(
                 f,
                 "reading the key file {} named by CODEHUB_AUTHZEN_KEY_FILE failed: {error}",
+                path.display()
+            ),
+            Self::CaFile {
+                setting,
+                path,
+                reason,
+            } => write!(
+                f,
+                "the CA file {} named by {setting} is refused: {reason}",
                 path.display()
             ),
             Self::Client(error) => write!(
@@ -233,9 +252,10 @@ fn token_client(
     token_endpoint: &str,
     audience: Option<String>,
     authentication: Authentication,
+    ca: Option<&PinnedCa>,
     timeout: Duration,
 ) -> Result<Arc<TokenClient>, Error> {
-    TokenClient::new(token_endpoint, audience, authentication, timeout)
+    TokenClient::new(token_endpoint, audience, authentication, ca, timeout)
         .map(Arc::new)
         .map_err(Error::Client)
 }
@@ -244,9 +264,10 @@ fn token_client(
 fn garam_changes(
     url: &str,
     tokens: Arc<TokenClient>,
+    ca: Option<&PinnedCa>,
     timeout: Duration,
 ) -> Result<Arc<dyn DirectoryChanges>, Error> {
-    GaramDirectoryChanges::new(url, tokens, timeout)
+    GaramDirectoryChanges::new(url, tokens, ca, timeout)
         .map(|changes| Arc::new(Observed::new("directory", changes)) as Arc<dyn DirectoryChanges>)
         .map_err(Error::DirectoryChanges)
 }
@@ -258,18 +279,29 @@ fn authzen(
     evaluations: bool,
     timeout: Duration,
 ) -> Result<Selected, Error> {
-    let tokens = token_client(mode.token_endpoint, audience, mode.authentication, timeout)?;
+    let tokens = token_client(
+        mode.token_endpoint,
+        audience,
+        mode.authentication,
+        mode.token_ca.as_ref(),
+        timeout,
+    )?;
     let profile = match mode.profile {
         AuthzenProfile::Plain => Profile::Plain,
         AuthzenProfile::Grn => Profile::Grn,
     };
-    let decider =
-        AuthzenAuthorisationDecision::new(mode.url, Arc::clone(&tokens), profile, timeout)
-            .map_err(Error::Authorisation)?
-            .with_access_evaluations(evaluations);
+    let decider = AuthzenAuthorisationDecision::new(
+        mode.url,
+        Arc::clone(&tokens),
+        profile,
+        mode.policy_ca.as_ref(),
+        timeout,
+    )
+    .map_err(Error::Authorisation)?
+    .with_access_evaluations(evaluations);
     let changes: Arc<dyn DirectoryChanges> = match mode.garam_url {
         None => Arc::new(()),
-        Some(url) => garam_changes(url, tokens, timeout)?,
+        Some(url) => garam_changes(url, tokens, mode.policy_ca.as_ref(), timeout)?,
     };
     Ok((Arc::new(Observed::new("decision_point", decider)), changes))
 }
@@ -425,9 +457,15 @@ async fn work(options: &WorkerOptions, telemetry: &Telemetry) -> Result<(), Erro
                 delivery.token_endpoint,
                 options.authzen.authzen_audience.clone(),
                 delivery.authentication,
+                delivery.token_ca.as_ref(),
                 options.timing.authzen_timeout(),
             )?;
-            garam_changes(delivery.url, tokens, options.timing.authzen_timeout())?
+            garam_changes(
+                delivery.url,
+                tokens,
+                delivery.policy_ca.as_ref(),
+                options.timing.authzen_timeout(),
+            )?
         }
     };
     let relay = relay(&database, changes, UNUSED_DELIVERY_WAIT);
