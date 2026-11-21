@@ -58,7 +58,7 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/config: {{ toYaml $r | sha256sum }}
+        checksum/config: {{ toYaml (omit $r "httpRoute") | sha256sum }}
       labels:
         {{- include "codehub.labels" . | nindent 8 }}
         app.kubernetes.io/component: registry

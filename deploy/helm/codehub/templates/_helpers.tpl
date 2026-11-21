@@ -36,6 +36,14 @@ app.kubernetes.io/component: {{ .component }}
       key: {{ required (printf "%s names no key" .what) .secret.key }}
 {{- end -}}
 
+{{/* A list as YAML, failing where it is empty. Takes "value" and "what" for the message. */}}
+{{- define "codehub.nonEmpty" -}}
+{{- if empty .value -}}
+{{- fail (printf "%s is required" .what) -}}
+{{- end -}}
+{{- toYaml .value -}}
+{{- end -}}
+
 {{/* The pod anti-affinity of a component's replicas. Takes "root", "component" and "mode". */}}
 {{- define "codehub.antiAffinity" -}}
 {{- if or (eq .mode "soft") (eq .mode "hard") -}}

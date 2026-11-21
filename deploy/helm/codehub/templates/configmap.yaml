@@ -19,6 +19,9 @@ data:
   CODEHUB_REGISTRY_KEY_FILE: /etc/codehub/registry/signing.pem
   CODEHUB_REGISTRY_KEY_ID: {{ required "registry.keyId is required" .Values.registry.keyId | quote }}
   {{- end }}
+  {{- if .Values.authzen.keySecret.name }}
+  CODEHUB_AUTHZEN_KEY_FILE: /etc/codehub/authzen/key.pem
+  {{- end }}
   {{- range $name, $value := .Values.config }}
   {{ $name }}: {{ $value | quote }}
   {{- end }}

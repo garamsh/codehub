@@ -157,6 +157,26 @@ ingress:
   host: ""
   tls: []
 
+# The same split as a Gateway API HTTPRoute (ADR 0058), for a cluster whose entry is a Gateway. It
+# and `ingress` are independent: each renders where enabled, and enabling both renders both.
+# The body limit of 64 MiB (see ingress.annotations) is set on the gateway, in a policy the chart
+# does not render, such as Envoy Gateway's ClientTrafficPolicy.
+httpRoute:
+  enabled: false
+  # Passed to the HTTPRoute verbatim, [{name: public, namespace: gateway}]; the registry's route
+  # (registry.httpRoute) uses them too. Required where either route is enabled.
+  parentRefs: []
+  # The hosts of the API; required where enabled.
+  hostnames: []
+
+# The Secret holding the private key that signs the assertions of private-key-jwt
+# (CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION, ADR 0042): PEM PKCS#8, RSA or P-256. Where it names a
+# Secret, the key is mounted read-only into api, runner-api and worker and CODEHUB_AUTHZEN_KEY_FILE
+# names it; the server reads it at start, so a rotated key takes a rollout. Where it names none,
+# nothing is mounted.
+authzen:
+  keySecret: {name: "", key: key.pem}
+
 # Scrape annotations on every pod of every role.
 metrics:
   annotations: true
@@ -204,6 +224,11 @@ registry:
   realm: ""
   tokenService: codehub-registry
   issuer: codehub
+  # Sends /v2/ to the registry, on the parentRefs of the top-level httpRoute; renders only where the
+  # registry is enabled. Its own switch because the registry has a host of its own.
+  httpRoute:
+    enabled: false
+    hostnames: []
   nodeSelector: {}
   tolerations: []
 
