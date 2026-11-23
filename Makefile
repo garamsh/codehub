@@ -118,8 +118,10 @@ ci:
 	$(MAKE) helm-check
 	$(MAKE) test e2e test-pg-modes loadtest-smoke
 
-# Lints the chart (deploy/helm/codehub) and renders it for each set of values in its ci/ directory,
-# and reports how many sets and objects. A set that renders no object fails.
+# Lints the chart (deploy/helm/codehub), renders it for each set of values in its ci/ directory and
+# reports how many sets and objects (a set that renders no object fails), then asserts what the
+# garam values render: the routes, the key mounts and what the chart refuses
+# (crates/codehub/tests/chart.rs). The run fails where it selects no test.
 .PHONY: helm-check
 helm-check:
 	set -eu; \
@@ -132,6 +134,7 @@ helm-check:
 	done; \
 	echo "helm-check: $$cases sets of values linted and rendered, $$objects objects"; \
 	test "$$cases" -gt 0
+	cargo nextest run --no-tests=fail --locked -p codehub --test chart
 
 # The fault runs of the chart in a kind cluster (deploy/helm/tests, ADR 0057). Not part of `ci`: it
 # takes long and needs kind; the kind-faults workflow runs it on demand.

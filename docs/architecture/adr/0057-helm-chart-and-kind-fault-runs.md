@@ -1,6 +1,6 @@
 # ADR 0057: the Helm chart deploys each role as a Deployment, and kind fault runs gate it
 
-> Status: accepted
+> Status: accepted; the path split of its `Ingress` is superseded by ADR 0060
 > Date: 2026-11-16
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.

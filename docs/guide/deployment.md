@@ -60,7 +60,7 @@ The server binary runs as one role, named by its first argument (ADR 0052). The 
 The chart renders an `Ingress` (`ingress.enabled`), a Gateway API `HTTPRoute` (`httpRoute.enabled`), both, or neither where the cluster routes by its own means. Each is off by default, and enabling both renders both.
 
 - **Choose `ingress`** where the cluster's entry is an ingress controller, and `httpRoute` where it is a Gateway (ADR 0058). Enable both only while moving from one to the other, on different hosts.
-- **Both split the same way:** `/v1/runner/` goes to `runner-api` and every other path to `api`. The `HTTPRoute` takes `parentRefs` verbatim and `hostnames` from `httpRoute`.
+- **Both split the same way:** `/v1/runner/` goes to `runner-api` and the rest of `/v1/` to `api`; nothing else is routed, so `/healthz`, `/readyz` and `/metrics` stay inside the cluster (ADR 0060). The `HTTPRoute` takes `parentRefs` verbatim and `hostnames` from `httpRoute`.
 - **The registry** has its own host, so its route has its own switch: `registry.httpRoute.{enabled,hostnames}` renders an `HTTPRoute` that sends `/v2/` to the registry, on the same `httpRoute.parentRefs`. The registry has no `Ingress`.
 - **The 64 MiB body limit** (ADR 0055) is the cluster's to set on whichever route is used, and the chart sets it on neither: for ingress-nginx an annotation (`nginx.ingress.kubernetes.io/proxy-body-size: 64m`, set in `ingress.annotations`); for Envoy Gateway a `ClientTrafficPolicy` or `BackendTrafficPolicy` on the Gateway or the route. Where it is lower, a runner's result or an upload list is refused before the server sees it.
 
@@ -79,7 +79,7 @@ Every Secret the chart reads, by value path. A Secret is never a value: it exist
 | `registry.keySecret` (`pemKey`) | `signing.pem` | The key the registry's tokens are signed with. | PEM PKCS#8, ES256 (P-256) | `api` | where `registry.enabled` |
 | `registry.keySecret` (`jwksKey`) | `jwks.json` | The JWKS of that key's public half, whose `kid` is `registry.keyId`. | JSON (RFC 7517) | registry | where `registry.enabled`; the same Secret as `pemKey` |
 | `authzen.keySecret` | `key.pem` | The private key that signs the `private-key-jwt` assertions (ADR 0042); mounted at `/etc/codehub/authzen/key.pem`, named by `CODEHUB_AUTHZEN_KEY_FILE`. | PEM PKCS#8, RSA or P-256 | `api`, `runner-api`, `worker` | where `CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION` is `private-key-jwt`; nothing is mounted where it names none |
-| `secretEnv[]` | the entry's `key` | Any secret setting of the server, such as `CODEHUB_AUTHZEN_CLIENT_SECRET`, as the variable the entry names. | string | every role | no |
+| `secretEnv[]` | the entry's `key` | Any secret setting of the server, such as `CODEHUB_AUTHZEN_CLIENT_SECRET`, as the variable the entry names. | string | api, runner-api, worker | no |
 | `runner.clientSecretSecret` | `client-secret` | The runner example's OAuth client secret. | string | the runner example | where `runner.enabled` |
 | `imagePullSecrets[]` | by `name` | The credentials for pulling the images. | `kubernetes.io/dockerconfigjson` | every pod and the `migrate` Job | no |
 
