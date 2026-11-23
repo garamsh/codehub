@@ -153,7 +153,7 @@ jobs:
         run: |
           helm version >> "$GITHUB_STEP_SUMMARY"
           helm package deploy/helm/codehub --version "$VERSION" --app-version "$VERSION"
-          pushed=$(helm push "codehub-$VERSION.tgz" "oci://$REGISTRY/codehub/charts")
+          pushed=$(helm push "codehub-$VERSION.tgz" "oci://$REGISTRY/codehub/charts" 2>&1)
           echo "$pushed"
           printed=$(echo "$pushed" | sed -n 's/^Digest: //p')
           chart="$REGISTRY/codehub/charts/codehub:$VERSION"
