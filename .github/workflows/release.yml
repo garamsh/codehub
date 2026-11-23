@@ -144,7 +144,8 @@ jobs:
       - id: ecr
         uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
 
-      # The digest is the one the registry stores, read back after the push.
+      # The digest is the one the registry stores, read back after the push as the images job does;
+      # the job fails where it differs from the digest `helm push` printed.
       - id: push
         env:
           VERSION: ${{ needs.images.outputs.version }}
@@ -152,11 +153,16 @@ jobs:
         run: |
           helm version >> "$GITHUB_STEP_SUMMARY"
           helm package deploy/helm/codehub --version "$VERSION" --app-version "$VERSION"
-          helm push "codehub-$VERSION.tgz" "oci://$REGISTRY/codehub/charts"
+          pushed=$(helm push "codehub-$VERSION.tgz" "oci://$REGISTRY/codehub/charts")
+          echo "$pushed"
+          printed=$(echo "$pushed" | sed -n 's/^Digest: //p')
           chart="$REGISTRY/codehub/charts/codehub:$VERSION"
-          digest=$(aws ecr describe-images --repository-name codehub/charts/codehub \
-            --image-ids "imageTag=$VERSION" --query 'imageDetails[0].imageDigest' --output text)
-          test -n "$digest" -a "$digest" != None
+          digest=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$chart")
+          test -n "$digest"
+          if [[ $digest != "$printed" ]]; then
+            echo "chart digest read back ($digest) differs from the one helm push printed ($printed)" >&2
+            exit 1
+          fi
           echo "chart=$chart" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "$chart@$digest" >> "$GITHUB_STEP_SUMMARY"
