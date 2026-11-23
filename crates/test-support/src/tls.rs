@@ -30,6 +30,10 @@ pub struct Leaf {
 
 impl Authority {
     /// A new authority named `name`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the key or certificate cannot be generated.
     #[must_use]
     pub fn new(name: &str) -> Self {
         let key = KeyPair::generate().unwrap();
@@ -54,6 +58,10 @@ impl Authority {
     }
 
     /// A certificate this authority signs for the loopback address.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the key or certificate cannot be generated.
     #[must_use]
     pub fn leaf(&self) -> Leaf {
         let key = KeyPair::generate().unwrap();
@@ -84,6 +92,10 @@ pub struct TlsServer {
 impl TlsServer {
     /// Starts the server with `leaf`; `respond` is given each request's text, headers and body,
     /// and returns the status and the JSON body of the answer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the certificate is refused or the loopback address cannot be bound.
     pub async fn start(
         leaf: &Leaf,
         respond: impl Fn(&str) -> (u16, String) + Send + 'static,
@@ -124,6 +136,10 @@ impl TlsServer {
     }
 
     /// How many requests were answered.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the record of requests was poisoned by a panic in `respond`.
     #[must_use]
     pub fn answered(&self) -> usize {
         self.requests.lock().unwrap().len()

@@ -19,6 +19,7 @@ Choices considered and not taken:
 ## Decision
 
 - **`CODEHUB_AUTHZEN_TOKEN_CA_FILE`** pins the token endpoint and **`CODEHUB_AUTHZEN_CA_FILE`** pins the policy service (decisions and directory). Each is optional. Where set, that client trusts only the certificates in the file and no system root; where unset, it trusts the system roots.
+- **A certificate that does not chain to the file fails the TLS handshake**, so no request, token request included, is sent. A refused token request or decision is a server error and allows nothing (ADR 0033); a refused directory change stays in the outbox and is retried (ADR 0044). A CA the system trusts is refused all the same. The pin is the trust anchor: a server certificate is accepted when it chains to a certificate of the file, and the file's certificates are not matched against the server's own.
 - **A file may hold several certificates** and the client trusts every one of them.
 - **The server checks the file at start.** A missing or unreadable file, or one with no certificate, refuses to start, naming the setting and the path.
 - **Rotation takes a rollout.** The files are read at start, so a replaced CA reaches pods started after the replacement, as for the key (ADR 0058); the chart adds no checksum of it. A rotation without a gap has two rollouts: put the new CA beside the old one in the file and roll out, then, once the endpoint serves the new chain, remove the old one and roll out again.

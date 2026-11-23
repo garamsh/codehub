@@ -137,10 +137,7 @@ impl Garam {
                 // The token endpoint and the policy service are pinned to the throwaway CA
                 // (ADR 0059). `SSL_CERT_FILE` stays for the OIDC issuer, which is garam too and
                 // has no setting of its own, so its keys are fetched through the system roots.
-                (
-                    "CODEHUB_AUTHZEN_TOKEN_CA_FILE",
-                    env("CODEHUB_GARAM_E2E_CA"),
-                ),
+                ("CODEHUB_AUTHZEN_TOKEN_CA_FILE", env("CODEHUB_GARAM_E2E_CA")),
                 ("CODEHUB_AUTHZEN_CA_FILE", env("CODEHUB_GARAM_E2E_CA")),
                 ("SSL_CERT_FILE", env("CODEHUB_GARAM_E2E_CA")),
             ],

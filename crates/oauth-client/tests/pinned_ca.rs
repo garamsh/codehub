@@ -13,12 +13,14 @@ const CHILD_DIR: &str = "CODEHUB_TEST_PINNED_CA_DIR";
 
 const TOKEN: &str = r#"{"access_token":"issued","token_type":"Bearer","expires_in":3600}"#;
 
+#[cfg(test)]
 async fn token_endpoint(leaf: &Leaf) -> TlsServer {
     TlsServer::start(leaf, |_| (200, TOKEN.to_owned())).await
 }
 
 /// Whether a client trusting only `pinned`, or the system roots where none, gets a token from
 /// `server`.
+#[cfg(test)]
 async fn reaches(server: &TlsServer, pinned: Option<&str>) -> bool {
     let ca = pinned.map(|pem| PinnedCa::from_pem(pem.as_bytes()).unwrap());
     let client = TokenClient::new(

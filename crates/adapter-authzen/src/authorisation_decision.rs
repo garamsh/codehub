@@ -116,8 +116,7 @@ impl AuthzenAuthorisationDecision {
         ca: Option<&PinnedCa>,
         timeout: Duration,
     ) -> Result<Self, AuthorisationError> {
-        let http = http_client(ca, timeout)
-            .map_err(|description| AuthorisationError::Backend(description))?;
+        let http = http_client(ca, timeout).map_err(AuthorisationError::Backend)?;
         let base_url = base_url.trim_end_matches('/');
         Ok(Self {
             http,

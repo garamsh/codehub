@@ -1707,6 +1707,9 @@ mod tests {
         path
     }
 
+    /// Sets the path of one CA setting.
+    type Setter = fn(&mut AllOptions, PathBuf);
+
     #[test]
     fn reads_each_ca_file_and_refuses_one_it_cannot_use() {
         let certificates = format!(
@@ -1719,7 +1722,7 @@ mod tests {
         let missing = std::env::temp_dir().join("codehub-no-such-ca-file.pem");
         assert!(!missing.exists(), "{} exists", missing.display());
 
-        let set: [(&str, fn(&mut AllOptions, PathBuf)); 2] = [
+        let set: [(&str, Setter); 2] = [
             ("CODEHUB_AUTHZEN_TOKEN_CA_FILE", |config, path| {
                 config.authzen.authzen_token_ca_file = Some(path);
             }),
