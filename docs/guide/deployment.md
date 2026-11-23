@@ -28,6 +28,8 @@ A tag `vX.Y.Z`, `vX.Y.Z-dev.N` or `vX.Y.Z-rc.N` of this repository publishes bot
 | `codehub/server:<version>` | `deploy/server.Dockerfile` | `/usr/local/bin/codehub` | Exposes port 8080. |
 | `codehub/runner:<version>` | `deploy/runner.Dockerfile` | `/usr/local/bin/codehub-runner` | Holds `/bin/sh` and coreutils, which the host driver runs a job's command under. |
 
+The same tag publishes the Helm chart as an OCI artifact, `codehub/charts/codehub:<version>`, in the registry of the images, with the chart's `version` and `appVersion` set to the release version and its digest in the GitHub release. Pull it by that digest: the repository is tag-immutable, so a version is pushed once.
+
 - Both run as user 10001, not root, and are based on `debian:trixie-slim` with CA certificates.
 - Both carry `org.opencontainers.image.version` and `org.opencontainers.image.revision` labels.
 - No address, URL or secret is set at build time. Every setting comes from the variables below at run.
