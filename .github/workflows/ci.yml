@@ -3,9 +3,13 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, "goal/**"]
 
 permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   ci:
