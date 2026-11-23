@@ -1,7 +1,8 @@
 name: release
 
-# A `vX.Y.Z`, `vX.Y.Z-dev.N` or `vX.Y.Z-rc.N` tag publishes codehub/server and codehub/runner
-# tagged with the version without its `v`, and no other tag does. A tag with a suffix makes a
+# A `vX.Y.Z`, `vX.Y.Z-dev.N` or `vX.Y.Z-rc.N` tag publishes codehub/server and codehub/runner and
+# the Helm chart codehub/charts/codehub, each tagged with the version without its `v`, and no other
+# tag does. A tag with a suffix makes a
 # pre-release that is not marked latest. The
 # push role's trust policy admits only the subject refs/tags/v* of this repository, so no other
 # trigger gets a credential. Action pins take the form ci.yml states.
@@ -15,8 +16,8 @@ permissions: read-all
 # release tag could publish nothing.
 
 env:
-  # The role that pushes codehub/server and codehub/runner to ECR: trusts refs/tags/v* of this
-  # repository, audience sts.amazonaws.com.
+  # The role that pushes codehub/server, codehub/runner and codehub/charts/codehub to ECR: trusts
+  # refs/tags/v* of this repository, audience sts.amazonaws.com.
   AWS_ROLE: arn:aws:iam::486152169996:role/github-actions-codehub-push
   AWS_REGION: ap-northeast-2
 
@@ -115,8 +116,51 @@ jobs:
             echo "${pair#*=}@$digest" >> "$GITHUB_STEP_SUMMARY"
           done
 
-  release:
+  # The chart is packaged at the release version, as the image tags are, and pushed as an OCI
+  # artifact to a repository that is tag-immutable: a tag is pushed once, and the chart's own
+  # `version` in Chart.yaml is replaced here. The version is validated by the images job.
+  chart:
     needs: images
+    # Mover: the .github/ owner in CODEOWNERS (@sauce-git) moves this label when a newer versioned label is published.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      chart: ${{ steps.push.outputs.chart }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Record runner image
+        run: echo "ImageOS=$ImageOS ImageVersion=$ImageVersion" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      # `helm push` prints the digest the registry stored; the step fails where it prints none.
+      - id: push
+        env:
+          VERSION: ${{ needs.images.outputs.version }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          helm package deploy/helm/codehub --version "$VERSION" --app-version "$VERSION"
+          pushed=$(helm push "codehub-$VERSION.tgz" "oci://$REGISTRY/codehub/charts")
+          echo "$pushed"
+          digest=$(echo "$pushed" | sed -n 's/^Digest: //p')
+          test -n "$digest"
+          echo "chart=$REGISTRY/codehub/charts/codehub:$VERSION" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "$REGISTRY/codehub/charts/codehub:$VERSION@$digest" >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    needs: [images, chart]
     # Mover: the .github/ owner in CODEOWNERS (@sauce-git) moves this label when a newer versioned label is published.
     runs-on: ubuntu-24.04
     permissions:
@@ -135,3 +179,6 @@ jobs:
 
             ${{ needs.images.outputs.registry }}/codehub/runner:${{ needs.images.outputs.version }}
             ${{ needs.images.outputs.runner-digest }}
+
+            ${{ needs.chart.outputs.chart }}
+            ${{ needs.chart.outputs.digest }}
