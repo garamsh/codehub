@@ -33,6 +33,7 @@ How the server is run in production: what bounds a process under load, what it r
 - **`authzen.caSecret` and `authzen.tokenCaSecret`** mount the CA each endpoint is pinned to (the policy service, and the token endpoint) read-only into the same roles and set `CODEHUB_AUTHZEN_CA_FILE` and `CODEHUB_AUTHZEN_TOKEN_CA_FILE`; a rotated CA takes a rollout, with the new CA added beside the old one first (ADR 0059).
 - **The registry** is a Deployment of Distribution with replicas sharing one `http.secret` and the bucket (`registry.md`).
 - **Examples, off by default:** a runner Deployment, and a KEDA `ScaledObject` scaling it on `max(sum by (pod) (codehub_queue_depth{kind="job"}))`, which takes the deepest worker's reading.
+- **The chart is released with the tag:** the release tag sets its `version` and `appVersion`, and it is pushed to `codehub/charts/codehub` in ECR, a tag-immutable repository, where aurora pins it by digest (ADR 0061).
 - **`make helm-check`** lints and renders every set of values in `ci/` and is part of `make ci`.
 
 ### Fault runs

@@ -144,20 +144,22 @@ jobs:
       - id: ecr
         uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
 
-      # `helm push` prints the digest the registry stored; the step fails where it prints none.
+      # The digest is the one the registry stores, read back after the push.
       - id: push
         env:
           VERSION: ${{ needs.images.outputs.version }}
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
+          helm version >> "$GITHUB_STEP_SUMMARY"
           helm package deploy/helm/codehub --version "$VERSION" --app-version "$VERSION"
-          pushed=$(helm push "codehub-$VERSION.tgz" "oci://$REGISTRY/codehub/charts")
-          echo "$pushed"
-          digest=$(echo "$pushed" | sed -n 's/^Digest: //p')
-          test -n "$digest"
-          echo "chart=$REGISTRY/codehub/charts/codehub:$VERSION" >> "$GITHUB_OUTPUT"
+          helm push "codehub-$VERSION.tgz" "oci://$REGISTRY/codehub/charts"
+          chart="$REGISTRY/codehub/charts/codehub:$VERSION"
+          digest=$(aws ecr describe-images --repository-name codehub/charts/codehub \
+            --image-ids "imageTag=$VERSION" --query 'imageDetails[0].imageDigest' --output text)
+          test -n "$digest" -a "$digest" != None
+          echo "chart=$chart" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "$REGISTRY/codehub/charts/codehub:$VERSION@$digest" >> "$GITHUB_STEP_SUMMARY"
+          echo "$chart@$digest" >> "$GITHUB_STEP_SUMMARY"
 
   release:
     needs: [images, chart]
