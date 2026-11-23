@@ -6,9 +6,13 @@ name: garam-e2e
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, "goal/**"]
 
 permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Role of aurora#780: read access on garam/server and garam/policy only, audience sts.amazonaws.com.
