@@ -1,3 +1,4 @@
+# Render-only fixture: its values have garam's shape but are not garam's real ones.
 imagePullSecrets: [{name: ecr-pull}]
 postgres:
   urlSecret: {name: codehub-db-runtime, key: url}
