@@ -23,8 +23,9 @@ use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPai
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
-use oauth_client::{Authentication, TokenClient};
+use oauth_client::{Authentication, PinnedCa, TokenClient};
 use serde_json::{Value, json};
+use test_support::tls::{Authority, TlsServer};
 use test_support::wait_for_token_endpoint;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -90,6 +91,7 @@ fn secret_tokens(token_endpoint: &str, client_id: &str, secret: &str) -> Arc<Tok
                 client_id: client_id.to_owned(),
                 client_secret: secret.to_owned(),
             },
+            None,
             Duration::from_secs(10),
         )
         .unwrap(),
@@ -117,6 +119,7 @@ async fn real_adapter_with_secret(secret: &str) -> AuthzenAuthorisationDecision 
             secret,
         ),
         Profile::Plain,
+        None,
         Duration::from_secs(10),
     )
     .unwrap()
@@ -290,6 +293,7 @@ async fn fails_where_the_decision_point_is_unreachable() {
             &env("CODEHUB_TEST_KEYCLOAK_AUTHZEN_CLIENT_SECRET"),
         ),
         Profile::Plain,
+        None,
         Duration::from_secs(10),
     )
     .unwrap();
@@ -349,6 +353,7 @@ impl Stub {
                 "resource-secret",
             ),
             Profile::Plain,
+            None,
             Duration::from_secs(10),
         )
         .unwrap()
@@ -600,12 +605,66 @@ async fn obtains_its_token_by_client_credentials_and_presents_it_as_a_bearer() {
 }
 
 #[tokio::test]
+async fn trusts_only_the_authority_pinned_for_the_decision_point() {
+    let decision_authority = Authority::new("decision point");
+    let other = Authority::new("other");
+    let server = TlsServer::start(&decision_authority.leaf(), |request| {
+        let body = if request.starts_with("POST /token ") {
+            json!({"access_token": "t", "token_type": "Bearer", "expires_in": 3600})
+        } else {
+            json!({"decision": true})
+        };
+        (200, body.to_string())
+    })
+    .await;
+    // The token endpoint is pinned to the same authority, so only the decision call differs.
+    let decides = |pinned: &Authority| {
+        let pinned_ca = PinnedCa::from_pem(pinned.pem().as_bytes()).unwrap();
+        let tokens = Arc::new(
+            TokenClient::new(
+                &format!("{}/token", server.url),
+                None,
+                Authentication::ClientSecret {
+                    client_id: "codehub".to_owned(),
+                    client_secret: "secret".to_owned(),
+                },
+                Some(&PinnedCa::from_pem(decision_authority.pem().as_bytes()).unwrap()),
+                Duration::from_secs(10),
+            )
+            .unwrap(),
+        );
+        let adapter = AuthzenAuthorisationDecision::new(
+            &server.url,
+            tokens,
+            Profile::Plain,
+            Some(&pinned_ca),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        async move {
+            let subject = Principal::new("https://issuer.example", "user-1").unwrap();
+            adapter
+                .decide(&subject, Action::Read, &repository("acme", "app"))
+                .await
+        }
+    };
+
+    // The control: the authority that signed the decision point's certificate.
+    assert_eq!(decides(&decision_authority).await, Ok(Decision::Allow));
+    assert!(matches!(
+        decides(&other).await,
+        Err(AuthorisationError::Backend(_))
+    ));
+}
+
+#[tokio::test]
 async fn form_urlencodes_the_client_credentials_before_basic_encoding_them() {
     let stub = stub_with(3600, decision_reply(true)).await;
     let adapter = AuthzenAuthorisationDecision::new(
         &stub.url,
         secret_tokens(&format!("{}/token", stub.url), "cli:ent", "p:w%d s"),
         Profile::Plain,
+        None,
         Duration::from_secs(10),
     )
     .unwrap();
@@ -1459,6 +1518,7 @@ fn assertion_tokens(
                 key_id: kid.map(str::to_owned),
                 issuer: ISSUER.to_owned(),
             },
+            None,
             Duration::from_secs(10),
         )
         .unwrap(),
@@ -1484,6 +1544,7 @@ async fn fixture(key: &SigningKey, options: Options) -> Fixture {
         &stub.url,
         assertion_tokens(&format!("{}/token", stub.url), key, kid, audience),
         profile,
+        None,
         Duration::from_secs(10),
     )
     .unwrap()
@@ -1857,6 +1918,7 @@ async fn fails_as_a_server_error_on_any_other_refusal_of_a_token_request() {
             &stub.url,
             tokens,
             Profile::Grn,
+            None,
             Duration::from_secs(10),
         )
         .unwrap();

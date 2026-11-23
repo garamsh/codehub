@@ -16,8 +16,9 @@ use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use oauth_client::{Authentication, TokenClient};
+use oauth_client::{Authentication, PinnedCa, TokenClient};
 use serde_json::{Value, json};
+use test_support::tls::{Authority, TlsServer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -71,6 +72,7 @@ impl StandIn {
         GaramDirectoryChanges::new(
             &self.url,
             tokens(&format!("{}/token", self.url)),
+            None,
             Duration::from_secs(10),
         )
         .unwrap()
@@ -190,6 +192,7 @@ fn tokens(token_endpoint: &str) -> Arc<TokenClient> {
                 key_id: None,
                 issuer: "https://garam.test".to_owned(),
             },
+            None,
             Duration::from_secs(10),
         )
         .unwrap(),
@@ -324,6 +327,7 @@ async fn is_not_built_over_something_that_is_not_an_http_url() {
         let built = GaramDirectoryChanges::new(
             url,
             tokens("http://garam.test/token"),
+            None,
             Duration::from_secs(10),
         );
 
@@ -373,6 +377,7 @@ async fn does_not_accept_a_change_while_garam_is_down_or_unreachable() {
         GaramDirectoryChanges::new(
             &url,
             tokens(&format!("{url}/token")),
+            None,
             Duration::from_secs(10),
         )
         .unwrap()
@@ -409,6 +414,61 @@ async fn obtains_another_token_where_garam_refuses_the_first() {
     assert!(accepted);
     assert_eq!(stand_in.requests_to(ENTITY_CHANGES).len(), 2);
     assert_eq!(stand_in.requests_to("/token").len(), 2);
+}
+
+/// What the TLS servers answer: a token to any client, and `written` to the change.
+#[cfg(test)]
+fn over_tls(request: &str) -> (u16, String) {
+    let (status, body) = if request.starts_with("POST /token ") {
+        token_reply(request)
+    } else {
+        written()
+    };
+    (status.split(' ').next().unwrap().parse().unwrap(), body)
+}
+
+#[tokio::test]
+async fn trusts_only_the_authority_pinned_for_each_of_the_token_endpoint_and_garam() {
+    let token_authority = Authority::new("token endpoint");
+    let policy_authority = Authority::new("policy service");
+    let token_server = TlsServer::start(&token_authority.leaf(), over_tls).await;
+    let policy_server = TlsServer::start(&policy_authority.leaf(), over_tls).await;
+    let pinned = |pem: String| PinnedCa::from_pem(pem.as_bytes()).unwrap();
+    let delivers = |token_ca: String, policy_ca: String| {
+        let tokens = Arc::new(
+            TokenClient::new(
+                &format!("{}/token", token_server.url),
+                None,
+                Authentication::PrivateKeyJwt {
+                    client_id_template: "grn:{organisation}/iam/service/codehub".to_owned(),
+                    key_pem: key_pem(),
+                    key_id: None,
+                    issuer: "https://garam.test".to_owned(),
+                },
+                Some(&pinned(token_ca)),
+                Duration::from_secs(10),
+            )
+            .unwrap(),
+        );
+        let adapter = GaramDirectoryChanges::new(
+            &policy_server.url,
+            tokens,
+            Some(&pinned(policy_ca)),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        async move {
+            adapter
+                .repository_changed(&change("acme", "app", 7, ChangeKind::Created, 1))
+                .await
+        }
+    };
+
+    // The control: each endpoint with its own authority.
+    assert!(delivers(token_authority.pem(), policy_authority.pem()).await);
+    // The token endpoint's authority does not serve the policy service, nor the reverse.
+    assert!(!delivers(token_authority.pem(), token_authority.pem()).await);
+    assert!(!delivers(policy_authority.pem(), policy_authority.pem()).await);
 }
 
 #[tokio::test]

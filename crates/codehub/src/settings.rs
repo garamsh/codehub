@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use app::use_case::administration::Administration;
 use app::use_case::landing_attempts::LandingAttempts;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use oauth_client::Authentication;
+use oauth_client::{Authentication, PinnedCa};
 
 use crate::overload::{OverloadOptions, TimingOptions};
 use crate::postgres::{MigrationOptions, PostgresSettings, ReplicaOptions};
@@ -419,6 +419,16 @@ pub struct AuthzenClientOptions {
     /// from a setting's value.
     #[arg(long, env = "CODEHUB_AUTHZEN_KEY_FILE")]
     pub authzen_key_file: Option<PathBuf>,
+    /// The path of a PEM file of one or several certificates; where given, the token endpoint's
+    /// certificate must chain to one of them and the system roots are not trusted for it (ADR
+    /// 0059). Read at start; a rotated file needs a restart.
+    #[arg(long, env = "CODEHUB_AUTHZEN_TOKEN_CA_FILE")]
+    pub authzen_token_ca_file: Option<PathBuf>,
+    /// The path of a PEM file of one or several certificates; where given, the decision point's
+    /// and garam's policy service's certificate must chain to one of them and the system roots
+    /// are not trusted for them (ADR 0059). Read at start; a rotated file needs a restart.
+    #[arg(long, env = "CODEHUB_AUTHZEN_CA_FILE")]
+    pub authzen_ca_file: Option<PathBuf>,
     /// The `kid` header of the assertions, such as the key's RFC 7638 thumbprint; optional.
     #[arg(long, env = "CODEHUB_AUTHZEN_KEY_ID")]
     pub authzen_key_id: Option<String>,
@@ -559,6 +569,8 @@ impl fmt::Debug for AuthzenClientOptions {
             authzen_profile,
             authzen_client_authentication,
             authzen_key_file,
+            authzen_token_ca_file,
+            authzen_ca_file,
             authzen_key_id,
             authzen_issuer,
             authzen_audience,
@@ -576,6 +588,8 @@ impl fmt::Debug for AuthzenClientOptions {
                 authzen_client_authentication,
             )
             .field("authzen_key_file", authzen_key_file)
+            .field("authzen_token_ca_file", authzen_token_ca_file)
+            .field("authzen_ca_file", authzen_ca_file)
             .field("authzen_key_id", authzen_key_id)
             .field("authzen_issuer", authzen_issuer)
             .field("authzen_audience", authzen_audience)
@@ -622,6 +636,11 @@ pub(crate) struct AuthzenMode<'a> {
     pub(crate) token_endpoint: &'a str,
     /// How the token client authenticates, the key file already read.
     pub(crate) authentication: Authentication,
+    /// The only authorities the token endpoint is trusted through, none for the system roots.
+    pub(crate) token_ca: Option<PinnedCa>,
+    /// The only authorities the decision point and garam's policy service are trusted through,
+    /// none for the system roots.
+    pub(crate) policy_ca: Option<PinnedCa>,
     pub(crate) profile: AuthzenProfile,
     /// The base URL of garam's policy service where changes are delivered to garam, none where
     /// they go nowhere.
@@ -633,6 +652,10 @@ pub(crate) struct GaramDelivery<'a> {
     pub(crate) token_endpoint: &'a str,
     /// How the token client authenticates, the key file already read.
     pub(crate) authentication: Authentication,
+    /// The only authorities the token endpoint is trusted through, none for the system roots.
+    pub(crate) token_ca: Option<PinnedCa>,
+    /// The only authorities garam's policy service is trusted through, none for the system roots.
+    pub(crate) policy_ca: Option<PinnedCa>,
     pub(crate) url: &'a str,
 }
 
@@ -660,7 +683,8 @@ impl<'a> Serving<'a> {
     /// [`Error::RunnerLease`] where the lease does not exceed the heartbeat interval,
     /// [`Error::MissingSetting`] where a selected mode lacks a setting,
     /// [`Error::IncompatibleSettings`] where settings cannot go together and
-    /// [`Error::KeyFile`] where the key file cannot be read.
+    /// [`Error::KeyFile`] where the key file cannot be read and [`Error::CaFile`] where a CA file
+    /// cannot be read or holds no certificate.
     pub(crate) fn select(&self) -> Result<Selection<'a>, Error> {
         if let Some(runner) = self.runner {
             check_runner_lease(runner)?;
@@ -698,6 +722,14 @@ impl<'a> Serving<'a> {
             "--authzen-url (CODEHUB_AUTHZEN_URL)",
         )?;
         let (token_endpoint, authentication) = select_client(self.client)?;
+        let token_ca = read_ca(
+            self.client.authzen_token_ca_file.as_ref(),
+            "CODEHUB_AUTHZEN_TOKEN_CA_FILE",
+        )?;
+        let policy_ca = read_ca(
+            self.client.authzen_ca_file.as_ref(),
+            "CODEHUB_AUTHZEN_CA_FILE",
+        )?;
         let garam_url = match self.directory {
             Some(directory) if directory.directory_changes == DirectoryChangesMode::Garam => {
                 Some(select_garam_url(self.client, directory)?)
@@ -708,6 +740,8 @@ impl<'a> Serving<'a> {
             url,
             token_endpoint,
             authentication,
+            token_ca,
+            policy_ca,
             profile: self.client.authzen_profile,
             garam_url,
         })
@@ -720,7 +754,8 @@ impl<'a> Serving<'a> {
 /// # Errors
 ///
 /// [`Error::MissingSetting`] where delivering lacks a setting, [`Error::IncompatibleSettings`]
-/// where the settings cannot go together and [`Error::KeyFile`] where the key file cannot be read.
+/// where the settings cannot go together, [`Error::KeyFile`] where the key file cannot be read and
+/// [`Error::CaFile`] where a CA file cannot be read or holds no certificate.
 pub(crate) fn select_delivery<'a>(
     client: &'a AuthzenClientOptions,
     directory: &'a DirectoryOptions,
@@ -730,9 +765,16 @@ pub(crate) fn select_delivery<'a>(
     }
     let url = select_garam_url(client, directory)?;
     let (token_endpoint, authentication) = select_client(client)?;
+    let token_ca = read_ca(
+        client.authzen_token_ca_file.as_ref(),
+        "CODEHUB_AUTHZEN_TOKEN_CA_FILE",
+    )?;
+    let policy_ca = read_ca(client.authzen_ca_file.as_ref(), "CODEHUB_AUTHZEN_CA_FILE")?;
     Ok(Some(GaramDelivery {
         token_endpoint,
         authentication,
+        token_ca,
+        policy_ca,
         url,
     }))
 }
@@ -832,6 +874,22 @@ fn select_client(client: &AuthzenClientOptions) -> Result<(&str, Authentication)
         }
     };
     Ok((token_endpoint, authentication))
+}
+
+/// The authorities in the PEM file a CA setting names, none where it is unset.
+fn read_ca(path: Option<&PathBuf>, setting: &'static str) -> Result<Option<PinnedCa>, Error> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let refused = |reason: String| Error::CaFile {
+        setting,
+        path: path.clone(),
+        reason,
+    };
+    let pem = std::fs::read(path).map_err(|error| refused(error.to_string()))?;
+    PinnedCa::from_pem(&pem)
+        .map(Some)
+        .map_err(|error| refused(error.to_string()))
 }
 
 /// The URL changes are delivered to garam at, refused under any profile but `grn`.
@@ -1030,6 +1088,8 @@ mod tests {
                 authzen_profile: AuthzenProfile::Plain,
                 authzen_client_authentication: AuthzenClientAuthentication::ClientSecret,
                 authzen_key_file: Some(PathBuf::from("/keys/authzen-key-visible.pem")),
+                authzen_token_ca_file: None,
+                authzen_ca_file: None,
                 authzen_key_id: Some("authzen-kid-visible".to_owned()),
                 authzen_issuer: Some("http://garam.example".to_owned()),
                 authzen_audience: Some("authzen-audience-visible".to_owned()),
@@ -1142,7 +1202,7 @@ mod tests {
     #[test]
     fn each_role_takes_the_options_it_uses_and_no_others() {
         let all = options_of("all");
-        assert_eq!(all.len(), 60, "{all:?}");
+        assert_eq!(all.len(), 62, "{all:?}");
         let without = |role: &str, left_out: &[&str]| {
             let taken = options_of(role);
             let expected: Vec<String> = all
@@ -1638,6 +1698,67 @@ mod tests {
             panic!("the missing key file was accepted");
         };
         assert_eq!(path, missing);
+    }
+
+    /// A file in the temporary directory named for this test, holding `contents`.
+    fn written(name: &str, contents: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("codehub-{name}-{}", std::process::id()));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    /// Sets the path of one CA setting.
+    type Setter = fn(&mut AllOptions, PathBuf);
+
+    #[test]
+    fn reads_each_ca_file_and_refuses_one_it_cannot_use() {
+        let certificates = format!(
+            "{}{}",
+            test_support::tls::Authority::new("first").pem(),
+            test_support::tls::Authority::new("second").pem()
+        );
+        let readable = written("ca-readable.pem", &certificates);
+        let empty = written("ca-empty.pem", "no certificate here\n");
+        let missing = std::env::temp_dir().join("codehub-no-such-ca-file.pem");
+        assert!(!missing.exists(), "{} exists", missing.display());
+
+        let set: [(&str, Setter); 2] = [
+            ("CODEHUB_AUTHZEN_TOKEN_CA_FILE", |config, path| {
+                config.authzen.authzen_token_ca_file = Some(path);
+            }),
+            ("CODEHUB_AUTHZEN_CA_FILE", |config, path| {
+                config.authzen.authzen_ca_file = Some(path);
+            }),
+        ];
+        for (setting, set) in set {
+            // The control: a readable file of two certificates is accepted, and unset is too.
+            let mut config = config("postgres://db.example/codehub");
+            grn(&mut config);
+            assert_eq!(refusal(grn), None);
+            set(&mut config, readable.clone());
+            assert!(config.serving().select().is_ok(), "{setting}");
+            assert!(
+                select_delivery(&config.authzen, &config.directory).is_ok(),
+                "{setting}"
+            );
+
+            for (path, reason) in [(&missing, "No such file"), (&empty, "no certificate")] {
+                set(&mut config, path.clone());
+                let selected = config.serving().select().err().map(|e| e.to_string());
+                let delivered = select_delivery(&config.authzen, &config.directory)
+                    .err()
+                    .map(|e| e.to_string());
+                for message in [selected, delivered] {
+                    let message = message.unwrap_or_default();
+                    assert!(
+                        message.contains(setting)
+                            && message.contains(&path.display().to_string())
+                            && message.contains(reason),
+                        "{setting}: {message}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

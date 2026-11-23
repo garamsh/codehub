@@ -174,8 +174,17 @@ httpRoute:
 # Secret, the key is mounted read-only into api, runner-api and worker and CODEHUB_AUTHZEN_KEY_FILE
 # names it; the server reads it at start, so a rotated key takes a rollout. Where it names none,
 # nothing is mounted.
+#
+# The CA each endpoint is pinned to (ADR 0059): caSecret for the policy service (decisions and
+# directory, CODEHUB_AUTHZEN_CA_FILE), tokenCaSecret for the token endpoint
+# (CODEHUB_AUTHZEN_TOKEN_CA_FILE). Each Secret key holds a PEM file of one or more certificates and
+# is mounted read-only at /etc/codehub/authzen-ca/ca.crt or /etc/codehub/authzen-token-ca/ca.crt.
+# Where one names none, nothing is mounted and that client trusts the system roots. The files are
+# read at start, so a rotated CA takes a rollout; add the new CA beside the old one first.
 authzen:
   keySecret: {name: "", key: key.pem}
+  caSecret: {name: "", key: ca.crt}
+  tokenCaSecret: {name: "", key: ca.crt}
 
 # Scrape annotations on every pod of every role.
 metrics:

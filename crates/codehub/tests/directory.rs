@@ -17,6 +17,7 @@ use base64::engine::general_purpose::STANDARD;
 use common::{Client, TestDatabase, count, introspection_settings, pairs};
 use reqwest::{Method, StatusCode};
 use serde_json::json;
+use test_support::tls::{Authority, TlsServer};
 use test_support::{Server, keycloak_token};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -203,6 +204,122 @@ async fn answers_201_for_a_creation_whose_change_garam_accepts_within_the_wait()
             .all(|body| body.contains("grn:acme/codehub/repo/")),
         "{received:?}"
     );
+}
+
+/// The settings that deliver to a token endpoint and a policy service served over TLS, each
+/// pinned to the CA file given for it.
+#[cfg(test)]
+fn pinned_settings(
+    token: &TlsServer,
+    policy: &TlsServer,
+    key_file: &str,
+    token_ca: &Path,
+    policy_ca: &Path,
+) -> Vec<(&'static str, String)> {
+    let garam = Garam {
+        url: policy.url.clone(),
+        down: Arc::new(AtomicBool::new(false)),
+        changes: Arc::new(Mutex::new(Vec::new())),
+    };
+    let mut settings = garam_settings(&garam, key_file);
+    settings.retain(|(name, _)| *name != "CODEHUB_AUTHZEN_TOKEN_ENDPOINT");
+    settings.extend([
+        (
+            "CODEHUB_AUTHZEN_TOKEN_ENDPOINT",
+            format!("{}/token", token.url),
+        ),
+        (
+            "CODEHUB_AUTHZEN_TOKEN_CA_FILE",
+            token_ca.to_str().unwrap().to_owned(),
+        ),
+        (
+            "CODEHUB_AUTHZEN_CA_FILE",
+            policy_ca.to_str().unwrap().to_owned(),
+        ),
+    ]);
+    settings
+}
+
+/// A TLS stand-in for garam's token endpoint, signed by `authority`.
+#[cfg(test)]
+async fn tls_token_endpoint(authority: &Authority) -> TlsServer {
+    TlsServer::start(&authority.leaf(), |_| {
+        (
+            200,
+            json!({"access_token": "token", "token_type": "Bearer", "expires_in": 3600})
+                .to_string(),
+        )
+    })
+    .await
+}
+
+/// A TLS stand-in for garam's policy service, signed by `authority`.
+#[cfg(test)]
+async fn tls_policy_service(authority: &Authority) -> TlsServer {
+    TlsServer::start(&authority.leaf(), |request| {
+        if request.starts_with("POST /access/v1/evaluation ") {
+            (200, json!({"decision": true}).to_string())
+        } else {
+            (
+                200,
+                json!({"written": 1, "dropped": 0, "refusals": []}).to_string(),
+            )
+        }
+    })
+    .await
+}
+
+/// A PEM file of `authority`'s certificate in the tests' temporary directory.
+#[cfg(test)]
+fn write_ca(name: &str, authority: &Authority) -> std::path::PathBuf {
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::write(&path, authority.pem()).unwrap();
+    path
+}
+
+#[tokio::test]
+async fn pins_the_token_endpoint_and_the_policy_service_each_to_its_own_ca() {
+    let (token_authority, policy_authority) = (Authority::new("token"), Authority::new("policy"));
+    let key = write_rsa_key("directory-pinned.pem");
+    let token_ca = write_ca("directory-token-ca.pem", &token_authority);
+    let policy_ca = write_ca("directory-policy-ca.pem", &policy_authority);
+
+    // The control: each CA file is the one that signed the endpoint it is set for.
+    let database = TestDatabase::new().await;
+    let (token, policy) = (
+        tls_token_endpoint(&token_authority).await,
+        tls_policy_service(&policy_authority).await,
+    );
+    let settings = pinned_settings(&token, &policy, &key, &token_ca, &policy_ca);
+    let server = Server::start_with(Path::new(BINARY), &database, &pairs(&settings));
+    assert_eq!(create_repository(&server).await, StatusCode::CREATED);
+    assert_eq!(entries(&database).await, 0);
+    assert!(token.answered() >= 1 && policy.answered() >= 2);
+
+    // The policy CA given for the token endpoint: no token is issued and nothing reaches the
+    // policy service.
+    let database = TestDatabase::new().await;
+    let (token, policy) = (
+        tls_token_endpoint(&token_authority).await,
+        tls_policy_service(&policy_authority).await,
+    );
+    let settings = pinned_settings(&token, &policy, &key, &policy_ca, &policy_ca);
+    let server = Server::start_with(Path::new(BINARY), &database, &pairs(&settings));
+    assert_ne!(create_repository(&server).await, StatusCode::CREATED);
+    assert_eq!((token.answered(), policy.answered()), (0, 0));
+
+    // The token CA given for the policy service: tokens are issued and no decision or change
+    // reaches the policy service.
+    let database = TestDatabase::new().await;
+    let (token, policy) = (
+        tls_token_endpoint(&token_authority).await,
+        tls_policy_service(&policy_authority).await,
+    );
+    let settings = pinned_settings(&token, &policy, &key, &token_ca, &token_ca);
+    let server = Server::start_with(Path::new(BINARY), &database, &pairs(&settings));
+    assert_ne!(create_repository(&server).await, StatusCode::CREATED);
+    assert!(token.answered() >= 1);
+    assert_eq!(policy.answered(), 0);
 }
 
 #[tokio::test]
