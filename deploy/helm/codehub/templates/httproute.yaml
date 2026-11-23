@@ -1,6 +1,8 @@
 {{- /*
-The Gateway API counterpart of ingress.yaml: the runner routes to runner-api, every other path to
-api, and /v2/ to the registry. The registry has its own host, so its route has its own switch.
+The Gateway API counterpart of ingress.yaml: the runner routes to runner-api, the rest of /v1/ to
+api, and /v2/ to the registry. Nothing outside /v1/ and /v2/ is routed, so /metrics, /healthz and
+/readyz, which the api serves unauthenticated beside /v1/, stay inside the cluster. The registry has
+its own host, so its route has its own switch.
 */ -}}
 {{- if .Values.httpRoute.enabled }}
 apiVersion: gateway.networking.k8s.io/v1
@@ -21,7 +23,7 @@ spec:
         - name: {{ include "codehub.fullname" . }}-runner-api
           port: {{ .Values.runnerApi.service.port }}
     - matches:
-        - path: {type: PathPrefix, value: /}
+        - path: {type: PathPrefix, value: /v1/}
       backendRefs:
         - name: {{ include "codehub.fullname" . }}-api
           port: {{ .Values.api.service.port }}

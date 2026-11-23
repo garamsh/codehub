@@ -1,3 +1,4 @@
+# Render-only fixture: its values have garam's shape but are not garam's real ones.
 imagePullSecrets: [{name: ecr-pull}]
 postgres:
   urlSecret: {name: codehub-db-runtime, key: url}
@@ -17,7 +18,13 @@ config:
   CODEHUB_AUTHORISATION: authzen
   CODEHUB_AUTHZEN_PROFILE: grn
   CODEHUB_AUTHZEN_CLIENT_AUTHENTICATION: private-key-jwt
+  CODEHUB_AUTHZEN_URL: https://garam-policy.garam.svc:8443
+  CODEHUB_AUTHZEN_TOKEN_ENDPOINT: https://machine.garam.garam.sh/oauth/token
+  CODEHUB_AUTHZEN_CLIENT_ID: "grn:{organisation}/iam/service/codehub"
+  CODEHUB_AUTHZEN_ISSUER: https://machine.garam.garam.sh
+  CODEHUB_AUTHZEN_KEY_ID: codehub-key-1
   CODEHUB_DIRECTORY_CHANGES: garam
+  CODEHUB_DIRECTORY_GARAM_URL: https://garam-policy.garam.svc:8443
 authzen:
   keySecret: {name: codehub-authzen-key, key: key.pem}
 httpRoute:

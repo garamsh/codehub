@@ -1,6 +1,6 @@
 # ADR 0058: the chart routes through Gateway API as well as Ingress, and mounts the AuthZEN key
 
-> Status: accepted
+> Status: accepted; the path split of its routes is superseded by ADR 0060
 > Date: 2026-11-21
 
 Append-only: once merged, the body below is not rewritten. A fact later found wrong is corrected in an appended note, not edited out; a revised decision is a new ADR that supersedes this one.
